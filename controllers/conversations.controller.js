@@ -1,0 +1,335 @@
+'use strict'
+const pool   = require('../db')
+const socket = require('../services/socket')
+const { uid, parseJ } = require('../utils')
+
+// Finds an existing contact for this conversation sender or creates one.
+// Non-critical: errors are swallowed so conversation creation is never blocked.
+async function findOrCreateContact(accId, { guestName, guestId, waFrom, messengerFrom, igFrom, channelType }) {
+  try {
+    let existing = null
+
+    // WhatsApp: match by phone number
+    if (channelType === 'whatsapp' && waFrom) {
+      const [[row]] = await pool.query(
+        'SELECT id FROM contacts WHERE account_id=? AND phone=?', [accId, waFrom]
+      )
+      existing = row
+    }
+
+    // Any channel: match by guestId stored in extra JSON
+    if (!existing && guestId) {
+      const [[row]] = await pool.query(
+        `SELECT id FROM contacts WHERE account_id=? AND JSON_UNQUOTE(JSON_EXTRACT(extra, '$.guestId'))=?`,
+        [accId, String(guestId)]
+      )
+      existing = row
+    }
+
+    if (existing) return existing.id
+
+    const contactId = 'contact_' + uid()
+    const extra = {
+      guestId: guestId ? String(guestId) : '',
+      channelType,
+      ...(messengerFrom ? { messengerId: messengerFrom } : {}),
+      ...(igFrom        ? { instagramId: igFrom }       : {}),
+    }
+    await pool.query(
+      'INSERT INTO contacts (id,account_id,name,email,phone,extra,created_at) VALUES (?,?,?,?,?,?,?)',
+      [contactId, accId, guestName || 'Visitante', '', waFrom || '', JSON.stringify(extra), Date.now()]
+    )
+    return contactId
+  } catch (e) {
+    console.error('[FIND_OR_CREATE_CONTACT]', e)
+    return null
+  }
+}
+
+const mapConvo = (c, messages = []) => ({
+  id: c.id, guestName: c.guest_name, guestId: c.guest_id,
+  channelId: c.channel_id, linkId: c.channel_id, channel: c.channel_type,
+  waFrom: c.wa_from, messengerFrom: c.messenger_from, igFrom: c.ig_from,
+  initials: c.initials, preview: c.preview,
+  unread: !!c.unread, aiEnabled: !!c.ai_enabled,
+  labels:        parseJ(c.labels, []),
+  pipelineCards: parseJ(c.pipeline_cards, []),
+  localVars:     parseJ(c.local_vars, {}),
+  debugLog:      parseJ(c.debug_log, []),
+  assignedTo:    parseJ(c.assigned_to, null),
+  messages,
+  createdAt: c.created_at, updatedAt: c.updated_at,
+})
+
+const listConvos = async (req, res) => {
+  const { accId, agId } = req.params
+  try {
+    const [rows] = await pool.query('SELECT * FROM conversations WHERE account_id=? AND agent_id=? ORDER BY updated_at DESC', [accId, agId])
+    if (rows.length === 0) return res.json([])
+    const convIds = rows.map(c => c.id)
+    const [msgs]  = await pool.query('SELECT * FROM messages WHERE conversation_id IN (?) ORDER BY ts ASC', [convIds])
+    const msgsByConv = {}
+    for (const m of msgs) {
+      if (!msgsByConv[m.conversation_id]) msgsByConv[m.conversation_id] = []
+      msgsByConv[m.conversation_id].push({ id: m.id, sender: m.sender, content: m.content, ts: m.ts, ...parseJ(m.metadata, {}) })
+    }
+    res.json(rows.map(c => mapConvo(c, msgsByConv[c.id] || [])))
+  } catch (err) {
+    console.error('[GET CONVOS]', err)
+    res.status(500).json({ error: 'Error interno' })
+  }
+}
+
+const getConvo = async (req, res) => {
+  const { accId, agId, convId } = req.params
+  try {
+    const [[c]] = await pool.query('SELECT * FROM conversations WHERE id=? AND account_id=? AND agent_id=?', [convId, accId, agId])
+    if (!c) return res.status(404).json({ error: 'Conversación no encontrada' })
+    const [msgs] = await pool.query('SELECT * FROM messages WHERE conversation_id=? ORDER BY ts ASC', [convId])
+    res.json(mapConvo(c, msgs.map(m => ({ id: m.id, sender: m.sender, content: m.content, ts: m.ts, ...parseJ(m.metadata, {}) }))))
+  } catch (err) {
+    console.error('[GET CONVO]', err)
+    res.status(500).json({ error: 'Error interno' })
+  }
+}
+
+const createConvo = async (req, res) => {
+  const { accId, agId } = req.params
+  const { guestName, guestId, channelId, channelType = 'webchat', waFrom, messengerFrom, igFrom } = req.body
+  const id       = `conv_${Date.now()}_${guestId || uid()}`
+  const initials = (guestName || '').slice(0, 2).toUpperCase()
+  const ts       = Date.now()
+
+  const contactId = await findOrCreateContact(accId, { guestName, guestId, waFrom, messengerFrom, igFrom, channelType })
+  const localVars = { var_nombre: guestName || '' }
+  if (contactId) localVars.contact_id = contactId
+
+  try {
+    await pool.query(
+      `INSERT INTO conversations
+       (id,account_id,agent_id,channel_id,channel_type,guest_name,guest_id,wa_from,messenger_from,ig_from,initials,preview,unread,ai_enabled,labels,pipeline_cards,local_vars,debug_log,created_at,updated_at)
+       VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`,
+      [id, accId, agId, channelId, channelType, guestName, guestId,
+       waFrom || null, messengerFrom || null, igFrom || null,
+       initials, '', 0, 1, '[]', '[]', JSON.stringify(localVars), '[]', ts, ts]
+    )
+    socket.emit(accId, 'convos:updated', { accId, agId })
+    res.json({ id })
+  } catch (err) {
+    console.error('[POST CONVO]', err)
+    res.status(500).json({ error: 'Error interno' })
+  }
+}
+
+// ── Conversation patch (labels, AI toggle, pipeline cards, etc) ───────────────
+// IMPORTANT: this does NOT bump `updated_at` — only a new incoming/outgoing message
+// should move a conversation to the top of the list (WhatsApp-style stable order).
+// `preview` only ever changes when a message is appended, so it's safe to ignore here.
+const updateConvo = async (req, res) => {
+  const { accId, agId, convId } = req.params
+  try {
+    const map = { guestName:'guest_name', preview:'preview', unread:'unread', aiEnabled:'ai_enabled', labels:'labels', pipelineCards:'pipeline_cards', localVars:'local_vars', debugLog:'debug_log', assignedTo:'assigned_to' }
+    const sets = []
+    const vals = []
+    for (const [key, col] of Object.entries(map)) {
+      if (req.body[key] !== undefined) {
+        sets.push(`${col}=?`)
+        const v = req.body[key]
+        vals.push(typeof v === 'object' ? JSON.stringify(v) : v)
+      }
+    }
+    if (sets.length === 0) return res.json({ ok: true })
+    vals.push(convId, accId)
+    await pool.query(`UPDATE conversations SET ${sets.join(',')} WHERE id=? AND account_id=?`, vals)
+    socket.emit(accId, 'convos:updated', { accId, agId })
+
+    // Notify the assignee (targeted) when a conversation gets assigned to
+    // someone other than the person making the assignment.
+    const assignee = req.body.assignedTo
+    if (assignee && assignee.id && assignee.id !== req.user?.id) {
+      const [[c]] = await pool.query('SELECT guest_name, preview FROM conversations WHERE id=? AND account_id=?', [convId, accId])
+      socket.emitToMember(assignee.id, 'conv:assigned', {
+        accId, agId, convId,
+        guestName:  c?.guest_name || 'Conversación',
+        preview:    c?.preview || '',
+        assignedBy: req.user?.name || 'Un compañero',
+      })
+    }
+
+    res.json({ ok: true })
+  } catch (err) {
+    console.error('[PUT CONVO]', err)
+    res.status(500).json({ error: 'Error interno' })
+  }
+}
+
+// Marking as read MUST NOT reorder the list; just clear the unread flag.
+const markRead = async (req, res) => {
+  const { accId, agId, convId } = req.params
+  try {
+    await pool.query('UPDATE conversations SET unread=0 WHERE id=? AND account_id=?', [convId, accId])
+    socket.emit(accId, 'convos:updated', { accId, agId })
+    res.json({ ok: true })
+  } catch (err) { res.status(500).json({ error: 'Error interno' }) }
+}
+
+const appendMessage = async (req, res) => {
+  const { accId, agId, convId } = req.params
+  const { sender, content, ...rest } = req.body
+  const id       = 'msg_' + uid()
+  const ts       = Date.now()
+  const metadata = Object.keys(rest).length ? rest : null
+  try {
+    await pool.query('INSERT INTO messages (id,conversation_id,sender,content,metadata,ts) VALUES (?,?,?,?,?,?)',
+      [id, convId, sender, content, metadata ? JSON.stringify(metadata) : null, ts])
+    const sets = ['preview=?', 'updated_at=?']
+    const vals = [(content || '').slice(0, 60), ts]
+    if (sender === 'user') sets.push('unread=1')
+    vals.push(convId, accId)
+    await pool.query(`UPDATE conversations SET ${sets.join(',')} WHERE id=? AND account_id=?`, vals)
+
+    // Maintain the internal system variable {{_lastUserMessage}} on every user message
+    if (sender === 'user' && content) {
+      try {
+        const [[c]] = await pool.query('SELECT local_vars FROM conversations WHERE id=? AND account_id=?', [convId, accId])
+        const lv = parseJ(c?.local_vars, {})
+        lv._lastUserMessage = content
+        await pool.query('UPDATE conversations SET local_vars=? WHERE id=? AND account_id=?', [JSON.stringify(lv), convId, accId])
+      } catch { /* non-critical */ }
+    }
+
+    const msg = { id, sender, content, ts, ...rest }
+    socket.emit(accId, 'message:new', { accId, agId, convId, message: msg })
+    socket.emitToConv(convId, 'message:new', { convId, message: msg })
+    res.json({ id, ts })
+  } catch (err) {
+    console.error('[POST MSG]', err)
+    res.status(500).json({ error: 'Error interno' })
+  }
+}
+
+const appendDebug = async (req, res) => {
+  const { accId, convId } = req.params
+  const entry = { ...req.body, ts: Date.now() }
+  try {
+    const [[c]] = await pool.query('SELECT debug_log FROM conversations WHERE id=? AND account_id=?', [convId, accId])
+    const log = parseJ(c?.debug_log, [])
+    log.push(entry)
+    await pool.query('UPDATE conversations SET debug_log=? WHERE id=? AND account_id=?', [JSON.stringify(log), convId, accId])
+    res.json({ ok: true })
+  } catch (err) { console.error('[DEBUG]', err); res.status(500).json({ error: 'Error interno' }) }
+}
+
+const patchVars = async (req, res) => {
+  const { accId, agId, convId } = req.params
+  const { varId, value } = req.body
+  try {
+    const [[c]] = await pool.query('SELECT local_vars FROM conversations WHERE id=? AND account_id=?', [convId, accId])
+    if (!c) return res.status(404).json({ error: 'Conversación no encontrada' })
+    const vars = parseJ(c.local_vars, {})
+    vars[varId] = value
+    // Local var changes don't reorder the chat list — only new messages do.
+    await pool.query('UPDATE conversations SET local_vars=? WHERE id=?', [JSON.stringify(vars), convId])
+    socket.emit(accId, 'convos:updated', { accId, agId })
+    res.json({ ok: true })
+  } catch (err) { res.status(500).json({ error: 'Error interno' }) }
+}
+
+// ── Guest counter ─────────────────────────────────────────────────────────────
+
+const getGuest = async (req, res) => {
+  try {
+    await pool.query('UPDATE counters SET value=value+1 WHERE name="guest_counter"')
+    const [[ctr]] = await pool.query('SELECT value FROM counters WHERE name="guest_counter"')
+    const n = ctr?.value || 1001
+    res.json({ name: `Invitado #${n}`, id: String(n) })
+  } catch (err) { res.status(500).json({ error: 'Error interno' }) }
+}
+
+// ── Social create-or-get ──────────────────────────────────────────────────────
+
+async function createOrGetSocialConvo(accId, agId, lookupCol, lookupVal, guestName, channelType, channelId) {
+  const [[existing]] = await pool.query(
+    `SELECT id FROM conversations WHERE account_id=? AND agent_id=? AND ${lookupCol}=?`,
+    [accId, agId, lookupVal]
+  )
+  if (existing) return existing.id
+  await pool.query('UPDATE counters SET value=value+1 WHERE name="guest_counter"')
+  const [[ctr]] = await pool.query('SELECT value FROM counters WHERE name="guest_counter"')
+  const n  = ctr?.value || Date.now()
+  const id = `conv_${channelType}_${Date.now()}_${n}`
+  const ts = Date.now()
+
+  const contactArgs = { guestName, guestId: String(n), channelType }
+  if (lookupCol === 'wa_from')        contactArgs.waFrom        = lookupVal
+  else if (lookupCol === 'messenger_from') contactArgs.messengerFrom = lookupVal
+  else if (lookupCol === 'ig_from')   contactArgs.igFrom        = lookupVal
+  const contactId = await findOrCreateContact(accId, contactArgs)
+  const localVars = { var_nombre: guestName || '' }
+  if (contactId) localVars.contact_id = contactId
+
+  const cols = {
+    id, account_id: accId, agent_id: agId,
+    channel_id: channelId || channelType, channel_type: channelType,
+    guest_name: guestName, guest_id: String(n),
+    initials: (guestName || '').slice(0, 2).toUpperCase(),
+    preview: '', unread: 1, ai_enabled: 1,
+    labels: '[]', pipeline_cards: '[]',
+    local_vars: JSON.stringify(localVars),
+    debug_log: '[]', created_at: ts, updated_at: ts,
+  }
+  cols[lookupCol] = lookupVal
+  const keys = Object.keys(cols); const vals = Object.values(cols)
+  await pool.query(`INSERT INTO conversations (${keys.join(',')}) VALUES (${keys.map(() => '?').join(',')})`, vals)
+  return id
+}
+
+const createWhatsApp = async (req, res) => {
+  const { accId, agId } = req.params
+  const { waFrom, waName, channelId } = req.body
+  try {
+    const convId = await createOrGetSocialConvo(accId, agId, 'wa_from', waFrom, waName || `WA #${(waFrom || '').slice(-4)}`, 'whatsapp', channelId)
+    socket.emit(accId, 'convos:updated', { accId, agId })
+    res.json({ id: convId, convId })
+  } catch (err) {
+    console.error('[WA CONVO]', err)
+    res.status(500).json({ error: 'Error interno' })
+  }
+}
+
+const createMessenger = async (req, res) => {
+  const { accId, agId } = req.params
+  const { senderId, senderName, channelId } = req.body
+  try {
+    const convId = await createOrGetSocialConvo(accId, agId, 'messenger_from', senderId, senderName || `FB #${(senderId || '').slice(-4)}`, 'messenger', channelId)
+    socket.emit(accId, 'convos:updated', { accId, agId })
+    res.json({ id: convId, convId })
+  } catch (err) { res.status(500).json({ error: 'Error interno' }) }
+}
+
+const createInstagram = async (req, res) => {
+  const { accId, agId } = req.params
+  const { senderId, senderName, channelId } = req.body
+  try {
+    const convId = await createOrGetSocialConvo(accId, agId, 'ig_from', senderId, senderName || `IG #${(senderId || '').slice(-4)}`, 'instagram', channelId)
+    socket.emit(accId, 'convos:updated', { accId, agId })
+    res.json({ id: convId, convId })
+  } catch (err) { res.status(500).json({ error: 'Error interno' }) }
+}
+
+const createSocial = async (req, res) => {
+  const { accId, agId } = req.params
+  const { type, from, name, channelId } = req.body
+  try {
+    const lookup = type === 'whatsapp' ? 'wa_from' : type === 'messenger' ? 'messenger_from' : 'ig_from'
+    const convId = await createOrGetSocialConvo(accId, agId, lookup, from, name || `${type} #${(from || '').slice(-4)}`, type, channelId)
+    socket.emit(accId, 'convos:updated', { accId, agId })
+    res.json({ id: convId })
+  } catch (err) { res.status(500).json({ error: 'Error interno' }) }
+}
+
+module.exports = {
+  listConvos, getConvo, createConvo, updateConvo, markRead,
+  appendMessage, appendDebug, patchVars, getGuest,
+  createWhatsApp, createMessenger, createInstagram, createSocial,
+}

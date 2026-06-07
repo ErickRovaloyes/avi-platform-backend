@@ -1,0 +1,12 @@
+'use strict'
+const router = require('express').Router()
+const { authMiddleware } = require('../auth')
+const ctrl = require('../controllers/contacts.controller')
+
+router.get('/accounts/:accId/contacts',                    authMiddleware, ctrl.list)
+router.post('/accounts/:accId/contacts',                   authMiddleware, ctrl.create)
+router.get('/accounts/:accId/contacts/:id/conversations',  authMiddleware, ctrl.listConversations)
+router.put('/accounts/:accId/contacts/:id',                authMiddleware, ctrl.update)
+router.delete('/accounts/:accId/contacts/:id',             authMiddleware, ctrl.remove)
+
+module.exports = router
