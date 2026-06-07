@@ -285,7 +285,8 @@ CREATE TABLE IF NOT EXISTS platform_settings (
   -- Default platform API keys (used as fallback when account has no own key)
   openai_key                      TEXT,
   deepseek_key                    TEXT,
-  anthropic_key                   TEXT
+  anthropic_key                   TEXT,
+  media_max_size_mb               INT DEFAULT 30
 );
 
 CREATE TABLE IF NOT EXISTS prompt_change_history (
