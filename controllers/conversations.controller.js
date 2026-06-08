@@ -332,4 +332,6 @@ module.exports = {
   listConvos, getConvo, createConvo, updateConvo, markRead,
   appendMessage, appendDebug, patchVars, getGuest,
   createWhatsApp, createMessenger, createInstagram, createSocial,
+  // Reusable cores for the server-side flow engine
+  createOrGetSocialConvo,
 }

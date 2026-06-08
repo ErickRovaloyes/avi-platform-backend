@@ -14,29 +14,38 @@ const mapAgent = a => ({
   links: parseJ(a.channels, []).filter(c => c.type === 'webchat').map(c => ({ id: c.id, label: c.name, createdAt: c.createdAt })),
 })
 
+// Core: builds the public account object (agents, vars, tools, flows + effective
+// keys). Reusable by the HTTP handler and by the server-side flow engine.
+// Returns null when the account doesn't exist.
+async function loadPublicAccount(accId) {
+  const [[acc]] = await pool.query('SELECT * FROM accounts WHERE id=?', [accId])
+  if (!acc) return null
+  const [agents]    = await pool.query('SELECT * FROM agents WHERE account_id=?', [accId])
+  const [variables] = await pool.query('SELECT * FROM variables WHERE account_id=?', [accId])
+  const [aiTools]   = await pool.query('SELECT * FROM ai_tools WHERE account_id=?', [accId])
+  const [flows]     = await pool.query('SELECT * FROM flows WHERE account_id=?', [accId])
+  // Resolve API keys with super-admin platform fallback
+  const [[pf]] = await pool.query('SELECT openai_key, deepseek_key, anthropic_key FROM platform_settings WHERE id=1')
+  const effOpenai    = (acc.openai_key    && acc.openai_key.trim())    || pf?.openai_key    || ''
+  const effDeepseek  = (acc.deepseek_key  && acc.deepseek_key.trim())  || pf?.deepseek_key  || ''
+  const effAnthropic = (acc.anthropic_key && acc.anthropic_key.trim()) || pf?.anthropic_key || ''
+  return {
+    id: acc.id, name: acc.name,
+    openaiKey: effOpenai, deepseekKey: effDeepseek, anthropicKey: effAnthropic,
+    agents: agents.map(mapAgent),
+    variables: variables.map(v => ({ id: v.id, name: v.name, type: v.type, defaultValue: v.default_value, description: v.description, isSystem: !!v.is_system })),
+    aiTools:   aiTools.map(t => ({ id: t.id, name: t.name, description: t.description, collectFields: parseJ(t.collect_fields, []), flowId: t.flow_id, actionType: t.action_type || 'variable', n8nIntegrationId: t.n8n_integration_id })),
+    flows:     flows.map(f => ({ id: f.id, name: f.name, trigger: f.trigger, startNodeId: f.start_node_id, nodes: parseJ(f.nodes, []) })),
+  }
+}
+
 // Public (no auth) — returns only data needed by webchat
 const getPublicAccount = async (req, res) => {
   const { accId } = req.params
   try {
-    const [[acc]] = await pool.query('SELECT * FROM accounts WHERE id=?', [accId])
-    if (!acc) return res.status(404).json({ error: 'Cuenta no encontrada' })
-    const [agents]    = await pool.query('SELECT * FROM agents WHERE account_id=?', [accId])
-    const [variables] = await pool.query('SELECT * FROM variables WHERE account_id=?', [accId])
-    const [aiTools]   = await pool.query('SELECT * FROM ai_tools WHERE account_id=?', [accId])
-    const [flows]     = await pool.query('SELECT * FROM flows WHERE account_id=?', [accId])
-    // Resolve API keys with super-admin platform fallback
-    const [[pf]] = await pool.query('SELECT openai_key, deepseek_key, anthropic_key FROM platform_settings WHERE id=1')
-    const effOpenai    = (acc.openai_key    && acc.openai_key.trim())    || pf?.openai_key    || ''
-    const effDeepseek  = (acc.deepseek_key  && acc.deepseek_key.trim())  || pf?.deepseek_key  || ''
-    const effAnthropic = (acc.anthropic_key && acc.anthropic_key.trim()) || pf?.anthropic_key || ''
-    res.json({
-      id: acc.id, name: acc.name,
-      openaiKey: effOpenai, deepseekKey: effDeepseek, anthropicKey: effAnthropic,
-      agents: agents.map(mapAgent),
-      variables: variables.map(v => ({ id: v.id, name: v.name, type: v.type, defaultValue: v.default_value, description: v.description, isSystem: !!v.is_system })),
-      aiTools:   aiTools.map(t => ({ id: t.id, name: t.name, description: t.description, collectFields: parseJ(t.collect_fields, []), flowId: t.flow_id, actionType: t.action_type || 'variable', n8nIntegrationId: t.n8n_integration_id })),
-      flows:     flows.map(f => ({ id: f.id, name: f.name, trigger: f.trigger, startNodeId: f.start_node_id, nodes: parseJ(f.nodes, []) })),
-    })
+    const data = await loadPublicAccount(accId)
+    if (!data) return res.status(404).json({ error: 'Cuenta no encontrada' })
+    res.json(data)
   } catch (err) {
     console.error('[GET PUBLIC ACCOUNT]', err)
     res.status(500).json({ error: 'Error interno' })
@@ -205,4 +214,4 @@ const getEffectiveKeys = async (req, res) => {
   }
 }
 
-module.exports = { getPublicAccount, getAccount, updateAccount, getChangeAgentUsage, incrementChangeAgentUsage, getEffectiveKeys }
+module.exports = { getPublicAccount, loadPublicAccount, getAccount, updateAccount, getChangeAgentUsage, incrementChangeAgentUsage, getEffectiveKeys }

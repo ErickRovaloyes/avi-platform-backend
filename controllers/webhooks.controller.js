@@ -3,6 +3,7 @@ const pool = require('../db')
 const { parseJ } = require('../utils')
 const { storeMediaInternal } = require('./media.controller')
 const { downloadWhatsAppMedia, downloadFromUrl } = require('../services/metaMedia')
+const flow = require('../flow/process')
 
 const messageQueue = []
 const sseClients   = new Set()
@@ -102,13 +103,16 @@ const whatsappReceive = async (req, res) => {
   if (!msgs.length) return res.sendStatus(200)
   // ACK immediately to Meta; do the (potentially slow) media download in the background
   res.sendStatus(200)
+  let payload = req.body
   try {
-    const payload = await enrichWhatsAppPayloadWithMedia(accId, agentId, req.body)
-    pushSSE({ type: 'whatsapp', accId, agentId, payload, ts: Date.now() })
+    payload = await enrichWhatsAppPayloadWithMedia(accId, agentId, req.body)
   } catch (e) {
-    console.error('[whatsappReceive]', e)
-    pushSSE({ type: 'whatsapp', accId, agentId, payload: req.body, ts: Date.now() })
+    console.error('[whatsappReceive] media enrich', e)
   }
+  // El flujo se ejecuta EN EL SERVIDOR (la IA responde aunque nadie tenga la
+  // plataforma abierta). pushSSE queda solo como señal para que la UI refresque.
+  pushSSE({ type: 'whatsapp', accId, agentId, payload, ts: Date.now() })
+  flow.processWhatsApp(accId, agentId, payload).catch(e => console.error('[flow WA]', e))
 }
 
 // ── Messenger ─────────────────────────────────────────────────────────────────
@@ -122,13 +126,14 @@ const messengerReceive = async (req, res) => {
   const { accId, agentId } = req.params
   if (req.body?.object !== 'page') return res.sendStatus(200)
   res.sendStatus(200)
+  let payload = req.body
   try {
-    const payload = await enrichMessengerPayloadWithMedia(accId, agentId, req.body)
-    pushSSE({ type: 'messenger', accId, agentId, payload, ts: Date.now() })
+    payload = await enrichMessengerPayloadWithMedia(accId, agentId, req.body)
   } catch (e) {
-    console.error('[messengerReceive]', e)
-    pushSSE({ type: 'messenger', accId, agentId, payload: req.body, ts: Date.now() })
+    console.error('[messengerReceive] media enrich', e)
   }
+  pushSSE({ type: 'messenger', accId, agentId, payload, ts: Date.now() })
+  flow.processMessenger(accId, agentId, payload).catch(e => console.error('[flow FB]', e))
 }
 
 // ── Instagram ─────────────────────────────────────────────────────────────────
@@ -142,13 +147,14 @@ const instagramReceive = async (req, res) => {
   const { accId, agentId } = req.params
   if (req.body?.object !== 'instagram') return res.sendStatus(200)
   res.sendStatus(200)
+  let payload = req.body
   try {
-    const payload = await enrichInstagramPayloadWithMedia(accId, agentId, req.body)
-    pushSSE({ type: 'instagram', accId, agentId, payload, ts: Date.now() })
+    payload = await enrichInstagramPayloadWithMedia(accId, agentId, req.body)
   } catch (e) {
-    console.error('[instagramReceive]', e)
-    pushSSE({ type: 'instagram', accId, agentId, payload: req.body, ts: Date.now() })
+    console.error('[instagramReceive] media enrich', e)
   }
+  pushSSE({ type: 'instagram', accId, agentId, payload, ts: Date.now() })
+  flow.processInstagram(accId, agentId, payload).catch(e => console.error('[flow IG]', e))
 }
 
 // ── SSE stream ────────────────────────────────────────────────────────────────
@@ -183,6 +189,9 @@ const testMessage = (req, res) => {
     payload = { object: 'whatsapp_business_account', entry: [{ id: 'test', changes: [{ field: 'messages', value: { metadata: { phone_number_id: phoneNumberId, display_phone_number: 'TEST' }, contacts: [{ wa_id: from, profile: { name: fromName || 'Test User' } }], messages: [{ id: 'test_' + Date.now(), from, type: 'text', timestamp: String(Date.now()), text: { body: text } }] } }] }] }
   }
   pushSSE({ type, accId, agentId, payload, ts: Date.now() })
+  if (type === 'messenger')      flow.processMessenger(accId, agentId, payload).catch(e => console.error('[flow FB test]', e))
+  else if (type === 'instagram') flow.processInstagram(accId, agentId, payload).catch(e => console.error('[flow IG test]', e))
+  else                           flow.processWhatsApp(accId, agentId, payload).catch(e => console.error('[flow WA test]', e))
   res.json({ ok: true, channel, sseClients: sseClients.size })
 }
 
