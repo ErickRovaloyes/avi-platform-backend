@@ -10,6 +10,7 @@ const getAllTickets = async (req, res) => {
     res.json(tickets.map(t => ({
       id: t.id, accId: t.account_id, accountName: t.account_name,
       subject: t.subject, status: t.status, assignedTo: parseJ(t.assigned_to, null),
+      refs: parseJ(t.refs, []),
       messages: messages.filter(m => m.ticket_id === t.id).map(m => ({
         id: m.id, role: m.role, authorId: m.author_id, authorName: m.author_name,
         content: m.content, ts: m.ts, media: parseJ(m.media, null),
@@ -30,14 +31,14 @@ function previewOf(content, media) {
 }
 
 const createTicket = async (req, res) => {
-  const { accId, accountName, subject, message, authorId, authorName, media = null } = req.body
+  const { accId, accountName, subject, message, authorId, authorName, media = null, refs = [] } = req.body
   const ticketId = 'tkt_' + uid()
   const msgId    = 'msg_' + uid()
   const ts       = Date.now()
   try {
     await pool.query(
-      'INSERT INTO support_tickets (id,account_id,account_name,subject,status,assigned_to,created_at,updated_at) VALUES (?,?,?,?,?,?,?,?)',
-      [ticketId, accId, accountName, subject || 'Soporte', 'open', null, ts, ts]
+      'INSERT INTO support_tickets (id,account_id,account_name,subject,status,assigned_to,refs,created_at,updated_at) VALUES (?,?,?,?,?,?,?,?,?)',
+      [ticketId, accId, accountName, subject || 'Soporte', 'open', null, JSON.stringify(Array.isArray(refs) ? refs : []), ts, ts]
     )
     await pool.query(
       'INSERT INTO support_messages (id,ticket_id,role,author_id,author_name,content,ts,media) VALUES (?,?,?,?,?,?,?,?)',

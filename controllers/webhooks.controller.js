@@ -4,6 +4,7 @@ const { parseJ } = require('../utils')
 const { storeMediaInternal } = require('./media.controller')
 const { downloadWhatsAppMedia, downloadFromUrl } = require('../services/metaMedia')
 const flow = require('../flow/process')
+const flowStore = require('../flow/store')
 
 const messageQueue = []
 const sseClients   = new Set()
@@ -99,7 +100,18 @@ const whatsappVerify = (req, res) => {
 
 const whatsappReceive = async (req, res) => {
   const { accId, agentId } = req.params
-  const msgs = req.body?.entry?.[0]?.changes?.[0]?.value?.messages || []
+  const value = req.body?.entry?.[0]?.changes?.[0]?.value || {}
+  const msgs = value.messages || []
+  const statuses = value.statuses || []
+
+  // Acuses de estado (sent/delivered/read) de mensajes salientes
+  if (!msgs.length && statuses.length) {
+    res.sendStatus(200)
+    for (const st of statuses) {
+      flowStore.updateMessageStatus(st.id, st.status).catch(e => console.error('[WA status]', e.message))
+    }
+    return
+  }
   if (!msgs.length) return res.sendStatus(200)
   // ACK immediately to Meta; do the (potentially slow) media download in the background
   res.sendStatus(200)

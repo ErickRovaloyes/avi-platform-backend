@@ -96,6 +96,29 @@ async function appendMsg(accId, agId, convId, msg) {
   return { id, ts }
 }
 
+// ── Estado de entrega de un mensaje saliente (sent/delivered/read/failed) ───
+// Mapea el id de proveedor (wamid) al mensaje y actualiza su estado sin
+// degradarlo (read > delivered > sent). Emite message:status para la UI.
+const STATUS_RANK = { sent: 1, delivered: 2, read: 3 }
+async function updateMessageStatus(wamid, status) {
+  if (!wamid || !status) return
+  const [[m]] = await pool.query(
+    "SELECT id, conversation_id, metadata FROM messages WHERE JSON_UNQUOTE(JSON_EXTRACT(metadata,'$.waMessageId'))=? LIMIT 1",
+    [String(wamid)]
+  )
+  if (!m) return
+  const meta = parseJ(m.metadata, {})
+  // No degradar el estado (un 'delivered' tardío no debe pisar un 'read')
+  if (status !== 'failed' && (STATUS_RANK[status] || 0) <= (STATUS_RANK[meta.status] || 0)) return
+  meta.status = status
+  await pool.query('UPDATE messages SET metadata=? WHERE id=?', [JSON.stringify(meta), m.id])
+  const [[c]] = await pool.query('SELECT account_id, agent_id FROM conversations WHERE id=?', [m.conversation_id])
+  if (c) {
+    socket.emit(c.account_id, 'message:status', { accId: c.account_id, agId: c.agent_id, convId: m.conversation_id, messageId: m.id, status })
+    socket.emitToConv(m.conversation_id, 'message:status', { convId: m.conversation_id, messageId: m.id, status })
+  }
+}
+
 // ── Update conversation (labels, ai toggle, flowRunning, assignedTo, etc) ───
 async function updateConvo(accId, agId, convId, updates) {
   // NB: flowRunning is handled in-memory by the engine (no DB column), so it's
@@ -159,5 +182,5 @@ async function dispatchN8N(integrationId, payload, opts = {}) {
 module.exports = {
   loadAccount, readConvos, appendMsg, updateConvo, setLocalVar, appendDebugEntry,
   createOrGetWhatsAppConvo, createOrGetMessengerConvo, createOrGetInstagramConvo,
-  recordTokenUsage, dispatchN8N, messageExistsByProviderId,
+  recordTokenUsage, dispatchN8N, messageExistsByProviderId, updateMessageStatus,
 }

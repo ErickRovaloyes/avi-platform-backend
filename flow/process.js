@@ -86,7 +86,7 @@ async function processWhatsApp(accId, agentId, body) {
         triggerContext: { message: msg.text, _lastUserMessage: msg.text },
         outbound: async (text) => {
           if (channel?.config?.phoneNumberId && channel?.config?.accessToken) {
-            await sendWhatsAppText({ phoneNumberId: channel.config.phoneNumberId, accessToken: channel.config.accessToken, to: msg.from, text })
+            return await sendWhatsAppText({ phoneNumberId: channel.config.phoneNumberId, accessToken: channel.config.accessToken, to: msg.from, text })
           }
         },
       })
@@ -137,7 +137,7 @@ async function processMessenger(accId, agentId, body) {
         flowId: agent.fallbackFlowId, accId, agId: agentId, convId,
         triggerContext: { message: msg.text, _lastUserMessage: msg.text },
         outbound: async (text) => {
-          await sendMessengerText({ pageId: channel.config.pageId, pageAccessToken: channel.config.pageAccessToken, recipientId: msg.senderId, text })
+          return await sendMessengerText({ pageId: channel.config.pageId, pageAccessToken: channel.config.pageAccessToken, recipientId: msg.senderId, text })
         },
       })
     } else {
@@ -187,7 +187,7 @@ async function processInstagram(accId, agentId, body) {
         flowId: agent.fallbackFlowId, accId, agId: agentId, convId,
         triggerContext: { message: msg.text, _lastUserMessage: msg.text },
         outbound: async (text) => {
-          await sendInstagramText({ igAccountId: channel.config.igAccountId, pageAccessToken: channel.config.pageAccessToken, recipientId: msg.senderId, text })
+          return await sendInstagramText({ igAccountId: channel.config.igAccountId, pageAccessToken: channel.config.pageAccessToken, recipientId: msg.senderId, text })
         },
       })
     } else {

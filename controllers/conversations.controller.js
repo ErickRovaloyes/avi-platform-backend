@@ -243,6 +243,8 @@ const sendManual = async (req, res) => {
     )
     if (!conv) return res.status(404).json({ error: 'Conversación no encontrada' })
     const type = conv.channel_type
+    let providerMsgId = null
+    let status = null
 
     // Entrega al canal externo si corresponde
     try {
@@ -250,17 +252,20 @@ const sendManual = async (req, res) => {
         const ch = await resolveChannelConfig(accId, agId, 'whatsapp', conv.channel_id)
         const cfg = ch?.config || {}
         if (!cfg.phoneNumberId || !cfg.accessToken) return res.status(400).json({ error: 'Canal WhatsApp sin configurar' })
-        await sendWhatsAppText({ phoneNumberId: cfg.phoneNumberId, accessToken: cfg.accessToken, to: conv.wa_from, text })
+        const r = await sendWhatsAppText({ phoneNumberId: cfg.phoneNumberId, accessToken: cfg.accessToken, to: conv.wa_from, text })
+        providerMsgId = r?.messages?.[0]?.id || null; status = 'sent'
       } else if (type === 'messenger' && conv.messenger_from) {
         const ch = await resolveChannelConfig(accId, agId, 'messenger', conv.channel_id)
         const cfg = ch?.config || {}
         if (!cfg.pageId || !cfg.pageAccessToken) return res.status(400).json({ error: 'Canal Messenger sin configurar' })
-        await sendMessengerText({ pageId: cfg.pageId, pageAccessToken: cfg.pageAccessToken, recipientId: conv.messenger_from, text })
+        const r = await sendMessengerText({ pageId: cfg.pageId, pageAccessToken: cfg.pageAccessToken, recipientId: conv.messenger_from, text })
+        providerMsgId = r?.message_id || null; status = 'sent'
       } else if (type === 'instagram' && conv.ig_from) {
         const ch = await resolveChannelConfig(accId, agId, 'instagram', conv.channel_id)
         const cfg = ch?.config || {}
         if (!cfg.igAccountId || !cfg.pageAccessToken) return res.status(400).json({ error: 'Canal Instagram sin configurar' })
-        await sendInstagramText({ igAccountId: cfg.igAccountId, pageAccessToken: cfg.pageAccessToken, recipientId: conv.ig_from, text })
+        const r = await sendInstagramText({ igAccountId: cfg.igAccountId, pageAccessToken: cfg.pageAccessToken, recipientId: conv.ig_from, text })
+        providerMsgId = r?.message_id || null; status = 'sent'
       }
       // webchat / test: no hay envío externo; solo se persiste
     } catch (e) {
@@ -271,6 +276,8 @@ const sendManual = async (req, res) => {
       role: 'assistant', sender: 'human',
       senderName: senderName || req.user?.name || 'Asesor',
       content: String(text), channel: type, channelId: conv.channel_id,
+      ...(providerMsgId ? { waMessageId: providerMsgId } : {}),
+      ...(status ? { status } : {}),
     })
     res.json({ ok: true, ...out })
   } catch (err) {

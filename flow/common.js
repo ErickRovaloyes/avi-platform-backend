@@ -23,22 +23,31 @@ function logDebug(ctx, type, title, detail) {
 }
 
 // Envía un mensaje del bot a la conversación.
-// 1) Persiste en DB (emite message:new → la UI se actualiza en tiempo real).
-// 2) Entrega al canal externo (WhatsApp/Messenger/IG) vía ctx._outbound.
+// 1) Entrega al canal externo (WhatsApp/Messenger/IG) vía ctx._outbound y captura
+//    el id del proveedor (wamid) para poder rastrear su estado (sent/delivered/read).
+// 2) Persiste en DB con ese id + estado (emite message:new → la UI se actualiza).
 async function sendBotMsg(ctx, content, metadata = {}) {
   const text = typeof content === 'string' ? content : String(content || '')
-  // Persistimos primero para que el operador vea el mensaje del bot en el inbox.
+  let providerMsgId = null
+  let status        = null
+  if (ctx?._outbound && text) {
+    try {
+      const r = await ctx._outbound(text)
+      providerMsgId = r?.messages?.[0]?.id || r?.message_id || null
+      status = 'sent'
+    } catch (e) {
+      status = 'failed'
+      logDebug(ctx, 'error', `✗ Error enviando al canal: ${e.message}`, {})
+    }
+  }
   await store.appendMsg(ctx.accId, ctx.agId, ctx.convId, {
     role: 'assistant', sender: 'ai',
     content: text,
     ts: Date.now(), fromFlow: true,
+    ...(providerMsgId ? { waMessageId: providerMsgId } : {}),
+    ...(status ? { status } : {}),
     ...metadata,
   })
-  // Entrega al canal real. Si no hay _outbound (no debería pasar en webhooks),
-  // el mensaje queda solo en el inbox.
-  if (ctx?._outbound && text) {
-    try { await ctx._outbound(text) } catch (e) { logDebug(ctx, 'error', `✗ Error enviando al canal: ${e.message}`, {}) }
-  }
 }
 
 function getVars(ctx) { return ctx?.variables || {} }
