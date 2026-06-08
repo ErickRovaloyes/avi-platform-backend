@@ -160,7 +160,9 @@ const sseStream = (req, res) => {
   res.setHeader('Access-Control-Allow-Origin', '*')
   res.flushHeaders()
   const hb = setInterval(() => { try { res.write(': heartbeat\n\n') } catch { clearInterval(hb) } }, 20000)
-  messageQueue.slice(-10).forEach(e => res.write(`data: ${JSON.stringify(e)}\n\n`))
+  // NO reenviar eventos al reconectar: cada evento dispara el envío real de la
+  // respuesta al cliente (WhatsApp/Messenger/IG) desde el navegador. Reenviarlos
+  // al recargar/redeploy provocaba reenvío de respuestas ya entregadas.
   sseClients.add(res)
   req.on('close', () => { clearInterval(hb); sseClients.delete(res) })
 }
