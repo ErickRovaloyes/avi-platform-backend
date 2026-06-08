@@ -24,6 +24,35 @@ async function sendWhatsAppText({ phoneNumberId, accessToken, to, text }) {
   return res.json()
 }
 
+// Envía una plantilla HSM aprobada por Meta.
+async function sendWhatsAppTemplate({ phoneNumberId, accessToken, to, templateName, languageCode = 'es', components = [] }) {
+  const res = await fetch(`${GRAPH_BASE}/${phoneNumberId}/messages`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${accessToken}` },
+    body: JSON.stringify({
+      messaging_product: 'whatsapp', to, type: 'template',
+      template: { name: templateName, language: { code: languageCode }, components: components || [] },
+    }),
+  })
+  if (!res.ok) {
+    const err = await res.json().catch(() => ({}))
+    throw new Error(err?.error?.message || `HTTP ${res.status}`)
+  }
+  return res.json()
+}
+
+// Lista las plantillas de mensaje de un WhatsApp Business Account (WABA).
+async function listWhatsAppTemplates({ businessAccountId, accessToken }) {
+  const url = `${GRAPH_BASE}/${businessAccountId}/message_templates?fields=name,status,language,category,components&limit=200`
+  const res = await fetch(url, { headers: { 'Authorization': `Bearer ${accessToken}` } })
+  if (!res.ok) {
+    const err = await res.json().catch(() => ({}))
+    throw new Error(err?.error?.message || `HTTP ${res.status}`)
+  }
+  const data = await res.json()
+  return data?.data || []
+}
+
 function parseWhatsAppWebhook(body) {
   const results = []
   try {
@@ -154,6 +183,7 @@ function parseInstagramWebhook(body) {
 
 module.exports = {
   sendWhatsAppText, parseWhatsAppWebhook,
+  sendWhatsAppTemplate, listWhatsAppTemplates,
   sendMessengerText, parseMessengerWebhook,
   sendInstagramText, parseInstagramWebhook,
 }

@@ -16,6 +16,15 @@ const list = async (req, res) => {
   } catch (err) { res.status(500).json({ error: 'Error interno' }) }
 }
 
+const getOne = async (req, res) => {
+  const { accId, id } = req.params
+  try {
+    const [[row]] = await pool.query('SELECT * FROM contacts WHERE id=? AND account_id=?', [id, accId])
+    if (!row) return res.status(404).json({ error: 'Contacto no encontrado' })
+    res.json(mapContact(row))
+  } catch (err) { res.status(500).json({ error: 'Error interno' }) }
+}
+
 const create = async (req, res) => {
   const { accId } = req.params
   const { id, name = '', email = '', phone = '', ...extra } = req.body || {}
@@ -79,4 +88,4 @@ const listConversations = async (req, res) => {
   }
 }
 
-module.exports = { list, create, update, remove, listConversations }
+module.exports = { list, getOne, create, update, remove, listConversations }

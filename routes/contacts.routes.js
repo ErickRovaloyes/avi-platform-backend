@@ -6,6 +6,7 @@ const ctrl = require('../controllers/contacts.controller')
 router.get('/accounts/:accId/contacts',                    authMiddleware, ctrl.list)
 router.post('/accounts/:accId/contacts',                   authMiddleware, ctrl.create)
 router.get('/accounts/:accId/contacts/:id/conversations',  authMiddleware, ctrl.listConversations)
+router.get('/accounts/:accId/contacts/:id',                authMiddleware, ctrl.getOne)
 router.put('/accounts/:accId/contacts/:id',                authMiddleware, ctrl.update)
 router.delete('/accounts/:accId/contacts/:id',             authMiddleware, ctrl.remove)
 
