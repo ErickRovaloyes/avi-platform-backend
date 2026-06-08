@@ -99,8 +99,13 @@ app.get('/api/whatsapp/events', (req, res) => {
     try { res.write(': heartbeat\n\n') } catch { clearInterval(heartbeat) }
   }, 20000)
 
-  // Replay last 10 events on reconnect
-  messageQueue.slice(-10).forEach(event => res.write(`data: ${JSON.stringify(event)}\n\n`))
+  // IMPORTANTE: NO se reenvían eventos al reconectar.
+  // Cada evento de webhook dispara efectos reales en el navegador (ejecuta el
+  // flujo y ENVÍA respuestas a WhatsApp/Messenger). Reenviar los eventos al
+  // reconectar (recarga de página, redeploy del frontend) provocaba que se
+  // reprocesaran mensajes antiguos y se reenviaran respuestas ya entregadas.
+  // Un mensaje perdido durante una desconexión breve es preferible a reenviar
+  // respuestas a clientes reales.
 
   sseClients.add(res)
   console.log(`[SSE] +1 cliente (total: ${sseClients.size})`)
