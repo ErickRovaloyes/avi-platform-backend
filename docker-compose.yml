@@ -1,0 +1,66 @@
+services:
+  avi-mysql:
+    image: mysql:8
+    container_name: avi-mysql
+    restart: unless-stopped
+    environment:
+      MYSQL_ROOT_PASSWORD: ${MYSQL_ROOT_PASSWORD}
+      MYSQL_DATABASE: avi_platform
+      MYSQL_USER: avi_user
+      MYSQL_PASSWORD: ${MYSQL_PASSWORD}
+    volumes:
+      - avi-mysql-data:/var/lib/mysql
+      - ./backend/schema.sql:/docker-entrypoint-initdb.d/schema.sql
+    networks:
+      - avi-network
+
+  avi-backend:
+    build: ./backend
+    container_name: avi-backend
+    restart: unless-stopped
+    environment:
+      DB_HOST: avi-mysql
+      DB_PORT: 3306
+      DB_USER: avi_user
+      DB_PASS: ${MYSQL_PASSWORD}
+      DB_NAME: avi_platform
+      JWT_SECRET: ${JWT_SECRET}
+      PORT: 3001
+    depends_on:
+      avi-mysql:
+        condition: service_started
+    networks:
+      - avi-network
+
+  avi-nginx:
+    build:
+      context: ./frontend
+      args:
+        VITE_API_URL: ${VITE_API_URL}
+    container_name: avi-nginx
+    restart: unless-stopped
+    ports:
+      - "8080:80"
+    depends_on:
+      - avi-backend
+    networks:
+      - avi-network
+      - traefik-net
+    labels:
+      - "traefik.enable=true"
+      - "traefik.http.routers.avi.rule=Host(`platform.aviasistente.com`)"
+      - "traefik.http.routers.avi.entrypoints=web,websecure"
+      - "traefik.http.routers.avi.tls=true"
+      - "traefik.http.routers.avi.tls.certresolver=mytlschallenge"
+      - "traefik.http.services.avi.loadbalancer.server.port=80"
+      - "traefik.docker.network=n8n_default"
+
+volumes:
+  avi-mysql-data:
+
+networks:
+  avi-network:
+    driver: bridge
+  traefik-net:
+    external: true
+    name: n8n_default
