@@ -34,9 +34,8 @@ async function executeFlow({ flowId, accId, agId, convId, triggerContext = {}, t
       _trace: trace,
       _outbound: outbound,
     }
-    logDebug(accId, agId, convId, 'flow_run', `▶ Flujo "${flow.name}" iniciado`, { trigger: flow.trigger })
+    logDebug(accId, agId, convId, 'flow_start', flow.name || 'Flujo', { trigger: flow.trigger, flowId })
     await runNode(flow.startNodeId, ctx)
-    logDebug(accId, agId, convId, 'flow_run', `✓ Flujo "${flow.name}" terminado`, {})
   } catch (err) {
     logDebug(accId, agId, convId, 'error', `✗ Error en flujo: ${err.message}`, {})
     trace.status = 'error'
@@ -82,7 +81,7 @@ async function runNode(nodeId, ctx) {
     return
   }
 
-  logDebug(ctx.accId, ctx.agId, ctx.convId, 'flow_run', `→ [${def.label || node.type}] ejecutando`, { nodeId })
+  logDebug(ctx.accId, ctx.agId, ctx.convId, 'flow_step', def.label || node.type, { nodeId, type: node.type })
 
   ctx._nextOverride = null
   ctx._suppressDefaultNext = false
