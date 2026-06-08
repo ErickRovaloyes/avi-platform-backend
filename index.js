@@ -26,6 +26,20 @@ io.use((sock, next) => {
   next()
 })
 
+// Presencia de asesores por conversación: convId -> Map(socketId -> {userId,userName})
+const convPresence = new Map()
+function emitPresence(convId) {
+  const m = convPresence.get(convId)
+  const users = m ? [...m.values()] : []
+  io.to(`conv:${convId}`).emit('presence:list', { convId, users })
+}
+function removePresence(sock, convId) {
+  if (!convId) return
+  const m = convPresence.get(convId)
+  if (m) { m.delete(sock.id); if (m.size === 0) convPresence.delete(convId) }
+  emitPresence(convId)
+}
+
 io.on('connection', sock => {
   const u = sock.user
   if (u) {
@@ -37,6 +51,27 @@ io.on('connection', sock => {
   // Allow guests to join a per-conversation room for real-time webchat
   sock.on('join:conv',  convId => sock.join(`conv:${convId}`))
   sock.on('leave:conv', convId => sock.leave(`conv:${convId}`))
+
+  // ── Presencia de asesores en un chat (quién lo está viendo ahora) ──────────
+  sock.on('presence:join', ({ convId, userId, userName }) => {
+    if (!convId || !userId) return
+    // Un socket solo está presente en un chat a la vez: limpia el anterior
+    if (sock.data.presenceConv && sock.data.presenceConv !== convId) {
+      removePresence(sock, sock.data.presenceConv)
+    }
+    sock.join(`conv:${convId}`)
+    sock.data.presenceConv = convId
+    if (!convPresence.has(convId)) convPresence.set(convId, new Map())
+    convPresence.get(convId).set(sock.id, { userId, userName: userName || 'Asesor' })
+    emitPresence(convId)
+  })
+  sock.on('presence:leave', ({ convId }) => {
+    removePresence(sock, convId || sock.data.presenceConv)
+    if (sock.data.presenceConv === convId) sock.data.presenceConv = null
+  })
+  sock.on('disconnect', () => {
+    if (sock.data.presenceConv) removePresence(sock, sock.data.presenceConv)
+  })
 })
 
 // ── Public routes (no auth) ───────────────────────────────────────────────────

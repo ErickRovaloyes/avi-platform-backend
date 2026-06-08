@@ -73,13 +73,14 @@ const addMessage = async (req, res) => {
 
 const updateTicket = async (req, res) => {
   const { ticketId } = req.params
-  const { status, assignedTo } = req.body
+  const { status, assignedTo, refs } = req.body
   try {
     const [[tkt]] = await pool.query('SELECT account_id FROM support_tickets WHERE id=?', [ticketId])
     if (!tkt) return res.status(404).json({ error: 'Ticket no encontrado' })
     const sets = ['updated_at=?']; const vals = [Date.now()]
     if (status     !== undefined) { sets.push('status=?');      vals.push(status) }
     if (assignedTo !== undefined) { sets.push('assigned_to=?'); vals.push(JSON.stringify(assignedTo)) }
+    if (refs       !== undefined) { sets.push('refs=?');        vals.push(JSON.stringify(Array.isArray(refs) ? refs : [])) }
     vals.push(ticketId)
     await pool.query(`UPDATE support_tickets SET ${sets.join(',')} WHERE id=?`, vals)
     socket.broadcast('support:updated', { accId: tkt.account_id })
