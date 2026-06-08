@@ -218,16 +218,15 @@ const appendMessage = async (req, res) => {
 }
 
 // Resuelve la config del canal de un agente (por id, o por tipo si no hay id).
+// La config de cada canal vive dentro del JSON `channels` de la tabla agents.
 async function resolveChannelConfig(accId, agId, channelType, channelId) {
-  const [[ag]] = await pool.query('SELECT channels, whatsapp FROM agents WHERE id=? AND account_id=?', [agId, accId])
+  const [[ag]] = await pool.query('SELECT channels FROM agents WHERE id=? AND account_id=?', [agId, accId])
   const channels = parseJ(ag?.channels, [])
   const ofType = channels.filter(c => c.type === channelType)
   const chosen = (channelId && ofType.find(c => c.id === channelId))
     || ofType.find(c => c.status === 'connected')
     || ofType[0]
-  if (chosen) return chosen
-  if (channelType === 'whatsapp' && ag?.whatsapp) return { id: 'whatsapp', config: parseJ(ag.whatsapp, {}) }
-  return null
+  return chosen || null
 }
 
 // Envío MANUAL del asesor: entrega el texto al canal real (WhatsApp/Messenger/IG)
