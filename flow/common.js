@@ -62,6 +62,10 @@ async function setVarBoth(ctx, key, value) {
   ctx.variables[canonicalId] = value
   if (def?.name) ctx.variables[def.name] = value
   try { await store.setLocalVar(ctx.accId, ctx.agId, ctx.convId, canonicalId, value) } catch {}
+  // Traza para el modo debug del chat ("valor de variable cambiado")
+  const label = def?.name || key
+  const shown = typeof value === 'string' ? value : JSON.stringify(value)
+  logDebug(ctx, 'variable_set', `Variable "${label}" = ${String(shown).slice(0, 120)}`, { key: canonicalId, value })
 }
 
 function resolveVar(ctx, idOrName) {
