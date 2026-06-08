@@ -1,6 +1,6 @@
 'use strict'
 const pool = require('../db')
-const { uid } = require('../utils')
+const { uid, parseJ } = require('../utils')
 
 // Targets: 'contact' | 'deal' | 'conversation' | 'company'
 
@@ -78,6 +78,7 @@ const listTasks = async (req, res) => {
       title: r.title, description: r.description,
       dueAt: r.due_at, assigneeId: r.assignee_id, assigneeName: r.assignee_name,
       status: r.status, priority: r.priority,
+      refs: parseJ(r.refs, []),
       createdBy: r.created_by, createdAt: r.created_at, completedAt: r.completed_at,
     })))
   } catch (err) { res.status(500).json({ error: 'Error interno' }) }
@@ -85,14 +86,14 @@ const listTasks = async (req, res) => {
 
 const createTask = async (req, res) => {
   const { accId } = req.params
-  const { targetType = null, targetId = null, title = '', description = '', dueAt = null, assigneeId = null, assigneeName = '', priority = 'normal' } = req.body || {}
+  const { targetType = null, targetId = null, title = '', description = '', dueAt = null, assigneeId = null, assigneeName = '', priority = 'normal', refs = [] } = req.body || {}
   if (!title.trim()) return res.status(400).json({ error: 'title requerido' })
   const id = 'task_' + uid()
   try {
     await pool.query(
-      `INSERT INTO crm_tasks (id, account_id, target_type, target_id, title, description, due_at, assignee_id, assignee_name, status, priority, created_by, created_at)
-       VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)`,
-      [id, accId, targetType, targetId, title.trim(), description, dueAt, assigneeId, assigneeName, 'open', priority, req.user?.name || '', Date.now()]
+      `INSERT INTO crm_tasks (id, account_id, target_type, target_id, title, description, due_at, assignee_id, assignee_name, status, priority, refs, created_by, created_at)
+       VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?)`,
+      [id, accId, targetType, targetId, title.trim(), description, dueAt, assigneeId, assigneeName, 'open', priority, JSON.stringify(Array.isArray(refs) ? refs : []), req.user?.name || '', Date.now()]
     )
     if (targetType && targetId) {
       await logActivity({ accId, targetType, targetId, kind: 'task', title: 'Nueva tarea: ' + title, detail: assigneeName ? `Asignada a ${assigneeName}` : '', authorId: req.user?.id, authorName: req.user?.name })
@@ -103,7 +104,7 @@ const createTask = async (req, res) => {
 
 const updateTask = async (req, res) => {
   const { accId, id } = req.params
-  const { title, description, dueAt, assigneeId, assigneeName, status, priority } = req.body || {}
+  const { title, description, dueAt, assigneeId, assigneeName, status, priority, refs } = req.body || {}
   try {
     const sets = []; const vals = []
     if (title       !== undefined) { sets.push('title=?');         vals.push(title) }
@@ -111,6 +112,7 @@ const updateTask = async (req, res) => {
     if (dueAt       !== undefined) { sets.push('due_at=?');        vals.push(dueAt) }
     if (assigneeId  !== undefined) { sets.push('assignee_id=?');   vals.push(assigneeId) }
     if (assigneeName!== undefined) { sets.push('assignee_name=?'); vals.push(assigneeName) }
+    if (refs        !== undefined) { sets.push('refs=?');          vals.push(JSON.stringify(Array.isArray(refs) ? refs : [])) }
     if (status      !== undefined) {
       sets.push('status=?'); vals.push(status)
       if (status === 'done') { sets.push('completed_at=?'); vals.push(Date.now()) }

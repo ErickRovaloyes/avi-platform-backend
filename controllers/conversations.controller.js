@@ -2,6 +2,9 @@
 const pool   = require('../db')
 const socket = require('../services/socket')
 const { uid, parseJ } = require('../utils')
+const {
+  sendWhatsAppText, sendMessengerText, sendInstagramText,
+} = require('../services/metaSend')
 
 // Finds an existing contact for this conversation sender or creates one.
 // Non-critical: errors are swallowed so conversation creation is never blocked.
@@ -173,37 +176,106 @@ const markRead = async (req, res) => {
   } catch (err) { res.status(500).json({ error: 'Error interno' }) }
 }
 
-const appendMessage = async (req, res) => {
-  const { accId, agId, convId } = req.params
-  const { sender, content, ...rest } = req.body
+// Core reutilizable: inserta el mensaje, actualiza la conversación y emite los
+// eventos socket. Usado por el handler HTTP y por el envío manual del asesor.
+async function appendMessageCore(accId, agId, convId, body) {
+  const { sender, content, ...rest } = body
   const id       = 'msg_' + uid()
   const ts       = Date.now()
   const metadata = Object.keys(rest).length ? rest : null
+  await pool.query('INSERT INTO messages (id,conversation_id,sender,content,metadata,ts) VALUES (?,?,?,?,?,?)',
+    [id, convId, sender, content, metadata ? JSON.stringify(metadata) : null, ts])
+  const sets = ['preview=?', 'updated_at=?']
+  const vals = [(content || '').slice(0, 60), ts]
+  if (sender === 'user') sets.push('unread=1')
+  vals.push(convId, accId)
+  await pool.query(`UPDATE conversations SET ${sets.join(',')} WHERE id=? AND account_id=?`, vals)
+
+  if (sender === 'user' && content) {
+    try {
+      const [[c]] = await pool.query('SELECT local_vars FROM conversations WHERE id=? AND account_id=?', [convId, accId])
+      const lv = parseJ(c?.local_vars, {})
+      lv._lastUserMessage = content
+      await pool.query('UPDATE conversations SET local_vars=? WHERE id=? AND account_id=?', [JSON.stringify(lv), convId, accId])
+    } catch { /* non-critical */ }
+  }
+
+  const msg = { id, sender, content, ts, ...rest }
+  socket.emit(accId, 'message:new', { accId, agId, convId, message: msg })
+  socket.emitToConv(convId, 'message:new', { convId, message: msg })
+  return { id, ts }
+}
+
+const appendMessage = async (req, res) => {
+  const { accId, agId, convId } = req.params
   try {
-    await pool.query('INSERT INTO messages (id,conversation_id,sender,content,metadata,ts) VALUES (?,?,?,?,?,?)',
-      [id, convId, sender, content, metadata ? JSON.stringify(metadata) : null, ts])
-    const sets = ['preview=?', 'updated_at=?']
-    const vals = [(content || '').slice(0, 60), ts]
-    if (sender === 'user') sets.push('unread=1')
-    vals.push(convId, accId)
-    await pool.query(`UPDATE conversations SET ${sets.join(',')} WHERE id=? AND account_id=?`, vals)
-
-    // Maintain the internal system variable {{_lastUserMessage}} on every user message
-    if (sender === 'user' && content) {
-      try {
-        const [[c]] = await pool.query('SELECT local_vars FROM conversations WHERE id=? AND account_id=?', [convId, accId])
-        const lv = parseJ(c?.local_vars, {})
-        lv._lastUserMessage = content
-        await pool.query('UPDATE conversations SET local_vars=? WHERE id=? AND account_id=?', [JSON.stringify(lv), convId, accId])
-      } catch { /* non-critical */ }
-    }
-
-    const msg = { id, sender, content, ts, ...rest }
-    socket.emit(accId, 'message:new', { accId, agId, convId, message: msg })
-    socket.emitToConv(convId, 'message:new', { convId, message: msg })
-    res.json({ id, ts })
+    const out = await appendMessageCore(accId, agId, convId, req.body)
+    res.json(out)
   } catch (err) {
     console.error('[POST MSG]', err)
+    res.status(500).json({ error: 'Error interno' })
+  }
+}
+
+// Resuelve la config del canal de un agente (por id, o por tipo si no hay id).
+async function resolveChannelConfig(accId, agId, channelType, channelId) {
+  const [[ag]] = await pool.query('SELECT channels, whatsapp FROM agents WHERE id=? AND account_id=?', [agId, accId])
+  const channels = parseJ(ag?.channels, [])
+  const ofType = channels.filter(c => c.type === channelType)
+  const chosen = (channelId && ofType.find(c => c.id === channelId))
+    || ofType.find(c => c.status === 'connected')
+    || ofType[0]
+  if (chosen) return chosen
+  if (channelType === 'whatsapp' && ag?.whatsapp) return { id: 'whatsapp', config: parseJ(ag.whatsapp, {}) }
+  return null
+}
+
+// Envío MANUAL del asesor: entrega el texto al canal real (WhatsApp/Messenger/IG)
+// y lo persiste en la conversación. En webchat solo persiste (el visitante lo
+// recibe por socket). Esto arregla que las respuestas manuales no llegaban.
+const sendManual = async (req, res) => {
+  const { accId, agId, convId } = req.params
+  const { text, senderName } = req.body || {}
+  if (!text || !String(text).trim()) return res.status(400).json({ error: 'Texto vacío' })
+  try {
+    const [[conv]] = await pool.query(
+      'SELECT channel_type, channel_id, wa_from, messenger_from, ig_from FROM conversations WHERE id=? AND account_id=?',
+      [convId, accId]
+    )
+    if (!conv) return res.status(404).json({ error: 'Conversación no encontrada' })
+    const type = conv.channel_type
+
+    // Entrega al canal externo si corresponde
+    try {
+      if (type === 'whatsapp' && conv.wa_from) {
+        const ch = await resolveChannelConfig(accId, agId, 'whatsapp', conv.channel_id)
+        const cfg = ch?.config || {}
+        if (!cfg.phoneNumberId || !cfg.accessToken) return res.status(400).json({ error: 'Canal WhatsApp sin configurar' })
+        await sendWhatsAppText({ phoneNumberId: cfg.phoneNumberId, accessToken: cfg.accessToken, to: conv.wa_from, text })
+      } else if (type === 'messenger' && conv.messenger_from) {
+        const ch = await resolveChannelConfig(accId, agId, 'messenger', conv.channel_id)
+        const cfg = ch?.config || {}
+        if (!cfg.pageId || !cfg.pageAccessToken) return res.status(400).json({ error: 'Canal Messenger sin configurar' })
+        await sendMessengerText({ pageId: cfg.pageId, pageAccessToken: cfg.pageAccessToken, recipientId: conv.messenger_from, text })
+      } else if (type === 'instagram' && conv.ig_from) {
+        const ch = await resolveChannelConfig(accId, agId, 'instagram', conv.channel_id)
+        const cfg = ch?.config || {}
+        if (!cfg.igAccountId || !cfg.pageAccessToken) return res.status(400).json({ error: 'Canal Instagram sin configurar' })
+        await sendInstagramText({ igAccountId: cfg.igAccountId, pageAccessToken: cfg.pageAccessToken, recipientId: conv.ig_from, text })
+      }
+      // webchat / test: no hay envío externo; solo se persiste
+    } catch (e) {
+      return res.status(502).json({ error: e.message || 'No se pudo entregar el mensaje al canal' })
+    }
+
+    const out = await appendMessageCore(accId, agId, convId, {
+      role: 'assistant', sender: 'human',
+      senderName: senderName || req.user?.name || 'Asesor',
+      content: String(text), channel: type, channelId: conv.channel_id,
+    })
+    res.json({ ok: true, ...out })
+  } catch (err) {
+    console.error('[SEND MANUAL]', err)
     res.status(500).json({ error: 'Error interno' })
   }
 }
@@ -330,7 +402,7 @@ const createSocial = async (req, res) => {
 
 module.exports = {
   listConvos, getConvo, createConvo, updateConvo, markRead,
-  appendMessage, appendDebug, patchVars, getGuest,
+  appendMessage, sendManual, appendDebug, patchVars, getGuest,
   createWhatsApp, createMessenger, createInstagram, createSocial,
   // Reusable cores for the server-side flow engine
   createOrGetSocialConvo,

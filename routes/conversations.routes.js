@@ -10,6 +10,7 @@ router.post('/:accId/:agId',                            optionalAuth, ctrl.creat
 router.put('/:accId/:agId/:convId',                     optionalAuth, ctrl.updateConvo)
 router.put('/:accId/:agId/:convId/read',                optionalAuth, ctrl.markRead)
 router.post('/:accId/:agId/:convId/messages',           optionalAuth, ctrl.appendMessage)
+router.post('/:accId/:agId/:convId/send-manual',        optionalAuth, ctrl.sendManual)
 router.post('/:accId/:agId/:convId/debug',              optionalAuth, ctrl.appendDebug)
 router.patch('/:accId/:agId/:convId/vars',              optionalAuth, ctrl.patchVars)
 router.post('/:accId/:agId/whatsapp',                   optionalAuth, ctrl.createWhatsApp)

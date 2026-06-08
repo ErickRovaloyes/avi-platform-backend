@@ -147,6 +147,7 @@ app.use('/api',                webhookRoutes)
        INDEX idx_api_keys_acc  (account_id),
        INDEX idx_api_keys_hash (key_hash)
      )`,
+    "ALTER TABLE crm_tasks ADD COLUMN refs JSON",
     "ALTER TABLE ai_tools ADD COLUMN action_type VARCHAR(20) DEFAULT 'variable'",
     "ALTER TABLE ai_tools ADD COLUMN n8n_integration_id VARCHAR(50)",
     "ALTER TABLE conversations     ADD COLUMN assigned_to JSON",
