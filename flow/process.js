@@ -60,6 +60,11 @@ async function processWhatsApp(accId, agentId, body) {
 
     const convId = await store.createOrGetWhatsAppConvo(accId, agentId, msg.from, msg.fromName, channel?.id)
 
+    // Idempotencia persistente: si este waMessageId ya se guardó, no reprocesar.
+    if (await store.messageExistsByProviderId(convId, msg.messageId)) {
+      console.log('[flow/process] WA ya procesado en DB:', msg.messageId); continue
+    }
+
     await store.appendMsg(accId, agentId, convId, {
       role: 'user', sender: 'user',
       senderName: msg.fromName || msg.from,
@@ -108,11 +113,16 @@ async function processMessenger(accId, agentId, body) {
 
     const convId = await store.createOrGetMessengerConvo(accId, agentId, msg.senderId, msg.senderName, channel.id)
 
+    if (await store.messageExistsByProviderId(convId, msg.messageId)) {
+      console.log('[flow/process] FB ya procesado en DB:', msg.messageId); continue
+    }
+
     await store.appendMsg(accId, agentId, convId, {
       role: 'user', sender: 'user',
       senderName: msg.senderName || `FB #${(msg.senderId || '').slice(-4)}`,
       content: msg.text || '',
       ts: Date.now(),
+      providerMsgId: msg.messageId,
       channel: 'messenger', channelId: channel.id,
       ...(msg.internalMedia ? {
         mediaId: msg.internalMedia.mediaId, kind: msg.internalMedia.kind,
@@ -153,11 +163,16 @@ async function processInstagram(accId, agentId, body) {
 
     const convId = await store.createOrGetInstagramConvo(accId, agentId, msg.senderId, msg.senderName, channel.id)
 
+    if (await store.messageExistsByProviderId(convId, msg.messageId)) {
+      console.log('[flow/process] IG ya procesado en DB:', msg.messageId); continue
+    }
+
     await store.appendMsg(accId, agentId, convId, {
       role: 'user', sender: 'user',
       senderName: msg.senderName || `IG #${(msg.senderId || '').slice(-4)}`,
       content: msg.text || '',
       ts: Date.now(),
+      providerMsgId: msg.messageId,
       channel: 'instagram', channelId: channel.id,
       ...(msg.internalMedia ? {
         mediaId: msg.internalMedia.mediaId, kind: msg.internalMedia.kind,

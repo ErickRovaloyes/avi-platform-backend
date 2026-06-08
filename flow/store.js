@@ -49,6 +49,24 @@ async function readConvos(accId, agId) {
   return rows.map(c => mapConvo(c, byConv[c.id] || []))
 }
 
+// ── Idempotencia: ¿ya existe un mensaje con este id de proveedor? ───────────
+// Defensa persistente (sobrevive reinicios del backend) contra reprocesar el
+// mismo webhook. Busca por waMessageId (WhatsApp) o providerMsgId (FB/IG).
+async function messageExistsByProviderId(convId, providerId) {
+  if (!convId || !providerId) return false
+  try {
+    const [rows] = await pool.query(
+      `SELECT id FROM messages
+       WHERE conversation_id=?
+         AND (JSON_UNQUOTE(JSON_EXTRACT(metadata,'$.waMessageId'))=?
+           OR JSON_UNQUOTE(JSON_EXTRACT(metadata,'$.providerMsgId'))=?)
+       LIMIT 1`,
+      [convId, String(providerId), String(providerId)]
+    )
+    return rows.length > 0
+  } catch { return false }
+}
+
 // ── Append message (mirrors conversations.controller.appendMessage) ─────────
 async function appendMsg(accId, agId, convId, msg) {
   const { sender, content, ...rest } = msg
@@ -141,5 +159,5 @@ async function dispatchN8N(integrationId, payload, opts = {}) {
 module.exports = {
   loadAccount, readConvos, appendMsg, updateConvo, setLocalVar, appendDebugEntry,
   createOrGetWhatsAppConvo, createOrGetMessengerConvo, createOrGetInstagramConvo,
-  recordTokenUsage, dispatchN8N,
+  recordTokenUsage, dispatchN8N, messageExistsByProviderId,
 }

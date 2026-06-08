@@ -110,8 +110,10 @@ const whatsappReceive = async (req, res) => {
     console.error('[whatsappReceive] media enrich', e)
   }
   // El flujo se ejecuta EN EL SERVIDOR (la IA responde aunque nadie tenga la
-  // plataforma abierta). pushSSE queda solo como señal para que la UI refresque.
-  pushSSE({ type: 'whatsapp', accId, agentId, payload, ts: Date.now() })
+  // plataforma abierta). El SSE solo lleva una SEÑAL para refrescar la UI — SIN
+  // payload, para que cualquier navegador con bundle viejo en caché (que esperaba
+  // `payload`) se detenga y deje de procesar/responder en paralelo.
+  pushSSE({ type: 'whatsapp', accId, agentId, ts: Date.now() })
   flow.processWhatsApp(accId, agentId, payload).catch(e => console.error('[flow WA]', e))
 }
 
@@ -132,7 +134,7 @@ const messengerReceive = async (req, res) => {
   } catch (e) {
     console.error('[messengerReceive] media enrich', e)
   }
-  pushSSE({ type: 'messenger', accId, agentId, payload, ts: Date.now() })
+  pushSSE({ type: 'messenger', accId, agentId, ts: Date.now() })
   flow.processMessenger(accId, agentId, payload).catch(e => console.error('[flow FB]', e))
 }
 
@@ -153,7 +155,7 @@ const instagramReceive = async (req, res) => {
   } catch (e) {
     console.error('[instagramReceive] media enrich', e)
   }
-  pushSSE({ type: 'instagram', accId, agentId, payload, ts: Date.now() })
+  pushSSE({ type: 'instagram', accId, agentId, ts: Date.now() })
   flow.processInstagram(accId, agentId, payload).catch(e => console.error('[flow IG]', e))
 }
 
@@ -188,7 +190,7 @@ const testMessage = (req, res) => {
     type    = 'whatsapp'
     payload = { object: 'whatsapp_business_account', entry: [{ id: 'test', changes: [{ field: 'messages', value: { metadata: { phone_number_id: phoneNumberId, display_phone_number: 'TEST' }, contacts: [{ wa_id: from, profile: { name: fromName || 'Test User' } }], messages: [{ id: 'test_' + Date.now(), from, type: 'text', timestamp: String(Date.now()), text: { body: text } }] } }] }] }
   }
-  pushSSE({ type, accId, agentId, payload, ts: Date.now() })
+  pushSSE({ type, accId, agentId, ts: Date.now() })
   if (type === 'messenger')      flow.processMessenger(accId, agentId, payload).catch(e => console.error('[flow FB test]', e))
   else if (type === 'instagram') flow.processInstagram(accId, agentId, payload).catch(e => console.error('[flow IG test]', e))
   else                           flow.processWhatsApp(accId, agentId, payload).catch(e => console.error('[flow WA test]', e))
