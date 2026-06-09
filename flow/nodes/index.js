@@ -15,6 +15,7 @@ const { aiNodes }           = require('./ai')
 const { controlNodes }      = require('./control')
 const { knowledgeNodes }    = require('./knowledge')
 const { humanNodes }        = require('./human')
+const { integrationNodes }  = require('./integrations')
 
 registerMany([
   ...conversationNodes,
@@ -22,6 +23,7 @@ registerMany([
   ...controlNodes,
   ...knowledgeNodes,
   ...humanNodes,
+  ...integrationNodes,
 ])
 
 // ── Aliases legacy (mismos que el frontend) ──────────────────────────────────
