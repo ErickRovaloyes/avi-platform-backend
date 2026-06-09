@@ -48,6 +48,10 @@ async function sendBotMsg(ctx, content, metadata = {}) {
     ...(status ? { status } : {}),
     ...metadata,
   })
+  // Traza para el modo debug: qué mensaje se envió (texto o tipo de media)
+  const mediaKind = metadata?.media?.kind || metadata?.kind
+  const dbgText = text || (mediaKind ? `[${mediaKind}]` : '')
+  if (dbgText) logDebug(ctx, 'message_sent', dbgText, { text: dbgText, status: status || 'enviado' })
 }
 
 function getVars(ctx) { return ctx?.variables || {} }
