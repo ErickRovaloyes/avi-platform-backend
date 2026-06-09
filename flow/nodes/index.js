@@ -16,6 +16,10 @@ const { controlNodes }      = require('./control')
 const { knowledgeNodes }    = require('./knowledge')
 const { humanNodes }        = require('./human')
 const { integrationNodes }  = require('./integrations')
+const { dataNodes }         = require('./data')
+const { memoryNodes }       = require('./memory')
+const { crmNodes }          = require('./crm')
+const { analyticsNodes }    = require('./analytics')
 
 registerMany([
   ...conversationNodes,
@@ -24,6 +28,10 @@ registerMany([
   ...knowledgeNodes,
   ...humanNodes,
   ...integrationNodes,
+  ...dataNodes,
+  ...memoryNodes,
+  ...crmNodes,
+  ...analyticsNodes,
 ])
 
 // ── Aliases legacy (mismos que el frontend) ──────────────────────────────────
@@ -42,21 +50,13 @@ alias('file',    'send_document', node => ({ ...node, data: { ...node.data, url:
 alias('openai',  'ai_chat',      node => ({ ...node, data: { ...node.data, prompt: node.data?.prompt, modelo: node.data?.model || 'gpt-4o-mini' } }))
 alias('condition', 'if',         node => ({ ...node, data: { campo: `{{${node.data?.variableId || node.data?.variableName || ''}}}`, operador: '==', valor: node.data?.equals || '' } }))
 
-// ── Stubs benignos para categorías aún no migradas ───────────────────────────
-// Registramos tipos conocidos como no-op para que un flujo que los use no falle.
+// ── Stubs benignos para nodos aún no implementados (calendario) ──────────────
+// El calendario requiere conectar Google/Outlook o un Webhook N8N; por ahora
+// estos nodos no rompen el flujo (se omiten). El resto de categorías ya está
+// migrado (conversation, ai, control, knowledge, human, integrations, data,
+// memory, crm, analytics).
 const NOT_YET_MIGRATED = [
-  // memory
-  'memory_set', 'memory_get', 'memory_clear', 'context_window', 'session_store', 'variable_set', 'variable_get',
-  // data
-  'set_variable', 'http_request', 'json_parse', 'json_build', 'format', 'math', 'date_op', 'text_op', 'array_op',
-  // crm
-  'crm_create_contact', 'crm_update_contact', 'crm_create_deal', 'crm_move_deal', 'crm_add_note', 'crm_tag',
-  // integrations
-  'n8n_webhook', 'webhook_out', 'google_sheets', 'email_send', 'slack', 'http_get', 'http_post',
-  // analytics
-  'track_event', 'log_metric', 'tag_conversation',
-  // calendar
-  'calendar_check', 'calendar_book', 'calendar_cancel', 'schedule',
+  'calendar_check', 'calendar_book', 'calendar_reschedule', 'calendar_cancel', 'calendar_reminder',
 ]
 const stubDefs = NOT_YET_MIGRATED
   .filter(type => !getNode(type))

@@ -81,9 +81,29 @@ function safeJson(str, fallback = null) {
   try { return JSON.parse(str) } catch { return fallback }
 }
 
+// Formatea fecha en es-ES con presets (usado por el nodo Formateador)
+function fmtDate(value, preset = 'long') {
+  const d = value instanceof Date ? value : new Date(value)
+  if (Number.isNaN(d.getTime())) return ''
+  switch (preset) {
+    case 'date':  return d.toLocaleDateString('es')
+    case 'time':  return d.toLocaleTimeString('es', { hour: '2-digit', minute: '2-digit' })
+    case 'iso':   return d.toISOString()
+    case 'long':  return d.toLocaleString('es', { day: '2-digit', month: 'long', year: 'numeric', hour: '2-digit', minute: '2-digit' })
+    case 'relative': {
+      const diff = Date.now() - d.getTime()
+      if (diff < 60000)    return 'hace un momento'
+      if (diff < 3600000)  return `hace ${Math.floor(diff / 60000)} min`
+      if (diff < 86400000) return `hace ${Math.floor(diff / 3600000)} h`
+      return `hace ${Math.floor(diff / 86400000)} d`
+    }
+    default: return d.toLocaleString('es')
+  }
+}
+
 // Actualiza el assignedTo de la conversación activa
 async function setAssignedTo(ctx, assignee) {
   await store.updateConvo(ctx.accId, ctx.agId, ctx.convId, { assignedTo: assignee })
 }
 
-module.exports = { interpolate, logDebug, sendBotMsg, getVars, setVarBoth, resolveVar, safeJson, setAssignedTo }
+module.exports = { interpolate, logDebug, sendBotMsg, getVars, setVarBoth, resolveVar, safeJson, fmtDate, setAssignedTo }
