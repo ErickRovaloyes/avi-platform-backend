@@ -45,7 +45,7 @@ async function executeFlow({ flowId, accId, agId, convId, triggerContext = {}, t
 }
 
 // ─── trigger dispatcher ────────────────────────────────────────────────────
-async function runTrigger({ trigger, accId, agId, convId, context = {} }) {
+async function runTrigger({ trigger, accId, agId, convId, context = {}, outbound = null }) {
   try {
     const account = await store.loadAccount(accId)
     const matching = (account?.flows || []).filter(f => {
@@ -58,7 +58,7 @@ async function runTrigger({ trigger, accId, agId, convId, context = {} }) {
       return true
     })
     for (const f of matching) {
-      await executeFlow({ flowId: f.id, accId, agId, convId, triggerContext: context })
+      await executeFlow({ flowId: f.id, accId, agId, convId, triggerContext: context, outbound })
     }
   } catch (err) {
     console.warn('[runTrigger]', err.message)

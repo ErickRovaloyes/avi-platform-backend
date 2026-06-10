@@ -24,6 +24,25 @@ async function sendWhatsAppText({ phoneNumberId, accessToken, to, text }) {
   return res.json()
 }
 
+// Envía un mensaje multimedia (imagen/audio/video/documento) por URL.
+async function sendWhatsAppMedia({ phoneNumberId, accessToken, to, kind, link, caption, filename }) {
+  const type = kind === 'file' ? 'document' : (kind || 'image')
+  const mediaObj = { link }
+  // audio no admite caption; el resto sí
+  if (caption && type !== 'audio') mediaObj.caption = caption
+  if (type === 'document' && filename) mediaObj.filename = filename
+  const res = await fetch(`${GRAPH_BASE}/${phoneNumberId}/messages`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${accessToken}` },
+    body: JSON.stringify({ messaging_product: 'whatsapp', recipient_type: 'individual', to, type, [type]: mediaObj }),
+  })
+  if (!res.ok) {
+    const err = await res.json().catch(() => ({}))
+    throw new Error(err?.error?.message || `HTTP ${res.status}`)
+  }
+  return res.json()
+}
+
 // Envía una plantilla HSM aprobada por Meta.
 async function sendWhatsAppTemplate({ phoneNumberId, accessToken, to, templateName, languageCode = 'es', components = [] }) {
   const res = await fetch(`${GRAPH_BASE}/${phoneNumberId}/messages`, {
@@ -182,7 +201,7 @@ function parseInstagramWebhook(body) {
 }
 
 module.exports = {
-  sendWhatsAppText, parseWhatsAppWebhook,
+  sendWhatsAppText, sendWhatsAppMedia, parseWhatsAppWebhook,
   sendWhatsAppTemplate, listWhatsAppTemplates,
   sendMessengerText, parseMessengerWebhook,
   sendInstagramText, parseInstagramWebhook,

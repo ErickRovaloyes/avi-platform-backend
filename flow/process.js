@@ -11,7 +11,7 @@
 const store = require('./store')
 const engine = require('./engine')
 const {
-  parseWhatsAppWebhook, sendWhatsAppText,
+  parseWhatsAppWebhook, sendWhatsAppText, sendWhatsAppMedia,
   parseMessengerWebhook, sendMessengerText,
   parseInstagramWebhook, sendInstagramText,
 } = require('../services/metaSend')
@@ -80,18 +80,22 @@ async function processWhatsApp(accId, agentId, body) {
 
     if (!(await shouldRun(accId, agentId, convId))) continue
 
+    const waOutbound = async (text, meta) => {
+      const cfg = channel?.config
+      if (!cfg?.phoneNumberId || !cfg?.accessToken) return
+      if (meta?.media?.url) {
+        return await sendWhatsAppMedia({ phoneNumberId: cfg.phoneNumberId, accessToken: cfg.accessToken, to: msg.from, kind: meta.media.kind, link: meta.media.url, caption: meta.caption, filename: meta.media.filename })
+      }
+      if (text) return await sendWhatsAppText({ phoneNumberId: cfg.phoneNumberId, accessToken: cfg.accessToken, to: msg.from, text })
+    }
     if (agent.fallbackFlowId) {
       await engine.executeFlow({
         flowId: agent.fallbackFlowId, accId, agId: agentId, convId,
         triggerContext: { message: msg.text, _lastUserMessage: msg.text },
-        outbound: async (text) => {
-          if (channel?.config?.phoneNumberId && channel?.config?.accessToken) {
-            return await sendWhatsAppText({ phoneNumberId: channel.config.phoneNumberId, accessToken: channel.config.accessToken, to: msg.from, text })
-          }
-        },
+        outbound: waOutbound,
       })
     } else {
-      await engine.runTrigger({ trigger: 'keyword', accId, agId: agentId, convId, context: { message: msg.text } })
+      await engine.runTrigger({ trigger: 'keyword', accId, agId: agentId, convId, context: { message: msg.text }, outbound: waOutbound })
     }
   }
 }
@@ -132,16 +136,18 @@ async function processMessenger(accId, agentId, body) {
 
     if (!(await shouldRun(accId, agentId, convId))) continue
 
+    const fbOutbound = async (text, meta) => {
+      const body = meta?.media?.url ? `${text ? text + '\n' : ''}${meta.media.url}` : text
+      if (body) return await sendMessengerText({ pageId: channel.config.pageId, pageAccessToken: channel.config.pageAccessToken, recipientId: msg.senderId, text: body })
+    }
     if (agent.fallbackFlowId) {
       await engine.executeFlow({
         flowId: agent.fallbackFlowId, accId, agId: agentId, convId,
         triggerContext: { message: msg.text, _lastUserMessage: msg.text },
-        outbound: async (text) => {
-          return await sendMessengerText({ pageId: channel.config.pageId, pageAccessToken: channel.config.pageAccessToken, recipientId: msg.senderId, text })
-        },
+        outbound: fbOutbound,
       })
     } else {
-      await engine.runTrigger({ trigger: 'keyword', accId, agId: agentId, convId, context: { message: msg.text } })
+      await engine.runTrigger({ trigger: 'keyword', accId, agId: agentId, convId, context: { message: msg.text }, outbound: fbOutbound })
     }
   }
 }
@@ -182,16 +188,18 @@ async function processInstagram(accId, agentId, body) {
 
     if (!(await shouldRun(accId, agentId, convId))) continue
 
+    const igOutbound = async (text, meta) => {
+      const body = meta?.media?.url ? `${text ? text + '\n' : ''}${meta.media.url}` : text
+      if (body) return await sendInstagramText({ igAccountId: channel.config.igAccountId, pageAccessToken: channel.config.pageAccessToken, recipientId: msg.senderId, text: body })
+    }
     if (agent.fallbackFlowId) {
       await engine.executeFlow({
         flowId: agent.fallbackFlowId, accId, agId: agentId, convId,
         triggerContext: { message: msg.text, _lastUserMessage: msg.text },
-        outbound: async (text) => {
-          return await sendInstagramText({ igAccountId: channel.config.igAccountId, pageAccessToken: channel.config.pageAccessToken, recipientId: msg.senderId, text })
-        },
+        outbound: igOutbound,
       })
     } else {
-      await engine.runTrigger({ trigger: 'keyword', accId, agId: agentId, convId, context: { message: msg.text } })
+      await engine.runTrigger({ trigger: 'keyword', accId, agId: agentId, convId, context: { message: msg.text }, outbound: igOutbound })
     }
   }
 }

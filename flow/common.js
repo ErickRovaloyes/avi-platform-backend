@@ -28,16 +28,23 @@ function logDebug(ctx, type, title, detail) {
 // 2) Persiste en DB con ese id + estado (emite message:new → la UI se actualiza).
 async function sendBotMsg(ctx, content, metadata = {}) {
   const text = typeof content === 'string' ? content : String(content || '')
+  // Normaliza la media: los nodos pasan { media:{kind,url} } o { mediaUrl, kind }
+  const media = metadata.media?.url
+    ? metadata.media
+    : (metadata.mediaUrl ? { kind: metadata.kind, url: metadata.mediaUrl, filename: metadata.filename } : null)
+
   let providerMsgId = null
   let status        = null
-  if (ctx?._outbound && text) {
+  let sendError     = null
+  if (ctx?._outbound && (text || media)) {
     try {
-      const r = await ctx._outbound(text)
+      const r = await ctx._outbound(text, { media, caption: text })
       providerMsgId = r?.messages?.[0]?.id || r?.message_id || null
       status = 'sent'
     } catch (e) {
       status = 'failed'
-      logDebug(ctx, 'error', `✗ Error enviando al canal: ${e.message}`, {})
+      sendError = e.message
+      logDebug(ctx, 'error', `✗ Error enviando al canal: ${e.message}`, { media: media?.kind || 'text' })
     }
   }
   await store.appendMsg(ctx.accId, ctx.agId, ctx.convId, {
@@ -46,12 +53,13 @@ async function sendBotMsg(ctx, content, metadata = {}) {
     ts: Date.now(), fromFlow: true,
     ...(providerMsgId ? { waMessageId: providerMsgId } : {}),
     ...(status ? { status } : {}),
+    ...(sendError ? { sendError } : {}),
     ...metadata,
   })
   // Traza para el modo debug: qué mensaje se envió (texto o tipo de media)
-  const mediaKind = metadata?.media?.kind || metadata?.kind
+  const mediaKind = media?.kind
   const dbgText = text || (mediaKind ? `[${mediaKind}]` : '')
-  if (dbgText) logDebug(ctx, 'message_sent', dbgText, { text: dbgText, status: status || 'enviado' })
+  if (dbgText) logDebug(ctx, status === 'failed' ? 'error' : 'message_sent', dbgText, { text: dbgText, status: status || 'enviado', sendError })
 }
 
 function getVars(ctx) { return ctx?.variables || {} }
