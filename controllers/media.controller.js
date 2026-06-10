@@ -99,6 +99,7 @@ const uploadMedia = async (req, res) => {
     // 4) Outbound to external channels — when the asesor sends media to a
     //    conversation that originated from WhatsApp/Messenger/Instagram, push
     //    the file out through the corresponding Graph API.
+    let outWamid = null, outStatus = null
     if (sender !== 'user') {
       try {
         const [[c]] = await pool.query(
@@ -126,11 +127,12 @@ const uploadMedia = async (req, res) => {
               phoneNumberId: cfg.phoneNumberId, accessToken: cfg.accessToken,
               buffer: upBuffer, mime: upMime, filename: upFilename,
             })
-            await sendWhatsAppMediaMessage({
+            const rWa = await sendWhatsAppMediaMessage({
               phoneNumberId: cfg.phoneNumberId, accessToken: cfg.accessToken,
               to: c.wa_from, kind: media.kind, mediaId: waMediaId,
               caption: caption || undefined, filename: upFilename,
             })
+            outWamid = rWa?.messages?.[0]?.id || null; outStatus = 'sent'
           } else if (c.channel_type === 'messenger' && cfg.pageAccessToken && c.messenger_from) {
             const attId = await uploadFacebookAttachment({
               pageId: cfg.pageId, pageAccessToken: cfg.pageAccessToken,
@@ -140,6 +142,7 @@ const uploadMedia = async (req, res) => {
               pageId: cfg.pageId, pageAccessToken: cfg.pageAccessToken,
               recipientId: c.messenger_from, kind: media.kind, attachmentId: attId,
             })
+            outStatus = 'sent'
           } else if (c.channel_type === 'instagram' && cfg.pageAccessToken && c.ig_from) {
             // Instagram can't upload attachments separately — must use a public URL.
             // We expose the raw media bytes through our own public endpoint.
@@ -149,12 +152,24 @@ const uploadMedia = async (req, res) => {
               igAccountId: cfg.igAccountId, pageAccessToken: cfg.pageAccessToken,
               recipientId: c.ig_from, kind: media.kind, mediaUrl: url,
             })
+            outStatus = 'sent'
           }
         }
       } catch (e) {
         // Outbound failure shouldn't block the local message — log and continue.
+        outStatus = 'failed'
+        metadata.sendError = e.message
         console.warn('[media outbound]', e.message)
       }
+    }
+
+    // Persist the delivery state + provider id so the chat shows ✓/✓✓ and the
+    // status webhooks (delivered/read) can match this audio/media by waMessageId.
+    if (outStatus) {
+      metadata.status = outStatus
+      if (outWamid) metadata.waMessageId = outWamid
+      await pool.query('UPDATE messages SET metadata=? WHERE id=?', [JSON.stringify(metadata), messageId])
+      socket.emit(accId, 'message:status', { accId, agId, convId, messageId, status: outStatus })
     }
 
     // 5) emit socket events so all listeners refresh
