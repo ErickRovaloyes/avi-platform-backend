@@ -19,7 +19,14 @@ function convertWebmToOgg(buffer) {
   const outF = base + '.ogg'
   return new Promise((resolve, reject) => {
     fs.promises.writeFile(inF, buffer).then(() => {
-      const ff = spawn('ffmpeg', ['-loglevel', 'error', '-y', '-i', inF, '-vn', '-ac', '1', '-c:a', 'libopus', '-b:a', '48k', outF])
+      // Parámetros pensados para notas de voz de WhatsApp:
+      //  -application voip (voz), 48kHz mono opus, metadata/timestamps limpios.
+      const ff = spawn('ffmpeg', [
+        '-loglevel', 'error', '-y', '-i', inF,
+        '-vn', '-map_metadata', '-1', '-ac', '1', '-ar', '48000',
+        '-c:a', 'libopus', '-b:a', '32k', '-application', 'voip',
+        '-avoid_negative_ts', 'make_zero', '-f', 'ogg', outF,
+      ])
       let err = ''
       ff.stderr.on('data', d => { err += d.toString() })
       ff.on('error', e => { cleanup(); reject(e) })
