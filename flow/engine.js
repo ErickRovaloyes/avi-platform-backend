@@ -39,8 +39,18 @@ async function executeFlow({ flowId, accId, agId, convId, triggerContext = {}, t
   } catch (err) {
     logDebug(accId, agId, convId, 'error', `✗ Error en flujo: ${err.message}`, {})
     trace.status = 'error'
+    trace.error = err.message
   } finally {
     _running.delete(convId)
+    trace.endedAt = Date.now()
+    // Persistimos la ejecución para el log global / registro de errores
+    store.saveExecution({
+      accId, agId, convId, flowId, flowName: flow.name,
+      trigger: flow.trigger,
+      status: trace.status, error: trace.error,
+      durationMs: trace.endedAt - trace.startedAt, startedAt: trace.startedAt,
+      source: triggeredBy?.type === 'test' ? 'test' : 'chat',
+    })
   }
 }
 

@@ -107,6 +107,7 @@ const analyticsRoutes     = require('./routes/analytics.routes')
 const tutorialsRoutes     = require('./routes/tutorials.routes')
 const waTemplatesRoutes   = require('./routes/whatsappTemplates.routes')
 const googleRoutes        = require('./routes/google.routes')
+const flowLogsRoutes      = require('./routes/flowLogs.routes')
 
 // Guest counter alias (used by storage.js generateGuest)
 const guestRouter = require('express').Router()
@@ -139,6 +140,7 @@ app.use('/api',                analyticsRoutes)
 app.use('/api',                tutorialsRoutes)
 app.use('/api',                waTemplatesRoutes)
 app.use('/api',                googleRoutes)
+app.use('/api',                flowLogsRoutes)
 app.use('/api',                webhookRoutes)
 
 // ── Auto-migrate DB columns added after initial schema ────────────────────────
@@ -186,6 +188,34 @@ app.use('/api',                webhookRoutes)
      )`,
     "ALTER TABLE crm_tasks ADD COLUMN refs JSON",
     "ALTER TABLE support_tickets ADD COLUMN refs JSON",
+    `CREATE TABLE IF NOT EXISTS flow_executions (
+       id BIGINT PRIMARY KEY AUTO_INCREMENT,
+       account_id VARCHAR(50) NOT NULL,
+       agent_id   VARCHAR(50),
+       conv_id    VARCHAR(80),
+       flow_id    VARCHAR(50),
+       flow_name  VARCHAR(150),
+       trigger_type VARCHAR(40),
+       status     VARCHAR(20),
+       error      TEXT,
+       duration_ms INT,
+       started_at BIGINT,
+       source     VARCHAR(20) DEFAULT 'chat',
+       INDEX idx_fe_acc (account_id, started_at),
+       INDEX idx_fe_status (account_id, status, started_at),
+       INDEX idx_fe_conv (account_id, conv_id)
+     )`,
+    `CREATE TABLE IF NOT EXISTS error_log (
+       id BIGINT PRIMARY KEY AUTO_INCREMENT,
+       account_id VARCHAR(50) NOT NULL,
+       agent_id   VARCHAR(50),
+       conv_id    VARCHAR(80),
+       source     VARCHAR(60),
+       message    TEXT,
+       detail     TEXT,
+       ts         BIGINT,
+       INDEX idx_el_acc (account_id, ts)
+     )`,
     `CREATE TABLE IF NOT EXISTS google_integrations (
        account_id    VARCHAR(50) PRIMARY KEY,
        email         VARCHAR(200),

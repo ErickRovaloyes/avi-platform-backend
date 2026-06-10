@@ -156,6 +156,27 @@ async function appendDebugEntry(accId, agId, convId, entry) {
     log.push({ ...entry, ts: Date.now() })
     await pool.query('UPDATE conversations SET debug_log=? WHERE id=? AND account_id=?', [JSON.stringify(log), convId, accId])
   } catch { /* non-critical */ }
+  // Registro de errores global: cualquier entrada de tipo error queda en error_log
+  if (entry?.type === 'error') {
+    try {
+      const detail = entry.detail ? (typeof entry.detail === 'object' ? JSON.stringify(entry.detail) : String(entry.detail)) : null
+      await pool.query(
+        'INSERT INTO error_log (account_id, agent_id, conv_id, source, message, detail, ts) VALUES (?,?,?,?,?,?,?)',
+        [accId, agId, convId, 'flow', String(entry.title || '').slice(0, 500), detail ? detail.slice(0, 1000) : null, Date.now()]
+      )
+    } catch { /* non-critical */ }
+  }
+}
+
+// Persiste una ejecución de flujo (chat real o prueba) para el log global.
+async function saveExecution({ accId, agId, convId, flowId, flowName, trigger, status, error, durationMs, startedAt, source = 'chat' }) {
+  try {
+    await pool.query(
+      `INSERT INTO flow_executions (account_id, agent_id, conv_id, flow_id, flow_name, trigger_type, status, error, duration_ms, started_at, source)
+       VALUES (?,?,?,?,?,?,?,?,?,?,?)`,
+      [accId, agId || null, convId || null, flowId || null, flowName || '', trigger || '', status || 'success', error ? String(error).slice(0, 1000) : null, durationMs || 0, startedAt || Date.now(), source]
+    )
+  } catch (e) { console.warn('[saveExecution]', e.message) }
 }
 
 // ── Social create-or-get (delegates to controller core) ─────────────────────
@@ -183,4 +204,5 @@ module.exports = {
   loadAccount, readConvos, appendMsg, updateConvo, setLocalVar, appendDebugEntry,
   createOrGetWhatsAppConvo, createOrGetMessengerConvo, createOrGetInstagramConvo,
   recordTokenUsage, dispatchN8N, messageExistsByProviderId, updateMessageStatus,
+  saveExecution,
 }
