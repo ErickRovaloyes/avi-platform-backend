@@ -65,10 +65,12 @@ const send = async (req, res) => {
     const to = conv?.wa_from
     if (!to) return res.status(400).json({ error: 'La conversación no tiene un número de WhatsApp asociado.' })
 
-    await sendWhatsAppTemplate({
+    const r = await sendWhatsAppTemplate({
       phoneNumberId: cfg.phoneNumberId, accessToken: cfg.accessToken,
       to, templateName, languageCode: language, components: components || [],
     })
+    const wamid = r?.messages?.[0]?.id || null
+    console.log('[WA TEMPLATES] enviada', templateName, language, 'to', to, '→', JSON.stringify(r?.messages?.[0] || r))
 
     // Persistimos en la conversación para que el operador vea lo enviado.
     const content = previewText || `[Plantilla] ${templateName}`
@@ -78,10 +80,12 @@ const send = async (req, res) => {
       content, ts: Date.now(),
       channel: 'whatsapp', channelId: channel.id,
       fromTemplate: true, templateName,
+      ...(wamid ? { waMessageId: wamid } : {}),
+      status: 'sent',
     })
-    res.json({ ok: true })
+    res.json({ ok: true, wamid })
   } catch (err) {
-    console.error('[WA TEMPLATES send]', err)
+    console.error('[WA TEMPLATES send]', err.message)
     res.status(502).json({ error: err.message || 'No se pudo enviar la plantilla' })
   }
 }

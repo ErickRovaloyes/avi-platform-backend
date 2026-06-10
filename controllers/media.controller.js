@@ -7,6 +7,7 @@ const {
   uploadFacebookAttachment, sendMessengerMediaMessage,
   sendInstagramMediaMessage,
 } = require('../services/metaMedia')
+const { convertWebmToOgg } = require('../services/audioConvert')
 
 // Map a mime type to one of our 4 kinds.
 function detectKind(mime, filename = '') {
@@ -111,14 +112,24 @@ const uploadMedia = async (req, res) => {
           const ch = channels.find(x => x.id === c.channel_id) || channels.find(x => x.type === c.channel_type)
           const cfg = ch?.config || {}
           if (c.channel_type === 'whatsapp' && cfg.phoneNumberId && cfg.accessToken && c.wa_from) {
+            // WhatsApp no acepta audio/webm (lo que graba el navegador): lo
+            // convertimos a ogg/opus antes de subirlo.
+            let upBuffer = req.file.buffer, upMime = mime, upFilename = filename
+            if (media.kind === 'audio' && /webm/i.test(mime)) {
+              try {
+                upBuffer = await convertWebmToOgg(req.file.buffer)
+                upMime = 'audio/ogg'
+                upFilename = (filename || 'audio').replace(/\.[^.]+$/, '') + '.ogg'
+              } catch (e) { console.warn('[audio convert]', e.message) }
+            }
             const waMediaId = await uploadWhatsAppMedia({
               phoneNumberId: cfg.phoneNumberId, accessToken: cfg.accessToken,
-              buffer: req.file.buffer, mime, filename,
+              buffer: upBuffer, mime: upMime, filename: upFilename,
             })
             await sendWhatsAppMediaMessage({
               phoneNumberId: cfg.phoneNumberId, accessToken: cfg.accessToken,
               to: c.wa_from, kind: media.kind, mediaId: waMediaId,
-              caption: caption || undefined, filename,
+              caption: caption || undefined, filename: upFilename,
             })
           } else if (c.channel_type === 'messenger' && cfg.pageAccessToken && c.messenger_from) {
             const attId = await uploadFacebookAttachment({
