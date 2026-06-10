@@ -106,6 +106,7 @@ const publicApiRoutes     = require('./routes/publicApi.routes')
 const analyticsRoutes     = require('./routes/analytics.routes')
 const tutorialsRoutes     = require('./routes/tutorials.routes')
 const waTemplatesRoutes   = require('./routes/whatsappTemplates.routes')
+const googleRoutes        = require('./routes/google.routes')
 
 // Guest counter alias (used by storage.js generateGuest)
 const guestRouter = require('express').Router()
@@ -137,6 +138,7 @@ app.use('/api',                publicApiRoutes)
 app.use('/api',                analyticsRoutes)
 app.use('/api',                tutorialsRoutes)
 app.use('/api',                waTemplatesRoutes)
+app.use('/api',                googleRoutes)
 app.use('/api',                webhookRoutes)
 
 // ── Auto-migrate DB columns added after initial schema ────────────────────────
@@ -184,6 +186,24 @@ app.use('/api',                webhookRoutes)
      )`,
     "ALTER TABLE crm_tasks ADD COLUMN refs JSON",
     "ALTER TABLE support_tickets ADD COLUMN refs JSON",
+    `CREATE TABLE IF NOT EXISTS google_integrations (
+       account_id    VARCHAR(50) PRIMARY KEY,
+       email         VARCHAR(200),
+       access_token  TEXT,
+       refresh_token TEXT,
+       expiry        BIGINT,
+       scope         TEXT,
+       connected_at  BIGINT
+     )`,
+    `CREATE TABLE IF NOT EXISTS google_sheets (
+       id             VARCHAR(50) PRIMARY KEY,
+       account_id     VARCHAR(50) NOT NULL,
+       name           VARCHAR(150),
+       spreadsheet_id VARCHAR(120),
+       url            TEXT,
+       created_at     BIGINT,
+       INDEX idx_gsheets_acc (account_id)
+     )`,
     "ALTER TABLE ai_tools ADD COLUMN action_type VARCHAR(20) DEFAULT 'variable'",
     "ALTER TABLE ai_tools ADD COLUMN n8n_integration_id VARCHAR(50)",
     "ALTER TABLE conversations     ADD COLUMN assigned_to JSON",

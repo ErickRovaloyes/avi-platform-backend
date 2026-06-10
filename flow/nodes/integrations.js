@@ -108,8 +108,8 @@ const integrationNodes = [
     },
   },
   // Stubs: lanzan error claro (igual que el frontend) hasta que se implementen.
+  // (google_sheets se implementa en flow/nodes/google.js)
   { type: 'sql', category: 'integrations', label: 'SQL', async exec() { throw new Error('SQL aún no implementado — usa un Webhook N8N con SQL Node.') } },
-  { type: 'google_sheets', category: 'integrations', label: 'Google Sheets', async exec() { throw new Error('Google Sheets aún no implementado — usa un Webhook N8N.') } },
   { type: 'email_send', category: 'integrations', label: 'Email', async exec() { throw new Error('Email aún no implementado — usa un Webhook N8N con SMTP.') } },
   { type: 'erp', category: 'integrations', label: 'ERP', async exec() { throw new Error('ERP aún no implementado — usa N8N o HTTP Request directo.') } },
 ]
