@@ -108,6 +108,7 @@ const tutorialsRoutes     = require('./routes/tutorials.routes')
 const waTemplatesRoutes   = require('./routes/whatsappTemplates.routes')
 const googleRoutes        = require('./routes/google.routes')
 const flowLogsRoutes      = require('./routes/flowLogs.routes')
+const aiMediaRoutes       = require('./routes/aiMedia.routes')
 
 // Guest counter alias (used by storage.js generateGuest)
 const guestRouter = require('express').Router()
@@ -141,6 +142,7 @@ app.use('/api',                tutorialsRoutes)
 app.use('/api',                waTemplatesRoutes)
 app.use('/api',                googleRoutes)
 app.use('/api',                flowLogsRoutes)
+app.use('/api',                aiMediaRoutes)
 app.use('/api',                webhookRoutes)
 
 // ── Auto-migrate DB columns added after initial schema ────────────────────────

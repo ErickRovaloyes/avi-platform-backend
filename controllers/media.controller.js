@@ -87,11 +87,32 @@ const uploadMedia = async (req, res) => {
       [messageId, convId, sender, caption || '', JSON.stringify(metadata), ts]
     )
 
+    // 2.5) Auto-transcripción de notas de voz del usuario. La transcripción pasa a
+    //      ser el contenido del mensaje y el {{_lastUserMessage}} del flujo.
+    let transcription = null
+    if (sender === 'user' && media.kind === 'audio') {
+      try {
+        const mediaAI = require('../services/mediaAI')
+        transcription = await mediaAI.transcribeMedia(accId, media.id)
+        if (transcription) {
+          metadata.transcription = transcription
+          await pool.query('UPDATE messages SET content=?, metadata=? WHERE id=?', [transcription, JSON.stringify(metadata), messageId])
+          const [[cv]] = await pool.query('SELECT local_vars FROM conversations WHERE id=? AND account_id=?', [convId, accId])
+          const lv = parseJ(cv?.local_vars, {})
+          lv._lastUserMessage = transcription
+          await pool.query('UPDATE conversations SET local_vars=? WHERE id=? AND account_id=?', [JSON.stringify(lv), convId, accId])
+        }
+      } catch (e) { console.warn('[transcribe]', e.message) }
+    }
+
     // 3) bump preview + updated_at on the conversation (same as appendMessage)
+    const effectiveContent = transcription || caption || ''
     const previewIcon = kind === 'image' ? '🖼' : kind === 'video' ? '🎬' : kind === 'audio' ? '🎤' : '📎'
-    const preview = (caption ? caption.slice(0, 50) + ' ' : '') + `${previewIcon} ${filename}`
+    const preview = transcription
+      ? `🎤 ${transcription}`.slice(0, 60)
+      : ((caption ? caption.slice(0, 50) + ' ' : '') + `${previewIcon} ${filename}`).slice(0, 60)
     const sets = ['preview=?', 'updated_at=?']
-    const vals = [preview.slice(0, 60), ts]
+    const vals = [preview, ts]
     if (sender === 'user') sets.push('unread=1')
     vals.push(convId, accId)
     await pool.query(`UPDATE conversations SET ${sets.join(',')} WHERE id=? AND account_id=?`, vals)
@@ -175,12 +196,12 @@ const uploadMedia = async (req, res) => {
     // 5) emit socket events so all listeners refresh
     const msg = {
       id: messageId, sender, role: sender === 'user' ? 'user' : 'assistant',
-      content: caption || '', ts, ...metadata,
+      content: effectiveContent, ts, ...metadata,
     }
     socket.emit(accId, 'message:new', { accId, agId, convId, message: msg })
     socket.emitToConv(convId, 'message:new', { convId, message: msg })
 
-    res.json({ ok: true, id: messageId, mediaId: media.id, ts, kind: media.kind, mime: media.mime, filename, sizeBytes: media.sizeBytes })
+    res.json({ ok: true, id: messageId, mediaId: media.id, ts, kind: media.kind, mime: media.mime, filename, sizeBytes: media.sizeBytes, transcription })
   } catch (err) {
     console.error('[UPLOAD MEDIA]', err)
     res.status(500).json({ error: err.message || 'Error interno' })

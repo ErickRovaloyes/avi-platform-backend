@@ -10,11 +10,23 @@
 
 const store = require('./store')
 const engine = require('./engine')
+const mediaAI = require('../services/mediaAI')
 const {
   parseWhatsAppWebhook, sendWhatsAppText, sendWhatsAppMedia,
   parseMessengerWebhook, sendMessengerText,
   parseInstagramWebhook, sendInstagramText,
 } = require('../services/metaSend')
+
+// Transcribe la nota de voz del usuario (si la hay) y usa la transcripción como
+// texto del mensaje → así se persiste como contenido y queda en {{_lastUserMessage}}.
+async function transcribeIfAudio(accId, msg) {
+  if (msg.text || msg.internalMedia?.kind !== 'audio') return msg.text || ''
+  try {
+    const text = await mediaAI.transcribeMedia(accId, msg.internalMedia.mediaId)
+    if (text) msg.text = text
+  } catch (e) { console.warn('[flow/process] transcripción', e.message) }
+  return msg.text || ''
+}
 
 // Dedup de mensajes entrantes por messageId (defensa contra reentregas).
 const processedMessageIds = new Set()
@@ -65,6 +77,9 @@ async function processWhatsApp(accId, agentId, body) {
       console.log('[flow/process] WA ya procesado en DB:', msg.messageId); continue
     }
 
+    // Audio → transcripción automática (queda como texto del mensaje)
+    await transcribeIfAudio(accId, msg)
+
     await store.appendMsg(accId, agentId, convId, {
       role: 'user', sender: 'user',
       senderName: msg.fromName || msg.from,
@@ -107,7 +122,7 @@ async function processMessenger(accId, agentId, body) {
   if (!agent) { console.warn('[flow/process] FB agente no encontrado:', agentId); return }
 
   for (const msg of messages) {
-    if (!msg.text) continue
+    if (!msg.text && !msg.internalMedia) continue
     if (alreadyProcessed(msg.messageId)) { console.log('[flow/process] FB duplicado ignorado:', msg.messageId); continue }
 
     const channel = (agent.channels || []).find(
@@ -120,6 +135,9 @@ async function processMessenger(accId, agentId, body) {
     if (await store.messageExistsByProviderId(convId, msg.messageId)) {
       console.log('[flow/process] FB ya procesado en DB:', msg.messageId); continue
     }
+
+    // Audio → transcripción automática
+    await transcribeIfAudio(accId, msg)
 
     await store.appendMsg(accId, agentId, convId, {
       role: 'user', sender: 'user',
@@ -159,7 +177,7 @@ async function processInstagram(accId, agentId, body) {
   if (!agent) { console.warn('[flow/process] IG agente no encontrado:', agentId); return }
 
   for (const msg of messages) {
-    if (!msg.text) continue
+    if (!msg.text && !msg.internalMedia) continue
     if (alreadyProcessed(msg.messageId)) { console.log('[flow/process] IG duplicado ignorado:', msg.messageId); continue }
 
     const channel = (agent.channels || []).find(
@@ -172,6 +190,9 @@ async function processInstagram(accId, agentId, body) {
     if (await store.messageExistsByProviderId(convId, msg.messageId)) {
       console.log('[flow/process] IG ya procesado en DB:', msg.messageId); continue
     }
+
+    // Audio → transcripción automática
+    await transcribeIfAudio(accId, msg)
 
     await store.appendMsg(accId, agentId, convId, {
       role: 'user', sender: 'user',

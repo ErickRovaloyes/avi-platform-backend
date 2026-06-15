@@ -21,6 +21,7 @@ const { memoryNodes }       = require('./memory')
 const { crmNodes }          = require('./crm')
 const { analyticsNodes }    = require('./analytics')
 const { googleNodes }       = require('./google')
+const { accumulateNodes }   = require('./accumulate')
 
 registerMany([
   ...conversationNodes,
@@ -34,6 +35,7 @@ registerMany([
   ...crmNodes,
   ...analyticsNodes,
   ...googleNodes,
+  ...accumulateNodes,
 ])
 
 // ── Aliases legacy (mismos que el frontend) ──────────────────────────────────
