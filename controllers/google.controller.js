@@ -82,4 +82,35 @@ const removeSheet = async (req, res) => {
   } catch (err) { res.status(500).json({ error: 'Error interno' }) }
 }
 
-module.exports = { status, authUrl, callback, disconnect, listSheets, addSheet, removeSheet }
+// POST /api/accounts/:accId/google/sheets-op
+// body: { operation:'read'|'append'|'update'|'delete', spreadsheet, range, values }
+// Ejecuta la operación de Sheets server-side (usado por el nodo de flujo cuando
+// corre en el navegador: pruebas / webchat).
+const sheetsOp = async (req, res) => {
+  const { accId } = req.params
+  const { operation = 'read', spreadsheet, range, values } = req.body || {}
+  try {
+    const spreadsheetId = g.extractSpreadsheetId(spreadsheet)
+    if (!spreadsheetId) return res.status(400).json({ error: 'Falta el link/ID de la hoja' })
+    const token = await g.getValidAccessToken(accId)
+    const rng = range || 'A1:Z1000'
+    if (operation === 'read') {
+      const rows = await g.readRows(token, spreadsheetId, rng)
+      return res.json({ ok: true, rows })
+    } else if (operation === 'append') {
+      await g.appendRow(token, spreadsheetId, rng, Array.isArray(values) ? values : [])
+      return res.json({ ok: true })
+    } else if (operation === 'update') {
+      await g.updateRange(token, spreadsheetId, rng, Array.isArray(values) ? values : [])
+      return res.json({ ok: true })
+    } else if (operation === 'delete') {
+      await g.clearRange(token, spreadsheetId, rng)
+      return res.json({ ok: true })
+    }
+    res.status(400).json({ error: 'Operación inválida' })
+  } catch (e) {
+    res.status(502).json({ error: e.message || 'Error de Google Sheets' })
+  }
+}
+
+module.exports = { status, authUrl, callback, disconnect, listSheets, addSheet, removeSheet, sheetsOp }

@@ -92,6 +92,12 @@ const createFlow = async (req, res) => {
   const { accId } = req.params
   const { id: gId, name, trigger, startNodeId = null, nodes = [] } = req.body
   const id = gId || ('flow_' + uid())
+  // Guard: a non-super-admin may only create/copy flows into accounts they belong to.
+  // This protects the "copiar a otra cuenta" path from targeting arbitrary accounts.
+  const allowed = req.user?.allAccountIds || []
+  if (req.user?.type !== 'superadmin' && allowed.length && !allowed.includes(accId)) {
+    return res.status(403).json({ error: 'Sin acceso a esa cuenta' })
+  }
   try {
     await pool.query('INSERT INTO flows (id,account_id,name,`trigger`,start_node_id,nodes) VALUES (?,?,?,?,?,?)', [id, accId, name, trigger, startNodeId, JSON.stringify(nodes)])
     socket.emit(accId, 'account:updated', { accId })

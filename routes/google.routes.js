@@ -1,6 +1,6 @@
 'use strict'
 const router = require('express').Router()
-const { authMiddleware } = require('../auth')
+const { authMiddleware, optionalAuth } = require('../auth')
 const ctrl = require('../controllers/google.controller')
 
 // Callback de Google: SIN auth (Google redirige aquí con ?code&state)
@@ -13,5 +13,6 @@ router.delete('/accounts/:accId/google',            authMiddleware, ctrl.disconn
 router.get('/accounts/:accId/google/sheets',        authMiddleware, ctrl.listSheets)
 router.post('/accounts/:accId/google/sheets',       authMiddleware, ctrl.addSheet)
 router.delete('/accounts/:accId/google/sheets/:id', authMiddleware, ctrl.removeSheet)
+router.post('/accounts/:accId/google/sheets-op',    optionalAuth,   ctrl.sheetsOp)
 
 module.exports = router
