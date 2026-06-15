@@ -1,37 +1,53 @@
 'use strict'
 /**
- * Google Sheets node — consume/inserta/edita/elimina filas usando la cuenta de
- * Google conectada (OAuth). El "spreadsheet" puede ser el link de la hoja o su id.
+ * Google Sheets node — acciones de alto nivel sobre una hoja vinculada usando la
+ * cuenta de Google conectada (OAuth). Mismo comportamiento que el endpoint
+ * server-side (pruebas/webchat): se apoya en g.runSheetsOperation.
+ *
+ * Acciones:
+ *   read   → Obtener múltiples filas (con filtros + consumir columnas a variables)
+ *   send   → Enviar datos (agregar fila a partir de "campos a enviar")
+ *   update → Actualizar la primera fila que coincide con los filtros
+ *   delete → Eliminar el contenido de la fila que coincide con los filtros
  */
 
-const { interpolate, logDebug, safeJson, setVarBoth } = require('../common')
+const { interpolate, logDebug, setVarBoth } = require('../common')
 const g = require('../../services/google')
 
-function parseValues(raw, vars) {
-  const txt = interpolate(raw || '', vars)
-  if (!txt.trim()) return []
-  const trimmed = txt.trim()
-  if (trimmed.startsWith('[')) { const a = safeJson(trimmed, null); if (Array.isArray(a)) return a.map(String) }
-  return trimmed.split(',').map(s => s.trim())
+// filters: [{column, value}] con value interpolado
+function buildFilters(node, ctx) {
+  return (Array.isArray(node.data?.filters) ? node.data.filters : [])
+    .filter(f => f && String(f.column ?? '').trim() !== '')
+    .map(f => ({ column: f.column, value: interpolate(f.value || '', ctx.variables) }))
+}
+
+// fieldMap: { columna: valorInterpolado } a partir de "campos a enviar"
+function buildFieldMap(node, ctx) {
+  const out = {}
+  for (const m of (Array.isArray(node.data?.fields) ? node.data.fields : [])) {
+    if (!m || String(m.column ?? '').trim() === '') continue
+    out[m.column] = interpolate(m.value || '', ctx.variables)
+  }
+  return out
 }
 
 const googleNodes = [
   {
     type: 'google_sheets', category: 'integrations', label: 'Google Sheets', timeoutMs: 30000,
     fields: [
-      { key: 'operacion', label: 'Operación', type: 'select', options: [
-          { value: 'read',   label: 'Consumir / filtrar filas (leer)' },
-          { value: 'append', label: 'Agregar fila' },
-          { value: 'update', label: 'Editar fila (rango)' },
-          { value: 'delete', label: 'Eliminar contenido (rango)' },
+      { key: 'operacion', label: 'Acciones', type: 'select', options: [
+          { value: 'read',   label: 'Obtener múltiples filas' },
+          { value: 'send',   label: 'Enviar datos (agregar fila)' },
+          { value: 'update', label: 'Actualizar fila' },
+          { value: 'delete', label: 'Eliminar fila' },
         ], default: 'read' },
-      { key: 'sheetId', label: 'Hoja vinculada', type: 'sheetRef' },
+      { key: 'sheetId', label: 'Hoja de cálculo', type: 'sheetRef' },
       { key: 'spreadsheet', label: '…o link/ID de la hoja', type: 'text', placeholder: 'https://docs.google.com/spreadsheets/d/...' },
-      { key: 'range', label: 'Rango / pestaña', type: 'text', placeholder: 'Hoja1!A1:Z1000  (vacío = toda la primera hoja)' },
-      { key: 'matchColumn', label: 'Filtrar por columna', type: 'sheetColumnRef' },
-      { key: 'matchValue', label: 'Valor que debe coincidir', type: 'text', placeholder: '{{nombre}}' },
-      { key: 'extract', label: 'Extraer columnas de la 1ª fila encontrada → variables', type: 'jsonMappings' },
-      { key: 'valores', label: 'Valores (coma o JSON, para agregar/editar)', type: 'textarea', placeholder: '{{nombre}}, {{email}}, nuevo' },
+      { key: 'worksheet', label: 'Hoja de trabajo', type: 'worksheetRef' },
+      { key: 'filters', label: 'Campos a filtrar (Lookup Columns)', type: 'sheetFilters' },
+      { key: 'fields',  label: 'Campos a enviar', type: 'sheetFieldMap' },
+      { key: 'consume', label: 'Campos a consumir → variables', type: 'sheetConsumeMap' },
+      { key: 'limit', label: 'Número máximo de filas a devolver', type: 'number', default: 10 },
       { key: 'destino', label: 'Guardar filas encontradas en (JSON)', type: 'variableRef' },
     ],
     async exec(node, ctx) {
@@ -39,48 +55,41 @@ const googleNodes = [
       const rawSheet = (node.data?.sheetId && String(node.data.sheetId).trim())
         || interpolate(node.data?.spreadsheet || '', ctx.variables)
       const spreadsheetId = g.extractSpreadsheetId(rawSheet)
-      const range = interpolate(node.data?.range || '', ctx.variables) || 'A1:Z1000'
-      if (!spreadsheetId) throw new Error('Elige una hoja vinculada o pega el link/ID de la hoja')
+      if (!spreadsheetId) throw new Error('Elige una hoja de cálculo')
+      const worksheet = node.data?.worksheet || ''
+      const range = interpolate(node.data?.range || '', ctx.variables)
 
       const token = await g.getValidAccessToken(ctx.accId)
+      const filters  = buildFilters(node, ctx)
+      const fieldMap = buildFieldMap(node, ctx)
+      const limit    = Number(node.data?.limit) || 0
 
-      if (op === 'read') {
-        const matchColumn = node.data?.matchColumn || ''
-        const matchValue  = interpolate(node.data?.matchValue || '', ctx.variables)
-        const allRows = await g.readRows(token, spreadsheetId, range)
-        const out = g.filterSheetRows(allRows, matchColumn, matchValue)
-        if (out.error) throw new Error(out.error)
-        const rows = out.rows || []
+      const out = await g.runSheetsOperation(token, {
+        operation: op, spreadsheetId, worksheet, range, filters, fieldMap, limit,
+      })
+      if (out?.error) throw new Error(out.error)
+
+      if (op === 'read' || op === 'get_rows') {
         const records = out.records || []
         if (node.data?.destino) await setVarBoth(ctx, node.data.destino, JSON.stringify(records))
-        ctx.variables._last_sheet_rows = rows
+        ctx.variables._last_sheet_rows = out.rows || []
         ctx.variables._last_sheet_records = records
         ctx.variables._last_sheet_count = records.length
-        // Extrae columnas de la PRIMERA fila encontrada → variables
-        const extract = Array.isArray(node.data?.extract) ? node.data.extract : []
+        // Campos a consumir: columna → variable (de la 1ª fila encontrada)
+        const consume = Array.isArray(node.data?.consume) ? node.data.consume : []
         const first = records[0] || {}
-        for (const m of extract) {
-          if (!m?.var || !m?.path) continue
-          const col = String(m.path).trim()
-          const key = Object.keys(first).find(k => k.toLowerCase() === col.toLowerCase())
+        for (const m of consume) {
+          if (!m?.column || !m?.var) continue
+          const key = Object.keys(first).find(k => k.toLowerCase() === String(m.column).toLowerCase())
           await setVarBoth(ctx, m.var, key != null ? (first[key] ?? '') : '')
         }
-        logDebug(ctx, 'flow_run',
-          matchColumn
-            ? `📊 Sheets: ${records.length} fila(s) donde ${matchColumn} = "${matchValue}"`
-            : `📊 Sheets leído: ${records.length} fila(s)`,
-          { range, matchColumn, matchValue })
-      } else if (op === 'append') {
-        const values = parseValues(node.data?.valores, ctx.variables)
-        await g.appendRow(token, spreadsheetId, range, values)
-        logDebug(ctx, 'flow_run', `📊 Fila agregada (${values.length} col)`, { range })
+        logDebug(ctx, 'flow_run', `📊 Sheets: ${records.length} fila(s)`, { worksheet, filters })
+      } else if (op === 'send') {
+        logDebug(ctx, 'flow_run', `📊 Fila agregada`, { worksheet })
       } else if (op === 'update') {
-        const values = parseValues(node.data?.valores, ctx.variables)
-        await g.updateRange(token, spreadsheetId, range, values)
-        logDebug(ctx, 'flow_run', `📊 Rango actualizado`, { range })
+        logDebug(ctx, 'flow_run', `📊 Fila ${out.row} actualizada`, { worksheet })
       } else if (op === 'delete') {
-        await g.clearRange(token, spreadsheetId, range)
-        logDebug(ctx, 'flow_run', `📊 Rango limpiado`, { range })
+        logDebug(ctx, 'flow_run', `📊 Fila ${out.cleared} eliminada`, { worksheet })
       }
     },
   },

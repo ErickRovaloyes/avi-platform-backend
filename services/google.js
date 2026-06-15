@@ -182,9 +182,131 @@ function filterSheetRows(rows, matchColumn, matchValue) {
   return { headers, rows: matchedRows, records: toRecords(matchedRows), matched: matchedRows.length }
 }
 
+// ── Operación de alto nivel (acciones del nodo de flujo) ─────────────────────
+// Centraliza la lógica para que el endpoint HTTP (pruebas/webchat) y el nodo de
+// canal usen exactamente el mismo comportamiento.
+
+function quoteSheet(name) { return `'${String(name).replace(/'/g, "''")}'` }
+
+// Convierte índice de columna (1-based) en letra A1: 1→A, 27→AA
+function colLetter(n) {
+  let s = ''
+  let x = Number(n) || 1
+  while (x > 0) { const m = (x - 1) % 26; s = String.fromCharCode(65 + m) + s; x = Math.floor((x - 1) / 26) }
+  return s || 'A'
+}
+
+function recordsOf(headers, dataRows) {
+  return dataRows.map(r => {
+    const o = {}; headers.forEach((h, i) => { o[h] = r[i] ?? '' }); return o
+  })
+}
+
+// Resuelve los índices de columna de una lista de filtros [{column,value}].
+function resolveFilters(headers, filters) {
+  const list = (Array.isArray(filters) ? filters : [])
+    .filter(f => f && String(f.column ?? '').trim() !== '')
+  return list.map(f => {
+    const idx = headers.findIndex(h => h.trim().toLowerCase() === String(f.column).trim().toLowerCase())
+    if (idx === -1) throw new Error(`Columna "${f.column}" no encontrada en la cabecera`)
+    return { idx, value: String(f.value ?? '').trim().toLowerCase(), column: f.column }
+  })
+}
+
+function rowMatches(row, resolved) {
+  return resolved.every(rf => String(row[rf.idx] ?? '').trim().toLowerCase() === rf.value)
+}
+
+// Construye una fila alineada a la cabecera a partir de un mapa {columna: valor}.
+function buildRowFromMap(headers, fieldMap = {}) {
+  const keyFor = h => Object.keys(fieldMap).find(k => k.toLowerCase() === String(h).toLowerCase())
+  if (headers.length) return headers.map(h => { const k = keyFor(h); return k != null ? (fieldMap[k] ?? '') : '' })
+  return Object.values(fieldMap).map(v => v ?? '')
+}
+
+// Mezcla una fila existente con los valores del mapa (solo cambia las columnas mapeadas).
+function mergeRow(headers, existing = [], fieldMap = {}) {
+  const keyFor = h => Object.keys(fieldMap).find(k => k.toLowerCase() === String(h).toLowerCase())
+  return headers.map((h, i) => { const k = keyFor(h); return k != null ? (fieldMap[k] ?? '') : (existing[i] ?? '') })
+}
+
+async function runSheetsOperation(token, opts = {}) {
+  const op = opts.operation || 'read'
+  const spreadsheetId = opts.spreadsheetId
+  if (!spreadsheetId) throw new Error('Falta el ID de la hoja')
+  const worksheet = opts.worksheet ? String(opts.worksheet) : ''
+  const sheetPrefix = worksheet ? `${quoteSheet(worksheet)}!` : ''
+  const wholeRange = worksheet ? quoteSheet(worksheet) : (opts.range || 'A1:Z10000')
+
+  // Lista de pestañas (hojas de trabajo) del libro
+  if (op === 'worksheets') {
+    const meta = await sheetsApi(token, `${spreadsheetId}?fields=sheets.properties.title`)
+    return { sheets: (meta.sheets || []).map(sh => sh.properties?.title).filter(Boolean) }
+  }
+
+  // Cabeceras (primera fila) de la hoja/pestaña
+  if (op === 'headers') {
+    const rows = await readRows(token, spreadsheetId, wholeRange)
+    return { headers: (rows[0] || []).map(h => String(h)) }
+  }
+
+  // Obtener / filtrar filas
+  if (op === 'read' || op === 'get_rows' || op === 'get_row') {
+    const rows = await readRows(token, spreadsheetId, wholeRange)
+    const headers = (rows[0] || []).map(h => String(h))
+    const dataRows = rows.slice(1)
+    const resolved = resolveFilters(headers, opts.filters)
+    let matched = resolved.length ? dataRows.filter(r => rowMatches(r, resolved)) : dataRows
+    const limit = op === 'get_row' ? 1 : (Number(opts.limit) || 0)
+    if (limit > 0) matched = matched.slice(0, limit)
+    return { headers, rows: matched, records: recordsOf(headers, matched), matched: matched.length }
+  }
+
+  // Enviar datos (agregar fila al final)
+  if (op === 'send' || op === 'append') {
+    const rows = await readRows(token, spreadsheetId, wholeRange)
+    const headers = (rows[0] || []).map(h => String(h))
+    const rowArr = buildRowFromMap(headers, opts.fieldMap || {})
+    await appendRow(token, spreadsheetId, wholeRange, rowArr)
+    return { ok: true, appended: rowArr, headers }
+  }
+
+  // Actualizar fila (la primera que coincide con los filtros)
+  if (op === 'update') {
+    const rows = await readRows(token, spreadsheetId, wholeRange)
+    const headers = (rows[0] || []).map(h => String(h))
+    const resolved = resolveFilters(headers, opts.filters)
+    if (!resolved.length) throw new Error('Añade al menos un filtro para identificar la fila a actualizar')
+    let idx = -1
+    for (let i = 1; i < rows.length; i++) { if (rowMatches(rows[i] || [], resolved)) { idx = i; break } }
+    if (idx === -1) return { ok: false, error: 'No se encontró ninguna fila que coincida con los filtros', matched: 0 }
+    const merged = mergeRow(headers, rows[idx] || [], opts.fieldMap || {})
+    const rowNumber = idx + 1
+    const updRange = `${sheetPrefix}A${rowNumber}:${colLetter(headers.length || merged.length)}${rowNumber}`
+    await updateRange(token, spreadsheetId, updRange, merged)
+    return { ok: true, updated: merged, row: rowNumber, matched: 1, headers }
+  }
+
+  // Eliminar contenido de la fila que coincide con los filtros
+  if (op === 'delete') {
+    const rows = await readRows(token, spreadsheetId, wholeRange)
+    const headers = (rows[0] || []).map(h => String(h))
+    const resolved = resolveFilters(headers, opts.filters)
+    if (!resolved.length) throw new Error('Añade al menos un filtro para identificar la fila a eliminar')
+    let idx = -1
+    for (let i = 1; i < rows.length; i++) { if (rowMatches(rows[i] || [], resolved)) { idx = i; break } }
+    if (idx === -1) return { ok: false, error: 'No se encontró ninguna fila que coincida con los filtros', matched: 0 }
+    const rowNumber = idx + 1
+    await clearRange(token, spreadsheetId, `${sheetPrefix}A${rowNumber}:${colLetter(headers.length || 26)}${rowNumber}`)
+    return { ok: true, cleared: rowNumber, matched: 1 }
+  }
+
+  throw new Error('Operación de Sheets no soportada: ' + op)
+}
+
 module.exports = {
   isConfigured, getAuthUrl, exchangeCode, refreshAccessToken, getUserEmail,
   saveIntegration, getValidAccessToken,
   readRows, appendRow, updateRange, clearRange, extractSpreadsheetId,
-  rowsToRecords, filterSheetRows,
+  rowsToRecords, filterSheetRows, runSheetsOperation,
 }

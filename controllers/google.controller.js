@@ -83,39 +83,19 @@ const removeSheet = async (req, res) => {
 }
 
 // POST /api/accounts/:accId/google/sheets-op
-// body: { operation:'read'|'headers'|'append'|'update'|'delete', spreadsheet, range, values,
-//         matchColumn, matchValue }
+// body: { operation, spreadsheet, worksheet, range, filters, fieldMap, limit }
+//   operation: 'worksheets' | 'headers' | 'read'/'get_rows' | 'send'/'append' | 'update' | 'delete'
 // Ejecuta la operación de Sheets server-side (usado por el nodo de flujo cuando
-// corre en el navegador: pruebas / webchat).
-//   - 'headers' → devuelve los nombres de columna (primera fila del rango).
-//   - 'read'    → devuelve filas; si se pasa matchColumn+matchValue, filtra por esa
-//                 columna (la cabecera) y devuelve solo las filas que coinciden.
+// corre en el navegador: pruebas / webchat) con la cuenta de Google conectada.
 const sheetsOp = async (req, res) => {
   const { accId } = req.params
-  const { operation = 'read', spreadsheet, range, values, matchColumn, matchValue } = req.body || {}
+  const { operation = 'read', spreadsheet, worksheet, range, filters, fieldMap, limit } = req.body || {}
   try {
     const spreadsheetId = g.extractSpreadsheetId(spreadsheet)
     if (!spreadsheetId) return res.status(400).json({ error: 'Falta el link/ID de la hoja' })
     const token = await g.getValidAccessToken(accId)
-    const rng = range || 'A1:Z1000'
-    if (operation === 'headers') {
-      const rows = await g.readRows(token, spreadsheetId, rng)
-      return res.json({ ok: true, headers: (rows[0] || []).map(h => String(h)) })
-    } else if (operation === 'read') {
-      const rows = await g.readRows(token, spreadsheetId, rng)
-      const out = g.filterSheetRows(rows, matchColumn, matchValue)
-      return res.json({ ok: true, ...out })
-    } else if (operation === 'append') {
-      await g.appendRow(token, spreadsheetId, rng, Array.isArray(values) ? values : [])
-      return res.json({ ok: true })
-    } else if (operation === 'update') {
-      await g.updateRange(token, spreadsheetId, rng, Array.isArray(values) ? values : [])
-      return res.json({ ok: true })
-    } else if (operation === 'delete') {
-      await g.clearRange(token, spreadsheetId, rng)
-      return res.json({ ok: true })
-    }
-    res.status(400).json({ error: 'Operación inválida' })
+    const out = await g.runSheetsOperation(token, { operation, spreadsheetId, worksheet, range, filters, fieldMap, limit })
+    return res.json({ ok: true, ...out })
   } catch (e) {
     res.status(502).json({ error: e.message || 'Error de Google Sheets' })
   }
