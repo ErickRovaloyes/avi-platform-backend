@@ -20,29 +20,56 @@ const googleNodes = [
     type: 'google_sheets', category: 'integrations', label: 'Google Sheets', timeoutMs: 30000,
     fields: [
       { key: 'operacion', label: 'Operación', type: 'select', options: [
-          { value: 'read',   label: 'Consumir filas (leer)' },
+          { value: 'read',   label: 'Consumir / filtrar filas (leer)' },
           { value: 'append', label: 'Agregar fila' },
           { value: 'update', label: 'Editar fila (rango)' },
           { value: 'delete', label: 'Eliminar contenido (rango)' },
         ], default: 'read' },
-      { key: 'spreadsheet', label: 'Link o ID de la hoja', type: 'text', placeholder: 'https://docs.google.com/spreadsheets/d/...' },
-      { key: 'range', label: 'Rango', type: 'text', placeholder: 'Hoja1!A1:Z100  ·  Hoja1!A2:D2  ·  Hoja1!A:A' },
+      { key: 'sheetId', label: 'Hoja vinculada', type: 'sheetRef' },
+      { key: 'spreadsheet', label: '…o link/ID de la hoja', type: 'text', placeholder: 'https://docs.google.com/spreadsheets/d/...' },
+      { key: 'range', label: 'Rango / pestaña', type: 'text', placeholder: 'Hoja1!A1:Z1000  (vacío = toda la primera hoja)' },
+      { key: 'matchColumn', label: 'Filtrar por columna', type: 'sheetColumnRef' },
+      { key: 'matchValue', label: 'Valor que debe coincidir', type: 'text', placeholder: '{{nombre}}' },
+      { key: 'extract', label: 'Extraer columnas de la 1ª fila encontrada → variables', type: 'jsonMappings' },
       { key: 'valores', label: 'Valores (coma o JSON, para agregar/editar)', type: 'textarea', placeholder: '{{nombre}}, {{email}}, nuevo' },
-      { key: 'destino', label: 'Guardar resultado en (al leer)', type: 'variableRef' },
+      { key: 'destino', label: 'Guardar filas encontradas en (JSON)', type: 'variableRef' },
     ],
     async exec(node, ctx) {
       const op = node.data?.operacion || 'read'
-      const spreadsheetId = g.extractSpreadsheetId(interpolate(node.data?.spreadsheet || '', ctx.variables))
+      const rawSheet = (node.data?.sheetId && String(node.data.sheetId).trim())
+        || interpolate(node.data?.spreadsheet || '', ctx.variables)
+      const spreadsheetId = g.extractSpreadsheetId(rawSheet)
       const range = interpolate(node.data?.range || '', ctx.variables) || 'A1:Z1000'
-      if (!spreadsheetId) throw new Error('Falta el link/ID de la hoja')
+      if (!spreadsheetId) throw new Error('Elige una hoja vinculada o pega el link/ID de la hoja')
 
       const token = await g.getValidAccessToken(ctx.accId)
 
       if (op === 'read') {
-        const rows = await g.readRows(token, spreadsheetId, range)
-        if (node.data?.destino) await setVarBoth(ctx, node.data.destino, JSON.stringify(rows))
+        const matchColumn = node.data?.matchColumn || ''
+        const matchValue  = interpolate(node.data?.matchValue || '', ctx.variables)
+        const allRows = await g.readRows(token, spreadsheetId, range)
+        const out = g.filterSheetRows(allRows, matchColumn, matchValue)
+        if (out.error) throw new Error(out.error)
+        const rows = out.rows || []
+        const records = out.records || []
+        if (node.data?.destino) await setVarBoth(ctx, node.data.destino, JSON.stringify(records))
         ctx.variables._last_sheet_rows = rows
-        logDebug(ctx, 'flow_run', `📊 Sheets leído: ${rows.length} fila(s)`, { range })
+        ctx.variables._last_sheet_records = records
+        ctx.variables._last_sheet_count = records.length
+        // Extrae columnas de la PRIMERA fila encontrada → variables
+        const extract = Array.isArray(node.data?.extract) ? node.data.extract : []
+        const first = records[0] || {}
+        for (const m of extract) {
+          if (!m?.var || !m?.path) continue
+          const col = String(m.path).trim()
+          const key = Object.keys(first).find(k => k.toLowerCase() === col.toLowerCase())
+          await setVarBoth(ctx, m.var, key != null ? (first[key] ?? '') : '')
+        }
+        logDebug(ctx, 'flow_run',
+          matchColumn
+            ? `📊 Sheets: ${records.length} fila(s) donde ${matchColumn} = "${matchValue}"`
+            : `📊 Sheets leído: ${records.length} fila(s)`,
+          { range, matchColumn, matchValue })
       } else if (op === 'append') {
         const values = parseValues(node.data?.valores, ctx.variables)
         await g.appendRow(token, spreadsheetId, range, values)

@@ -145,8 +145,46 @@ function extractSpreadsheetId(url) {
   return m ? m[1] : String(url).trim()
 }
 
+// ── Helpers de columnas/filtrado ────────────────────────────────────────────
+// Convierte filas crudas (incluida la cabecera) en registros {columna: valor}.
+// La PRIMERA fila se toma como nombres de columna (encabezados).
+function rowsToRecords(rows) {
+  const headers = (rows?.[0] || []).map(h => String(h))
+  const records = (rows || []).slice(1).map(r => {
+    const o = {}
+    headers.forEach((h, i) => { o[h] = r[i] ?? '' })
+    return o
+  })
+  return { headers, records }
+}
+
+// Filtra filas por el valor de una columna (encabezado). Coincidencia
+// insensible a mayúsculas y espacios. Si no se pasa columna/valor, devuelve todo.
+// Devuelve { headers, rows (filas de datos crudas que coinciden), records, matched, error? }
+function filterSheetRows(rows, matchColumn, matchValue) {
+  const headers = (rows?.[0] || []).map(h => String(h))
+  const dataRows = (rows || []).slice(1)
+  const toRecords = list => list.map(r => {
+    const o = {}; headers.forEach((h, i) => { o[h] = r[i] ?? '' }); return o
+  })
+  const hasFilter = matchColumn != null && String(matchColumn).trim() !== '' &&
+                    matchValue  != null && String(matchValue).trim()  !== ''
+  if (!hasFilter) {
+    return { headers, rows: dataRows, records: toRecords(dataRows), matched: dataRows.length }
+  }
+  const want = String(matchColumn).trim().toLowerCase()
+  const colIdx = headers.findIndex(h => h.trim().toLowerCase() === want)
+  if (colIdx === -1) {
+    return { headers, rows: [], records: [], matched: 0, error: `Columna "${matchColumn}" no encontrada en la cabecera` }
+  }
+  const target = String(matchValue).trim().toLowerCase()
+  const matchedRows = dataRows.filter(r => String(r[colIdx] ?? '').trim().toLowerCase() === target)
+  return { headers, rows: matchedRows, records: toRecords(matchedRows), matched: matchedRows.length }
+}
+
 module.exports = {
   isConfigured, getAuthUrl, exchangeCode, refreshAccessToken, getUserEmail,
   saveIntegration, getValidAccessToken,
   readRows, appendRow, updateRange, clearRange, extractSpreadsheetId,
+  rowsToRecords, filterSheetRows,
 }

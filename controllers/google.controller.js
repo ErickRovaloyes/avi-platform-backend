@@ -83,20 +83,28 @@ const removeSheet = async (req, res) => {
 }
 
 // POST /api/accounts/:accId/google/sheets-op
-// body: { operation:'read'|'append'|'update'|'delete', spreadsheet, range, values }
+// body: { operation:'read'|'headers'|'append'|'update'|'delete', spreadsheet, range, values,
+//         matchColumn, matchValue }
 // Ejecuta la operación de Sheets server-side (usado por el nodo de flujo cuando
 // corre en el navegador: pruebas / webchat).
+//   - 'headers' → devuelve los nombres de columna (primera fila del rango).
+//   - 'read'    → devuelve filas; si se pasa matchColumn+matchValue, filtra por esa
+//                 columna (la cabecera) y devuelve solo las filas que coinciden.
 const sheetsOp = async (req, res) => {
   const { accId } = req.params
-  const { operation = 'read', spreadsheet, range, values } = req.body || {}
+  const { operation = 'read', spreadsheet, range, values, matchColumn, matchValue } = req.body || {}
   try {
     const spreadsheetId = g.extractSpreadsheetId(spreadsheet)
     if (!spreadsheetId) return res.status(400).json({ error: 'Falta el link/ID de la hoja' })
     const token = await g.getValidAccessToken(accId)
     const rng = range || 'A1:Z1000'
-    if (operation === 'read') {
+    if (operation === 'headers') {
       const rows = await g.readRows(token, spreadsheetId, rng)
-      return res.json({ ok: true, rows })
+      return res.json({ ok: true, headers: (rows[0] || []).map(h => String(h)) })
+    } else if (operation === 'read') {
+      const rows = await g.readRows(token, spreadsheetId, rng)
+      const out = g.filterSheetRows(rows, matchColumn, matchValue)
+      return res.json({ ok: true, ...out })
     } else if (operation === 'append') {
       await g.appendRow(token, spreadsheetId, rng, Array.isArray(values) ? values : [])
       return res.json({ ok: true })
