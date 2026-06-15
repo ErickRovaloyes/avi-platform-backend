@@ -287,13 +287,29 @@ const sendManual = async (req, res) => {
 }
 
 const appendDebug = async (req, res) => {
-  const { accId, convId } = req.params
+  const { accId, agId, convId } = req.params
   const entry = { ...req.body, ts: Date.now() }
   try {
     const [[c]] = await pool.query('SELECT debug_log FROM conversations WHERE id=? AND account_id=?', [convId, accId])
     const log = parseJ(c?.debug_log, [])
     log.push(entry)
     await pool.query('UPDATE conversations SET debug_log=? WHERE id=? AND account_id=?', [JSON.stringify(log), convId, accId])
+
+    // Registro de errores global: los flujos que corren en el NAVEGADOR (pruebas
+    // y webchat) reportan sus errores por este endpoint. Sin esto, solo aparecían
+    // los errores de canales reales (que corren en el backend). El JOIN con la
+    // conversación da la referencia del chat (guest + canal) en la vista.
+    if (entry?.type === 'error') {
+      try {
+        const detail = entry.detail != null
+          ? (typeof entry.detail === 'object' ? JSON.stringify(entry.detail) : String(entry.detail))
+          : null
+        await pool.query(
+          'INSERT INTO error_log (account_id, agent_id, conv_id, source, message, detail, ts) VALUES (?,?,?,?,?,?,?)',
+          [accId, agId || null, convId || null, 'flow', String(entry.title || '').slice(0, 500), detail ? detail.slice(0, 1000) : null, Date.now()]
+        )
+      } catch (e) { /* non-critical */ }
+    }
     res.json({ ok: true })
   } catch (err) { console.error('[DEBUG]', err); res.status(500).json({ error: 'Error interno' }) }
 }

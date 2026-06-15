@@ -49,4 +49,32 @@ const listErrors = async (req, res) => {
   } catch (err) { console.error('[error-log]', err); res.status(500).json({ error: 'Error interno' }) }
 }
 
-module.exports = { listExecutions, listErrors }
+// POST /api/accounts/:accId/flow-executions
+// Lo usan los flujos que corren en el NAVEGADOR (pruebas/webchat) para registrar
+// su ejecución en el log global (los de canales reales ya se guardan en el backend).
+// La fuente (source) se deriva del canal de la conversación: 'test' para el canal
+// de pruebas, 'chat' para webchat.
+const createExecution = async (req, res) => {
+  const { accId } = req.params
+  const {
+    agentId = null, convId = null, flowId = null, flowName = '',
+    trigger = '', status = 'success', error = null,
+    durationMs = 0, startedAt = Date.now(),
+  } = req.body || {}
+  try {
+    let source = 'chat'
+    if (convId) {
+      const [[c]] = await pool.query('SELECT channel_type FROM conversations WHERE id=? AND account_id=?', [convId, accId])
+      if (c?.channel_type === 'test') source = 'test'
+    }
+    await pool.query(
+      `INSERT INTO flow_executions (account_id, agent_id, conv_id, flow_id, flow_name, trigger_type, status, error, duration_ms, started_at, source)
+       VALUES (?,?,?,?,?,?,?,?,?,?,?)`,
+      [accId, agentId, convId, flowId, flowName || '', trigger || '', status || 'success',
+       error ? String(error).slice(0, 1000) : null, durationMs || 0, startedAt || Date.now(), source]
+    )
+    res.json({ ok: true })
+  } catch (err) { console.error('[create flow-execution]', err); res.status(500).json({ error: 'Error interno' }) }
+}
+
+module.exports = { listExecutions, listErrors, createExecution }
