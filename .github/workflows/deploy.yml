@@ -14,6 +14,10 @@ jobs:
           host: ${{ secrets.VPS_HOST }}
           username: ${{ secrets.VPS_USER }}
           password: ${{ secrets.VPS_PASSWORD }}
+          # Connection timeout subido a 120s: el VPS puede tardar en aceptar SSH
+          # cuando está ocupado construyendo (evita "dial tcp :22: i/o timeout").
+          timeout: 120s
+          command_timeout: 20m
           script: |
             cd /opt/avi-platform/backend
             git pull origin main
