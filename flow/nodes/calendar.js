@@ -1,0 +1,153 @@
+'use strict'
+/**
+ * Nodos de Calendario (backend port) — operan sobre el servicio de reservas
+ * (services/bookings). Disponibles en flujos de canales reales y, vía el motor
+ * del navegador, también en pruebas/webchat.
+ */
+
+const { interpolate, logDebug, setVarBoth } = require('../common')
+const bookings = require('../../services/bookings')
+const av = require('../../services/availability')
+
+function addDays(dateStr, n) {
+  const d = new Date(dateStr + 'T00:00:00Z')
+  d.setUTCDate(d.getUTCDate() + n)
+  return d.toISOString().slice(0, 10)
+}
+function resolveDate(raw, vars, tz) {
+  const v = interpolate(raw || '', vars).trim().toLowerCase()
+  const today = av.nowInTz(tz).date
+  if (!v || v === 'hoy' || v === 'today') return today
+  if (['mañana', 'manana', 'tomorrow'].includes(v)) return addDays(today, 1)
+  const m = v.match(/^\+(\d+)d$/)
+  if (m) return addDays(today, parseInt(m[1], 10))
+  return v.slice(0, 10)
+}
+async function calTz(accId, calId) {
+  try { const c = await bookings.getCalendar(accId, calId); return c?.timezone } catch { return undefined }
+}
+
+const calFields = (extra = []) => [
+  { key: 'calendarId', label: 'Calendario', type: 'calendarRef' },
+  ...extra,
+]
+
+const calendarNodes = [
+  {
+    type: 'calendar_check', category: 'calendar', label: 'Consultar disponibilidad',
+    fields: calFields([
+      { key: 'fecha', label: 'Fecha', type: 'text', default: 'hoy' },
+      { key: 'duracion', label: 'Duración (min, opcional)', type: 'number' },
+      { key: 'destino', label: 'Guardar horarios en', type: 'variableRef' },
+    ]),
+    async exec(node, ctx) {
+      const calId = interpolate(node.data?.calendarId || '', ctx.variables)
+      if (!calId) throw new Error('Elige un calendario')
+      const date = resolveDate(node.data?.fecha, ctx.variables, await calTz(ctx.accId, calId))
+      const slots = await bookings.getAvailability(ctx.accId, calId, date, node.data?.duracion ? Number(node.data.duracion) : undefined)
+      if (node.data?.destino) await setVarBoth(ctx, node.data.destino, JSON.stringify(slots))
+      ctx.variables._calendar_slots = slots
+      ctx.variables._calendar_date = date
+      logDebug(ctx, 'flow_run', `🗓 ${slots.length} horario(s) libres el ${date}`, { slots })
+    },
+  },
+  {
+    type: 'calendar_list_bookings', category: 'calendar', label: 'Consultar reservas',
+    fields: calFields([
+      { key: 'fecha', label: 'Fecha', type: 'text', default: 'hoy' },
+      { key: 'destino', label: 'Guardar reservas en', type: 'variableRef' },
+    ]),
+    async exec(node, ctx) {
+      const calId = interpolate(node.data?.calendarId || '', ctx.variables)
+      if (!calId) throw new Error('Elige un calendario')
+      const date = resolveDate(node.data?.fecha, ctx.variables, await calTz(ctx.accId, calId))
+      const list = await bookings.listBookings(ctx.accId, calId, { date })
+      if (node.data?.destino) await setVarBoth(ctx, node.data.destino, JSON.stringify(list))
+      ctx.variables._calendar_bookings = list
+      logDebug(ctx, 'flow_run', `📋 ${list.length} reserva(s) el ${date}`, {})
+    },
+  },
+  {
+    type: 'calendar_book', category: 'calendar', label: 'Crear reserva',
+    fields: calFields([
+      { key: 'fecha', label: 'Fecha', type: 'text', placeholder: '{{reserva_fecha}}' },
+      { key: 'hora', label: 'Hora (HH:MM)', type: 'text', placeholder: '{{reserva_hora}}' },
+      { key: 'duracion', label: 'Duración (min, opcional)', type: 'number' },
+      { key: 'nombre', label: 'Nombre del cliente', type: 'text', placeholder: '{{cliente_nombre}}' },
+      { key: 'telefono', label: 'Teléfono', type: 'text', placeholder: '{{cliente_telefono}}' },
+      { key: 'email', label: 'Email', type: 'text', placeholder: '{{cliente_email}}' },
+      { key: 'destino', label: 'Guardar ID de reserva en', type: 'variableRef' },
+    ]),
+    async exec(node, ctx) {
+      const calId = interpolate(node.data?.calendarId || '', ctx.variables)
+      if (!calId) throw new Error('Elige un calendario')
+      const date = resolveDate(node.data?.fecha, ctx.variables, await calTz(ctx.accId, calId))
+      const time = interpolate(node.data?.hora || '', ctx.variables).slice(0, 5)
+      const bk = await bookings.createBooking(ctx.accId, calId, {
+        date, time,
+        duration: node.data?.duracion ? Number(node.data.duracion) : undefined,
+        clientName: interpolate(node.data?.nombre || '', ctx.variables),
+        clientPhone: interpolate(node.data?.telefono || '', ctx.variables),
+        clientEmail: interpolate(node.data?.email || '', ctx.variables),
+        channel: 'flow', status: 'confirmed',
+      }, { validate: true })
+      if (node.data?.destino) await setVarBoth(ctx, node.data.destino, bk.id)
+      ctx.variables._last_booking_id = bk.id
+      logDebug(ctx, 'flow_run', `✅ Reserva ${bk.id} · ${date} ${time}`, {})
+    },
+  },
+  {
+    type: 'calendar_reschedule', category: 'calendar', label: 'Reagendar reserva',
+    fields: [
+      { key: 'bookingId', label: 'ID de la reserva', type: 'text', placeholder: '{{_last_booking_id}}' },
+      { key: 'calendarId', label: 'Calendario (para resolver fecha relativa)', type: 'calendarRef' },
+      { key: 'fecha', label: 'Nueva fecha', type: 'text' },
+      { key: 'hora', label: 'Nueva hora (HH:MM)', type: 'text' },
+      { key: 'destino', label: 'Guardar estado en', type: 'variableRef' },
+    ],
+    async exec(node, ctx) {
+      const bookingId = interpolate(node.data?.bookingId || '', ctx.variables)
+      if (!bookingId) throw new Error('Falta el ID de la reserva')
+      const tz = node.data?.calendarId ? await calTz(ctx.accId, interpolate(node.data.calendarId, ctx.variables)) : undefined
+      const date = resolveDate(node.data?.fecha, ctx.variables, tz)
+      const time = interpolate(node.data?.hora || '', ctx.variables).slice(0, 5)
+      const bk = await bookings.rescheduleBooking(ctx.accId, bookingId, date, time, { validate: true })
+      if (node.data?.destino) await setVarBoth(ctx, node.data.destino, bk.status)
+      ctx.variables._last_booking_status = bk.status
+      logDebug(ctx, 'flow_run', `🔁 Reserva ${bookingId} reagendada a ${date} ${time}`, {})
+    },
+  },
+  {
+    type: 'calendar_cancel', category: 'calendar', label: 'Cancelar reserva',
+    fields: [
+      { key: 'bookingId', label: 'ID de la reserva', type: 'text', placeholder: '{{_last_booking_id}}' },
+      { key: 'destino', label: 'Guardar confirmación en', type: 'variableRef' },
+    ],
+    async exec(node, ctx) {
+      const bookingId = interpolate(node.data?.bookingId || '', ctx.variables)
+      if (!bookingId) throw new Error('Falta el ID de la reserva')
+      const bk = await bookings.cancelBooking(ctx.accId, bookingId)
+      if (node.data?.destino) await setVarBoth(ctx, node.data.destino, bk?.status || 'cancelled')
+      ctx.variables._last_booking_status = bk?.status || 'cancelled'
+      logDebug(ctx, 'flow_run', `🚫 Reserva ${bookingId} cancelada`, {})
+    },
+  },
+  {
+    type: 'calendar_get', category: 'calendar', label: 'Obtener reserva',
+    fields: [
+      { key: 'bookingId', label: 'ID de la reserva', type: 'text', placeholder: '{{_last_booking_id}}' },
+      { key: 'destino', label: 'Guardar datos (JSON) en', type: 'variableRef' },
+    ],
+    async exec(node, ctx) {
+      const bookingId = interpolate(node.data?.bookingId || '', ctx.variables)
+      if (!bookingId) throw new Error('Falta el ID de la reserva')
+      const bk = await bookings.getBooking(ctx.accId, bookingId)
+      if (!bk) throw new Error('Reserva no encontrada')
+      if (node.data?.destino) await setVarBoth(ctx, node.data.destino, JSON.stringify(bk))
+      ctx.variables._last_booking = bk
+      logDebug(ctx, 'flow_run', `🔎 Reserva ${bookingId} · ${bk.status}`, {})
+    },
+  },
+]
+
+module.exports = { calendarNodes }

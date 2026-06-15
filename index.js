@@ -109,6 +109,7 @@ const waTemplatesRoutes   = require('./routes/whatsappTemplates.routes')
 const googleRoutes        = require('./routes/google.routes')
 const flowLogsRoutes      = require('./routes/flowLogs.routes')
 const aiMediaRoutes       = require('./routes/aiMedia.routes')
+const calendarRoutes      = require('./routes/calendars.routes')
 
 // Guest counter alias (used by storage.js generateGuest)
 const guestRouter = require('express').Router()
@@ -143,6 +144,7 @@ app.use('/api',                waTemplatesRoutes)
 app.use('/api',                googleRoutes)
 app.use('/api',                flowLogsRoutes)
 app.use('/api',                aiMediaRoutes)
+app.use('/api',                calendarRoutes)
 app.use('/api',                webhookRoutes)
 
 // ── Auto-migrate DB columns added after initial schema ────────────────────────
@@ -348,6 +350,46 @@ app.use('/api',                webhookRoutes)
        sort_order  INT DEFAULT 0,
        created_at  BIGINT,
        updated_at  BIGINT
+     )`,
+    // ── Calendarios (reservas + formularios) ──────────────────────────────
+    `CREATE TABLE IF NOT EXISTS calendars (
+       id           VARCHAR(50) PRIMARY KEY,
+       account_id   VARCHAR(50) NOT NULL,
+       type         VARCHAR(20) DEFAULT 'booking',   -- booking | form
+       name         VARCHAR(150) NOT NULL,
+       description  TEXT,
+       timezone     VARCHAR(64) DEFAULT 'America/Lima',
+       color        VARCHAR(20) DEFAULT '#7c6fff',
+       status       VARCHAR(20) DEFAULT 'active',     -- active | inactive
+       availability JSON,    -- { mon:{enabled,slots:[{start,end}]}, ... }
+       exceptions   JSON,    -- [{ date, type:'block'|'custom', slots:[{start,end}], note }]
+       appointment  JSON,    -- { defaultDuration, types, buffer, maxPerDay, minAdvanceMin, maxAdvanceDays, allowSimultaneous, capacity }
+       form_config  JSON,    -- type=form: { fields:[...], scheduleStepEnabled, whatsappConsent, intro }
+       flow_id      VARCHAR(50),  -- flujo a ejecutar al crear la reserva
+       created_at   BIGINT,
+       updated_at   BIGINT,
+       INDEX idx_cal_acc (account_id, status)
+     )`,
+    `CREATE TABLE IF NOT EXISTS calendar_bookings (
+       id           VARCHAR(50) PRIMARY KEY,
+       account_id   VARCHAR(50) NOT NULL,
+       calendar_id  VARCHAR(50) NOT NULL,
+       date         VARCHAR(10),   -- YYYY-MM-DD (wall-clock en la TZ del calendario)
+       time         VARCHAR(5),    -- HH:MM
+       duration     INT DEFAULT 30,
+       client_name  VARCHAR(150),
+       client_phone VARCHAR(40),
+       client_email VARCHAR(150),
+       channel      VARCHAR(30) DEFAULT 'manual',
+       status       VARCHAR(20) DEFAULT 'pending',  -- pending|confirmed|rescheduled|cancelled|noshow|completed
+       notes        TEXT,
+       meta         JSON,          -- respuestas del formulario, consentimiento WhatsApp, etc.
+       external_id  VARCHAR(200),  -- id del evento en Google/Zoho (sync futura)
+       created_at   BIGINT,
+       updated_at   BIGINT,
+       INDEX idx_book_cal_date (account_id, calendar_id, date),
+       INDEX idx_book_status (account_id, status),
+       INDEX idx_book_ext (external_id)
      )`,
   ]
   for (const sql of migrations) {

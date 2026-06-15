@@ -67,6 +67,9 @@ const getAccount = async (req, res) => {
     const [flows]     = await pool.query('SELECT * FROM flows WHERE account_id=?', [accId])
     const [contacts]  = await pool.query('SELECT * FROM contacts WHERE account_id=?', [accId])
     const [usageRows] = await pool.query('SELECT * FROM change_agent_usage WHERE account_id=?', [accId])
+    // Calendarios (tabla creada por migración en arranque — defensivo por si aún no existe)
+    let calendars = []
+    try { [calendars] = await pool.query('SELECT * FROM calendars WHERE account_id=? ORDER BY created_at DESC', [accId]) } catch { calendars = [] }
     // Effective keys (account own → platform fallback). UI shows badge per provider.
     const [[pf]] = await pool.query('SELECT openai_key, deepseek_key, anthropic_key FROM platform_settings WHERE id=1')
     const effOpenai    = (acc.openai_key    && acc.openai_key.trim())    || pf?.openai_key    || ''
@@ -103,6 +106,13 @@ const getAccount = async (req, res) => {
       aiTools:   aiTools.map(t => ({ id: t.id, name: t.name, description: t.description, collectFields: parseJ(t.collect_fields, []), flowId: t.flow_id, actionType: t.action_type || 'variable', n8nIntegrationId: t.n8n_integration_id, createdAt: t.created_at })),
       flows:     flows.map(f => ({ id: f.id, name: f.name, trigger: f.trigger, startNodeId: f.start_node_id, nodes: parseJ(f.nodes, []), createdAt: f.created_at })),
       contacts:  contacts.map(c => ({ id: c.id, name: c.name, email: c.email, phone: c.phone, ...parseJ(c.extra, {}), createdAt: c.created_at })),
+      calendars: calendars.map(c => ({
+        id: c.id, type: c.type || 'booking', name: c.name, description: c.description || '',
+        timezone: c.timezone, color: c.color, status: c.status,
+        availability: parseJ(c.availability, {}), exceptions: parseJ(c.exceptions, []),
+        appointment: parseJ(c.appointment, {}), formConfig: parseJ(c.form_config, {}),
+        flowId: c.flow_id || null, createdAt: c.created_at, updatedAt: c.updated_at,
+      })),
     })
   } catch (err) {
     console.error('[GET ACCOUNT]', err)

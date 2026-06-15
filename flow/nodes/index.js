@@ -22,6 +22,7 @@ const { crmNodes }          = require('./crm')
 const { analyticsNodes }    = require('./analytics')
 const { googleNodes }       = require('./google')
 const { accumulateNodes }   = require('./accumulate')
+const { calendarNodes }     = require('./calendar')
 
 registerMany([
   ...conversationNodes,
@@ -36,6 +37,7 @@ registerMany([
   ...analyticsNodes,
   ...googleNodes,
   ...accumulateNodes,
+  ...calendarNodes,
 ])
 
 // ── Aliases legacy (mismos que el frontend) ──────────────────────────────────
@@ -60,7 +62,7 @@ alias('condition', 'if',         node => ({ ...node, data: { campo: `{{${node.da
 // migrado (conversation, ai, control, knowledge, human, integrations, data,
 // memory, crm, analytics).
 const NOT_YET_MIGRATED = [
-  'calendar_check', 'calendar_book', 'calendar_reschedule', 'calendar_cancel', 'calendar_reminder',
+  'calendar_reminder',
 ]
 const stubDefs = NOT_YET_MIGRATED
   .filter(type => !getNode(type))
