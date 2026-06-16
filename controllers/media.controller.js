@@ -90,6 +90,7 @@ const uploadMedia = async (req, res) => {
     // 2.5) Auto-transcripción de notas de voz del usuario. La transcripción pasa a
     //      ser el contenido del mensaje y el {{_lastUserMessage}} del flujo.
     let transcription = null
+    let transcriptionError = null
     if (sender === 'user' && media.kind === 'audio') {
       try {
         const mediaAI = require('../services/mediaAI')
@@ -101,8 +102,24 @@ const uploadMedia = async (req, res) => {
           const lv = parseJ(cv?.local_vars, {})
           lv._lastUserMessage = transcription
           await pool.query('UPDATE conversations SET local_vars=? WHERE id=? AND account_id=?', [JSON.stringify(lv), convId, accId])
+        } else {
+          transcriptionError = 'La transcripción llegó vacía'
         }
-      } catch (e) { console.warn('[transcribe]', e.message) }
+      } catch (e) {
+        transcriptionError = e.message || 'Error desconocido'
+        console.warn('[transcribe]', e.message)
+      }
+      // Deja constancia del fallo en el mensaje (visible para el asesor) y en el log de errores.
+      if (transcriptionError) {
+        metadata.transcriptionError = transcriptionError
+        try { await pool.query('UPDATE messages SET metadata=? WHERE id=?', [JSON.stringify(metadata), messageId]) } catch {}
+        try {
+          await pool.query(
+            'INSERT INTO error_log (account_id, agent_id, conv_id, source, message, detail, ts) VALUES (?,?,?,?,?,?,?)',
+            [accId, agId, convId, 'transcription', `No se pudo transcribir el audio: ${transcriptionError}`.slice(0, 500), null, Date.now()]
+          )
+        } catch {}
+      }
     }
 
     // 3) bump preview + updated_at on the conversation (same as appendMessage)
@@ -201,7 +218,7 @@ const uploadMedia = async (req, res) => {
     socket.emit(accId, 'message:new', { accId, agId, convId, message: msg })
     socket.emitToConv(convId, 'message:new', { convId, message: msg })
 
-    res.json({ ok: true, id: messageId, mediaId: media.id, ts, kind: media.kind, mime: media.mime, filename, sizeBytes: media.sizeBytes, transcription })
+    res.json({ ok: true, id: messageId, mediaId: media.id, ts, kind: media.kind, mime: media.mime, filename, sizeBytes: media.sizeBytes, transcription, transcriptionError })
   } catch (err) {
     console.error('[UPLOAD MEDIA]', err)
     res.status(500).json({ error: err.message || 'Error interno' })

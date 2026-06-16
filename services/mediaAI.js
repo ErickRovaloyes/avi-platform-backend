@@ -34,8 +34,28 @@ async function transcribeMedia(accId, mediaId, { model = 'whisper-1', language }
   if (!apiKey) throw new Error('Sin API Key de OpenAI para transcribir audios')
 
   const buf = Buffer.from(m.data_base64, 'base64')
+  if (!buf.length) throw new Error('El audio está vacío')
+
+  // Whisper acepta: flac, m4a, mp3, mp4, mpeg, mpga, oga, ogg, wav, webm. Hay que
+  // mandar un nombre de archivo con extensión válida y un mime sin "; codecs=...".
+  const baseMime = String(m.mime_type || 'audio/ogg').split(';')[0].trim().toLowerCase()
+  const EXT_BY_MIME = {
+    'audio/webm': 'webm', 'audio/ogg': 'ogg', 'audio/oga': 'oga', 'audio/opus': 'ogg',
+    'audio/mpeg': 'mp3', 'audio/mp3': 'mp3', 'audio/mp4': 'mp4', 'audio/m4a': 'm4a',
+    'audio/x-m4a': 'm4a', 'audio/aac': 'm4a', 'audio/wav': 'wav', 'audio/x-wav': 'wav',
+    'audio/flac': 'flac', 'audio/x-flac': 'flac',
+  }
+  const SUPPORTED = /\.(flac|m4a|mp3|mp4|mpeg|mpga|oga|ogg|wav|webm)$/i
+  const ext = EXT_BY_MIME[baseMime] || 'ogg'
+  let filename = m.filename || `audio.${ext}`
+  if (!SUPPORTED.test(filename)) filename = `audio.${ext}`
+
   const form = new FormData()
-  form.append('file', new Blob([buf], { type: m.mime_type || 'audio/ogg' }), m.filename || 'audio.ogg')
+  // File conserva el nombre/extensión de forma fiable en el multipart de Node.
+  const fileObj = (typeof File !== 'undefined')
+    ? new File([buf], filename, { type: baseMime })
+    : new Blob([buf], { type: baseMime })
+  form.append('file', fileObj, filename)
   form.append('model', model)
   form.append('response_format', 'text')
   if (language) form.append('language', language)
@@ -47,7 +67,7 @@ async function transcribeMedia(accId, mediaId, { model = 'whisper-1', language }
   })
   if (!res.ok) {
     const t = await res.text().catch(() => '')
-    throw new Error('Transcripción falló: ' + t.slice(0, 200))
+    throw new Error(`Whisper ${res.status}: ${(t || res.statusText).slice(0, 200)}`)
   }
   // response_format=text → cuerpo es texto plano
   const text = (await res.text()).trim()
