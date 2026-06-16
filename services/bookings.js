@@ -9,6 +9,14 @@
 const pool = require('../db')
 const { uid, parseJ } = require('../utils')
 const av = require('./availability')
+const holidays = require('./holidays')
+
+// ¿La fecha cae en un festivo que el calendario decidió bloquear?
+async function holidayBlocked(calendar, dateStr) {
+  const ap = calendar.appointment || {}
+  if (ap.holidayMode !== 'block' || !ap.holidayCountry) return false
+  try { return await holidays.isHoliday(ap.holidayCountry, dateStr) } catch { return false }
+}
 
 const BOOKING_STATUSES = ['pending', 'confirmed', 'rescheduled', 'cancelled', 'noshow', 'completed']
 
@@ -82,6 +90,7 @@ async function bookingsForDate(accId, calendarId, dateStr) {
 async function getAvailability(accId, calendarId, dateStr, durationMin) {
   const calendar = await getCalendar(accId, calendarId)
   if (!calendar) throw new Error('Calendario no encontrado')
+  if (await holidayBlocked(calendar, dateStr)) return []
   const bookings = await bookingsForDate(accId, calendarId, dateStr)
   return av.computeSlots(calendar, dateStr, bookings, { durationMin })
 }
@@ -96,6 +105,7 @@ async function createBooking(accId, calendarId, data = {}, { validate = true } =
   const duration = Number(data.duration) || Number(calendar.appointment?.defaultDuration) || 30
 
   if (validate) {
+    if (await holidayBlocked(calendar, date)) throw new Error('Ese día es festivo y está bloqueado para reservas')
     const bookings = await bookingsForDate(accId, calendarId, date)
     if (!av.isSlotAvailable(calendar, date, time, bookings, { durationMin: duration })) {
       throw new Error('El horario seleccionado ya no está disponible')

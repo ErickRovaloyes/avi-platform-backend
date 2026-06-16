@@ -3,6 +3,7 @@ const pool = require('../db')
 const { uid } = require('../utils')
 const socket = require('../services/socket')
 const bookings = require('../services/bookings')
+const holidaysSvc = require('../services/holidays')
 
 // ── Defaults para un calendario nuevo ────────────────────────────────────────
 const DEFAULT_DAY = { enabled: true, slots: [{ start: '09:00', end: '17:00' }] }
@@ -259,8 +260,15 @@ const flowOp = async (req, res) => {
   } catch (e) { res.status(400).json({ error: e.message || 'Error' }) }
 }
 
+// GET /api/holidays/:country/:year → festivos del país (Nager.Date, cacheado)
+const holidays = async (req, res) => {
+  const { country, year } = req.params
+  try { res.json({ country, year, holidays: await holidaysSvc.getHolidayList(country, year) }) }
+  catch { res.json({ country, year, holidays: [] }) }
+}
+
 module.exports = {
   list, get, create, update, remove, availability,
   listBookings, createBooking, updateBooking, rescheduleBooking, setStatus, deleteBooking, exportBookings,
-  getPublic, getPublicAvailability, createPublicBooking, flowOp,
+  getPublic, getPublicAvailability, createPublicBooking, flowOp, holidays,
 }

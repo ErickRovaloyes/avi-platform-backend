@@ -26,5 +26,7 @@ router.get('/public/calendars/:accId/:calId/availability',   optionalAuth, ctrl.
 router.post('/public/calendars/:accId/:calId/book',          optionalAuth, ctrl.createPublicBooking)
 // Operaciones de los nodos de flujo del navegador (pruebas/webchat).
 router.post('/public/calendars/:accId/flow-op',              optionalAuth, ctrl.flowOp)
+// Festivos por país (público — lo usa la UI de calendario y la página de reservas).
+router.get('/holidays/:country/:year',                       ctrl.holidays)
 
 module.exports = router
