@@ -24,7 +24,7 @@ function buildToolDefs(toolList) {
             { type: 'string', description: f.label },
           ])
         ),
-        required: (tool.collectFields || []).map(f => f.paramName || f.label.replace(/\s+/g, '_').toLowerCase()),
+        required: (tool.collectFields || []).filter(f => f.required !== false).map(f => f.paramName || f.label.replace(/\s+/g, '_').toLowerCase()),
       },
     },
   }))

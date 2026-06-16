@@ -24,6 +24,23 @@ async function sendWhatsAppText({ phoneNumberId, accessToken, to, text }) {
   return res.json()
 }
 
+// Marca un mensaje entrante como leído y, opcionalmente, muestra el indicador
+// "escribiendo…" al usuario (hasta 25s o hasta que se envíe un mensaje).
+// No es crítico: cualquier error se ignora para no bloquear el flujo.
+async function sendWhatsAppRead({ phoneNumberId, accessToken, messageId, typing = false }) {
+  if (!phoneNumberId || !accessToken || !messageId) return false
+  try {
+    const body = { messaging_product: 'whatsapp', status: 'read', message_id: messageId }
+    if (typing) body.typing_indicator = { type: 'text' }
+    const res = await fetch(`${GRAPH_BASE}/${phoneNumberId}/messages`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${accessToken}` },
+      body: JSON.stringify(body),
+    })
+    return res.ok
+  } catch { return false }
+}
+
 // Envía un mensaje multimedia (imagen/audio/video/documento) por URL.
 async function sendWhatsAppMedia({ phoneNumberId, accessToken, to, kind, link, caption, filename }) {
   const type = kind === 'file' ? 'document' : (kind || 'image')
@@ -201,7 +218,7 @@ function parseInstagramWebhook(body) {
 }
 
 module.exports = {
-  sendWhatsAppText, sendWhatsAppMedia, parseWhatsAppWebhook,
+  sendWhatsAppText, sendWhatsAppMedia, sendWhatsAppRead, parseWhatsAppWebhook,
   sendWhatsAppTemplate, listWhatsAppTemplates,
   sendMessengerText, parseMessengerWebhook,
   sendInstagramText, parseInstagramWebhook,

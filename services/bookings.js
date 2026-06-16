@@ -101,6 +101,39 @@ async function getAvailability(accId, calendarId, dateStr, durationMin) {
   return av.computeSlots(calendar, dateStr, [...bookings, ...gBusy], { durationMin })
 }
 
+const toDateKey = (d) => (typeof d === 'string' ? d.slice(0, 10) : new Date(d).toISOString().slice(0, 10))
+
+// Devuelve los días del mes (year, month 1-12) que tienen al menos un horario
+// libre. Para que la cuadrícula cargue rápido NO consulta Google por día (eso se
+// resuelve al elegir el día); sí considera horario semanal, excepciones,
+// festivos, reservas existentes y la ventana de antelación.
+async function getMonthAvailability(accId, calendarId, year, month, durationMin) {
+  const calendar = await getCalendar(accId, calendarId)
+  if (!calendar) throw new Error('Calendario no encontrado')
+  const y = Number(year), m = Number(month)
+  if (!y || !m || m < 1 || m > 12) throw new Error('Mes inválido')
+  const mm = String(m).padStart(2, '0')
+  const lastDay = new Date(Date.UTC(y, m, 0)).getUTCDate()
+  const first = `${y}-${mm}-01`, last = `${y}-${mm}-${String(lastDay).padStart(2, '0')}`
+  const [rows] = await pool.query(
+    'SELECT date, time, duration, status FROM calendar_bookings WHERE account_id=? AND calendar_id=? AND date BETWEEN ? AND ?',
+    [accId, calendarId, first, last]
+  )
+  const byDate = {}
+  for (const r of rows) {
+    const dk = toDateKey(r.date)
+    ;(byDate[dk] ||= []).push({ date: dk, time: r.time, duration: r.duration, status: r.status })
+  }
+  const days = []
+  for (let d = 1; d <= lastDay; d++) {
+    const ds = `${y}-${mm}-${String(d).padStart(2, '0')}`
+    if (await holidayBlocked(calendar, ds)) continue
+    const slots = av.computeSlots(calendar, ds, byDate[ds] || [], { durationMin })
+    if (slots.length > 0) days.push(ds)
+  }
+  return { year: y, month: m, days }
+}
+
 // Crea una reserva. Valida el slot salvo que validate=false (reserva manual).
 async function createBooking(accId, calendarId, data = {}, { validate = true } = {}) {
   const calendar = await getCalendar(accId, calendarId)
@@ -200,6 +233,6 @@ async function deleteBooking(accId, bookingId) {
 module.exports = {
   BOOKING_STATUSES, mapCalendar, mapBooking,
   getCalendar, listCalendars, listBookings, getBooking, bookingsForDate,
-  getAvailability, createBooking, rescheduleBooking, cancelBooking,
+  getAvailability, getMonthAvailability, createBooking, rescheduleBooking, cancelBooking,
   setBookingStatus, updateBooking, deleteBooking,
 }

@@ -12,7 +12,7 @@ const store = require('./store')
 const engine = require('./engine')
 const mediaAI = require('../services/mediaAI')
 const {
-  parseWhatsAppWebhook, sendWhatsAppText, sendWhatsAppMedia,
+  parseWhatsAppWebhook, sendWhatsAppText, sendWhatsAppMedia, sendWhatsAppRead,
   parseMessengerWebhook, sendMessengerText,
   parseInstagramWebhook, sendInstagramText,
 } = require('../services/metaSend')
@@ -94,6 +94,11 @@ async function processWhatsApp(accId, agentId, body) {
     })
 
     if (!(await shouldRun(accId, agentId, convId))) continue
+
+    // Indicador "escribiendo…" mientras el flujo genera la respuesta (y marca leído).
+    if (channel?.config?.phoneNumberId && channel?.config?.accessToken && msg.messageId) {
+      sendWhatsAppRead({ phoneNumberId: channel.config.phoneNumberId, accessToken: channel.config.accessToken, messageId: msg.messageId, typing: true }).catch(() => {})
+    }
 
     const waOutbound = async (text, meta) => {
       const cfg = channel?.config

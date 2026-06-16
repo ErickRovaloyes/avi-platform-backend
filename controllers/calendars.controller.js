@@ -94,6 +94,17 @@ const availability = async (req, res) => {
   } catch (err) { res.status(400).json({ error: err.message || 'Error' }) }
 }
 
+// Días con disponibilidad de un mes (para la cuadrícula de la página pública).
+const monthAvailability = async (req, res) => {
+  const { accId, calId } = req.params
+  const { year, month, duration } = req.query
+  if (!year || !month) return res.status(400).json({ error: 'Falta el mes' })
+  try {
+    const r = await bookings.getMonthAvailability(accId, calId, year, month, duration ? Number(duration) : undefined)
+    res.json(r)
+  } catch (err) { res.status(400).json({ error: err.message || 'Error' }) }
+}
+
 // ── Bookings ─────────────────────────────────────────────────────────────────
 const listBookings = async (req, res) => {
   const { accId, calId } = req.params
@@ -173,6 +184,7 @@ const getPublic = async (req, res) => {
 }
 
 const getPublicAvailability = async (req, res) => availability(req, res)
+const getPublicMonthAvailability = async (req, res) => monthAvailability(req, res)
 
 // Crea la reserva desde el formulario público y ejecuta el flujo del calendario.
 const createPublicBooking = async (req, res) => {
@@ -189,8 +201,12 @@ const createPublicBooking = async (req, res) => {
       return res.status(400).json({ error: 'Debes autorizar el contacto por WhatsApp para reservar.' })
     }
 
+    // Si la reserva nace de un chat (nodo "Enviar calendario"), guardamos la
+    // referencia para que el flujo y las notificaciones corran en ESE chat.
+    const convRef = typeof b.conversationId === 'string' && b.conversationId ? b.conversationId : null
     const meta = {
       ...(b.answers ? { answers: b.answers } : {}),
+      ...(convRef ? { conversationId: convRef } : {}),
       whatsappConsent: !!b.whatsappConsent,
       whatsappConsentAt: b.whatsappConsent ? Date.now() : null,
       whatsappConsentText: 'Autorizo ser contactado por WhatsApp para recibir información relacionada con mi reserva.',
@@ -202,31 +218,40 @@ const createPublicBooking = async (req, res) => {
     socket.emit(accId, 'account:updated', { accId })
 
     // Ejecuta el flujo configurado (best-effort, no bloquea la reserva).
-    runBookingFlow(accId, cal, bk).catch(e => console.warn('[booking flow]', e.message))
+    runBookingFlow(accId, cal, bk, convRef).catch(e => console.warn('[booking flow]', e.message))
 
     res.json({ ok: true, booking: { id: bk.id, date: bk.date, time: bk.time, status: bk.status } })
   } catch (err) { res.status(400).json({ error: err.message || 'Error' }) }
 }
 
-// Ejecuta el flujo del calendario creando una conversación 'form' para la reserva.
-async function runBookingFlow(accId, calendar, booking) {
+// Ejecuta el flujo del calendario. Si la reserva nació de un chat (convRef),
+// el flujo corre en ESA conversación; si no, crea una conversación 'form'.
+async function runBookingFlow(accId, calendar, booking, convRef = null) {
   if (!calendar.flowId) return
   const store = require('../flow/store')
   const engine = require('../flow/engine')
   const account = await store.loadAccount(accId)
   const agent = account?.agents?.[0]
   if (!agent) return
-  const convId = `conv_form_${Date.now()}_${booking.id}`
-  const ts = Date.now()
-  await pool.query(
-    `INSERT INTO conversations (id, account_id, agent_id, channel_id, channel_type, guest_name, guest_id, initials, preview, unread, ai_enabled, labels, pipeline_cards, local_vars, debug_log, created_at, updated_at)
-     VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`,
-    [convId, accId, agent.id, calendar.id, 'form', booking.clientName || 'Reserva', booking.id,
-     (booking.clientName || 'R').slice(0, 2).toUpperCase(), `📅 Reserva ${booking.date} ${booking.time}`,
-     1, 1, '[]', '[]', JSON.stringify({ booking_id: booking.id }), '[]', ts, ts]
-  )
+  let convId = null
+  let agId = agent.id
+  if (convRef) {
+    const [[c]] = await pool.query('SELECT id, agent_id FROM conversations WHERE id=? AND account_id=?', [convRef, accId])
+    if (c) { convId = c.id; agId = c.agent_id || agent.id }
+  }
+  if (!convId) {
+    convId = `conv_form_${Date.now()}_${booking.id}`
+    const ts = Date.now()
+    await pool.query(
+      `INSERT INTO conversations (id, account_id, agent_id, channel_id, channel_type, guest_name, guest_id, initials, preview, unread, ai_enabled, labels, pipeline_cards, local_vars, debug_log, created_at, updated_at)
+       VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`,
+      [convId, accId, agId, calendar.id, 'form', booking.clientName || 'Reserva', booking.id,
+       (booking.clientName || 'R').slice(0, 2).toUpperCase(), `📅 Reserva ${booking.date} ${booking.time}`,
+       1, 1, '[]', '[]', JSON.stringify({ booking_id: booking.id }), '[]', ts, ts]
+    )
+  }
   await engine.executeFlow({
-    flowId: calendar.flowId, accId, agId: agent.id, convId,
+    flowId: calendar.flowId, accId, agId, convId,
     triggerContext: {
       booking_id: booking.id, reserva_id: booking.id,
       cliente_nombre: booking.clientName, cliente_telefono: booking.clientPhone, cliente_email: booking.clientEmail,
@@ -268,7 +293,7 @@ const holidays = async (req, res) => {
 }
 
 module.exports = {
-  list, get, create, update, remove, availability,
+  list, get, create, update, remove, availability, monthAvailability,
   listBookings, createBooking, updateBooking, rescheduleBooking, setStatus, deleteBooking, exportBookings,
-  getPublic, getPublicAvailability, createPublicBooking, flowOp, holidays,
+  getPublic, getPublicAvailability, getPublicMonthAvailability, createPublicBooking, flowOp, holidays,
 }

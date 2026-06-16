@@ -8,6 +8,7 @@
  */
 
 const store = require('./store')
+const socket = require('../services/socket')
 const { executeNode, getNode } = require('./nodes')
 
 // Conversaciones con un flujo en curso (anti-reentrada). En memoria del proceso.
@@ -23,6 +24,8 @@ async function executeFlow({ flowId, accId, agId, convId, triggerContext = {}, t
   if (!flow || !flow.nodes?.length) return
 
   _running.add(convId)
+  // Indicador "escribiendo…" en la bandeja mientras el flujo genera la respuesta.
+  socket.emit(accId, 'flow:typing', { accId, agId, convId, typing: true })
   const trace = { steps: [], startedAt: Date.now(), status: 'success' }
   try {
     const variables = await buildVarContext(account, accId, agId, convId, triggerContext)
@@ -42,6 +45,7 @@ async function executeFlow({ flowId, accId, agId, convId, triggerContext = {}, t
     trace.error = err.message
   } finally {
     _running.delete(convId)
+    socket.emit(accId, 'flow:typing', { accId, agId, convId, typing: false })
     trace.endedAt = Date.now()
     // Persistimos la ejecución para el log global / registro de errores
     store.saveExecution({

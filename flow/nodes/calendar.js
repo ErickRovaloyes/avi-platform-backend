@@ -5,9 +5,12 @@
  * del navegador, también en pruebas/webchat.
  */
 
-const { interpolate, logDebug, setVarBoth } = require('../common')
+const { interpolate, logDebug, setVarBoth, sendBotMsg } = require('../common')
 const bookings = require('../../services/bookings')
 const av = require('../../services/availability')
+
+// Base pública para construir el enlace de la página de reservas.
+function publicBase() { return (process.env.PUBLIC_URL || process.env.BASE_URL || '').replace(/\/$/, '') }
 
 function addDays(dateStr, n) {
   const d = new Date(dateStr + 'T00:00:00Z')
@@ -33,6 +36,30 @@ const calFields = (extra = []) => [
 ]
 
 const calendarNodes = [
+  {
+    type: 'send_calendar', category: 'calendar', label: 'Enviar calendario',
+    fields: calFields([
+      { key: 'mensaje', label: 'Mensaje', type: 'textarea', default: 'Agenda tu cita en el siguiente enlace:' },
+      { key: 'buttonText', label: 'Texto del botón', type: 'text', default: '📅 Agendar cita' },
+    ]),
+    async exec(node, ctx) {
+      const calId = interpolate(node.data?.calendarId || '', ctx.variables)
+      if (!calId) throw new Error('Elige un calendario')
+      const cal = await bookings.getCalendar(ctx.accId, calId)
+      if (!cal) throw new Error('Calendario no encontrado')
+      const msg = interpolate(node.data?.mensaje || 'Agenda tu cita:', ctx.variables)
+      const buttonText = interpolate(node.data?.buttonText || '📅 Agendar cita', ctx.variables)
+      // La reserva queda referenciada a ESTA conversación (?conv=) → las
+      // notificaciones de la reserva correrán en este mismo chat.
+      const url = `${publicBase()}/book/${ctx.accId}/${calId}?conv=${encodeURIComponent(ctx.convId)}`
+      // Texto con el enlace (clickeable en WhatsApp) + metadata para renderizar
+      // una tarjeta/botón con calendario en webchat e inbox.
+      await sendBotMsg(ctx, `${msg}\n${url}`, {
+        calendar: { accId: ctx.accId, calId, convId: ctx.convId, name: cal.name, color: cal.color || '#7c6fff', buttonText, url },
+      })
+      logDebug(ctx, 'flow_run', `🗓 Calendario enviado: ${cal.name}`, { url })
+    },
+  },
   {
     type: 'calendar_check', category: 'calendar', label: 'Consultar disponibilidad',
     fields: calFields([

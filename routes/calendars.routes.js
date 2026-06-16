@@ -10,6 +10,7 @@ router.get('/accounts/:accId/calendars/:calId',          authMiddleware, ctrl.ge
 router.put('/accounts/:accId/calendars/:calId',          authMiddleware, ctrl.update)
 router.delete('/accounts/:accId/calendars/:calId',       authMiddleware, ctrl.remove)
 router.get('/accounts/:accId/calendars/:calId/availability', authMiddleware, ctrl.availability)
+router.get('/accounts/:accId/calendars/:calId/month-availability', authMiddleware, ctrl.monthAvailability)
 
 // Reservas
 router.get('/accounts/:accId/calendars/:calId/bookings',     authMiddleware, ctrl.listBookings)
@@ -23,6 +24,7 @@ router.delete('/accounts/:accId/bookings/:bookingId',        authMiddleware, ctr
 // ── Público (página de reservas / formulario) ────────────────────────────────
 router.get('/public/calendars/:accId/:calId',                optionalAuth, ctrl.getPublic)
 router.get('/public/calendars/:accId/:calId/availability',   optionalAuth, ctrl.getPublicAvailability)
+router.get('/public/calendars/:accId/:calId/month-availability', optionalAuth, ctrl.getPublicMonthAvailability)
 router.post('/public/calendars/:accId/:calId/book',          optionalAuth, ctrl.createPublicBooking)
 // Operaciones de los nodos de flujo del navegador (pruebas/webchat).
 router.post('/public/calendars/:accId/flow-op',              optionalAuth, ctrl.flowOp)
