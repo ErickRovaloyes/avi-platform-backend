@@ -371,6 +371,7 @@ app.use('/api',                webhookRoutes)
        INDEX idx_cal_acc (account_id, status)
      )`,
     "ALTER TABLE calendars ADD COLUMN notifications JSON",
+    "ALTER TABLE calendars ADD COLUMN integrations JSON",
     `CREATE TABLE IF NOT EXISTS calendar_bookings (
        id           VARCHAR(50) PRIMARY KEY,
        account_id   VARCHAR(50) NOT NULL,

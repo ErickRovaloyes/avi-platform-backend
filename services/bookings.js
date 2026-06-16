@@ -11,6 +11,7 @@ const { uid, parseJ } = require('../utils')
 const av = require('./availability')
 const holidays = require('./holidays')
 const { notify } = require('./calendarNotify')
+const sync = require('./calendarSync')
 
 // ¿La fecha cae en un festivo que el calendario decidió bloquear?
 async function holidayBlocked(calendar, dateStr) {
@@ -32,6 +33,7 @@ function mapCalendar(r) {
     appointment:  parseJ(r.appointment, {}),
     formConfig:   parseJ(r.form_config, {}),
     notifications: parseJ(r.notifications, {}),
+    integrations: parseJ(r.integrations, {}),
     flowId: r.flow_id || null,
     createdAt: r.created_at, updatedAt: r.updated_at,
   }
@@ -94,7 +96,9 @@ async function getAvailability(accId, calendarId, dateStr, durationMin) {
   if (!calendar) throw new Error('Calendario no encontrado')
   if (await holidayBlocked(calendar, dateStr)) return []
   const bookings = await bookingsForDate(accId, calendarId, dateStr)
-  return av.computeSlots(calendar, dateStr, bookings, { durationMin })
+  // Eventos ocupados de Google Calendar bloquean también (si está activo).
+  const gBusy = await sync.googleBusyForDate(accId, calendar, dateStr)
+  return av.computeSlots(calendar, dateStr, [...bookings, ...gBusy], { durationMin })
 }
 
 // Crea una reserva. Valida el slot salvo que validate=false (reserva manual).
@@ -128,6 +132,10 @@ async function createBooking(accId, calendarId, data = {}, { validate = true } =
   )
   const bk = await getBooking(accId, id)
   notify(accId, calendar, bk, 'confirmation').catch(() => {})
+  // Push a Google Calendar (fire-and-forget): guarda el eventId en external_id.
+  sync.pushBooking(accId, calendar, bk, 'create').then(eventId => {
+    if (eventId) pool.query('UPDATE calendar_bookings SET external_id=? WHERE id=?', [eventId, id]).catch(() => {})
+  }).catch(() => {})
   return bk
 }
 
@@ -150,7 +158,7 @@ async function rescheduleBooking(accId, bookingId, newDate, newTime, { validate 
   )
   const bk = await getBooking(accId, bookingId)
   const calendar = await getCalendar(accId, booking.calendarId)
-  if (calendar) notify(accId, calendar, bk, 'reschedule').catch(() => {})
+  if (calendar) { notify(accId, calendar, bk, 'reschedule').catch(() => {}); sync.pushBooking(accId, calendar, bk, 'update').catch(() => {}) }
   return bk
 }
 
@@ -163,7 +171,7 @@ async function setBookingStatus(accId, bookingId, status) {
 
 async function cancelBooking(accId, bookingId) {
   const bk = await setBookingStatus(accId, bookingId, 'cancelled')
-  if (bk) { const calendar = await getCalendar(accId, bk.calendarId); if (calendar) notify(accId, calendar, bk, 'cancellation').catch(() => {}) }
+  if (bk) { const calendar = await getCalendar(accId, bk.calendarId); if (calendar) { notify(accId, calendar, bk, 'cancellation').catch(() => {}); sync.pushBooking(accId, calendar, bk, 'delete').catch(() => {}) } }
   return bk
 }
 

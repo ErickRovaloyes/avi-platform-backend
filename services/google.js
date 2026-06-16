@@ -19,6 +19,7 @@ const CLIENT_SECRET = process.env.GOOGLE_CLIENT_SECRET || ''
 const REDIRECT_URI  = process.env.GOOGLE_REDIRECT_URI || 'https://platform.aviasistente.com/api/google/callback'
 const SCOPES = [
   'https://www.googleapis.com/auth/spreadsheets',
+  'https://www.googleapis.com/auth/calendar',     // eventos + freeBusy (sync de calendarios)
   'https://www.googleapis.com/auth/userinfo.email',
 ]
 
@@ -304,9 +305,39 @@ async function runSheetsOperation(token, opts = {}) {
   throw new Error('Operación de Sheets no soportada: ' + op)
 }
 
+// ── Google Calendar API ──────────────────────────────────────────────────────
+const CALENDAR = 'https://www.googleapis.com/calendar/v3'
+async function calApi(token, path, { method = 'GET', body, qs } = {}) {
+  const url = `${CALENDAR}/${path}${qs ? '?' + new URLSearchParams(qs).toString() : ''}`
+  const res = await fetch(url, {
+    method, headers: { Authorization: `Bearer ${token}`, 'Content-Type': 'application/json' },
+    body: body ? JSON.stringify(body) : undefined,
+  })
+  const data = await res.json().catch(() => ({}))
+  if (!res.ok) throw new Error(data?.error?.message || `Calendar HTTP ${res.status}`)
+  return data
+}
+function createCalendarEvent(token, calendarId, event) {
+  return calApi(token, `calendars/${encodeURIComponent(calendarId)}/events`, { method: 'POST', body: event })
+}
+function updateCalendarEvent(token, calendarId, eventId, event) {
+  return calApi(token, `calendars/${encodeURIComponent(calendarId)}/events/${encodeURIComponent(eventId)}`, { method: 'PATCH', body: event })
+}
+async function deleteCalendarEvent(token, calendarId, eventId) {
+  const url = `${CALENDAR}/calendars/${encodeURIComponent(calendarId)}/events/${encodeURIComponent(eventId)}`
+  const res = await fetch(url, { method: 'DELETE', headers: { Authorization: `Bearer ${token}` } })
+  if (!res.ok && res.status !== 404 && res.status !== 410) throw new Error(`Calendar delete HTTP ${res.status}`)
+  return true
+}
+async function freeBusy(token, calendarId, timeMinIso, timeMaxIso) {
+  const data = await calApi(token, 'freeBusy', { method: 'POST', body: { timeMin: timeMinIso, timeMax: timeMaxIso, items: [{ id: calendarId }] } })
+  return data?.calendars?.[calendarId]?.busy || []
+}
+
 module.exports = {
   isConfigured, getAuthUrl, exchangeCode, refreshAccessToken, getUserEmail,
   saveIntegration, getValidAccessToken,
   readRows, appendRow, updateRange, clearRange, extractSpreadsheetId,
   rowsToRecords, filterSheetRows, runSheetsOperation,
+  createCalendarEvent, updateCalendarEvent, deleteCalendarEvent, freeBusy,
 }
