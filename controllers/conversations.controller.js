@@ -243,6 +243,23 @@ const sendManual = async (req, res) => {
     )
     if (!conv) return res.status(404).json({ error: 'Conversación no encontrada' })
     const type = conv.channel_type
+
+    // Ventana de servicio de 24h de WhatsApp: se reinicia con cada mensaje
+    // entrante del cliente. Fuera de ella la API de Meta rechaza el texto libre,
+    // así que el asesor solo puede enviar una plantilla aprobada o un flujo.
+    if (type === 'whatsapp') {
+      const [[lastIn]] = await pool.query(
+        "SELECT MAX(ts) AS ts FROM messages WHERE conversation_id=? AND sender='user'", [convId]
+      )
+      const lastTs = Number(lastIn?.ts) || 0
+      if (!lastTs || (Date.now() - lastTs) >= 24 * 3600 * 1000) {
+        return res.status(409).json({
+          error: 'La ventana de 24 h de WhatsApp está cerrada. Solo puedes enviar una plantilla aprobada o ejecutar un flujo.',
+          code: 'wa_window_closed',
+        })
+      }
+    }
+
     let providerMsgId = null
     let status = null
 
