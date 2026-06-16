@@ -181,8 +181,9 @@ const createPublicBooking = async (req, res) => {
     const cal = await bookings.getCalendar(accId, calId)
     if (!cal || cal.status === 'inactive') return res.status(404).json({ error: 'Calendario no disponible' })
 
-    // Consentimiento WhatsApp obligatorio si el calendario lo exige.
-    const requiresConsent = cal.formConfig?.whatsappConsent !== false
+    // El consentimiento WhatsApp sólo aplica a calendarios de tipo formulario.
+    // El tipo "reservas" sólo pide la selección de horario (sin datos).
+    const requiresConsent = cal.type === 'form' && cal.formConfig?.whatsappConsent !== false
     if (requiresConsent && !b.whatsappConsent) {
       return res.status(400).json({ error: 'Debes autorizar el contacto por WhatsApp para reservar.' })
     }
