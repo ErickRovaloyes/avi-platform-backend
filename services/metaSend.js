@@ -24,9 +24,22 @@ async function sendWhatsAppText({ phoneNumberId, accessToken, to, text }) {
   return res.json()
 }
 
+// El display_text del botón NO admite emojis ni markdown → lo limpiamos.
+function sanitizeButtonLabel(s) {
+  const cleaned = String(s || '')
+    .replace(/[\u{1F000}-\u{1FAFF}\u{2600}-\u{27BF}\u{2190}-\u{21FF}\u{2B00}-\u{2BFF}\u{FE00}-\u{FE0F}\u{200D}]/gu, '')
+    .replace(/[*_~`]/g, '')
+    .replace(/\s+/g, ' ')
+    .trim()
+    .slice(0, 20)
+    .trim()
+  return cleaned || 'Abrir'
+}
+
 // Envía un botón interactivo "CTA URL" (botón que abre una URL). Es la forma
 // nativa de WhatsApp para enviar un botón con enlace (p. ej. agendar cita).
-// body.text es obligatorio; display_text máx 20 chars; url debe ser absoluta.
+// body.text es obligatorio (admite emojis); display_text máx 20 chars y SIN
+// emojis/markdown; url debe ser absoluta (https).
 async function sendWhatsAppCtaUrl({ phoneNumberId, accessToken, to, bodyText, buttonText, url }) {
   const res = await fetch(`${GRAPH_BASE}/${phoneNumberId}/messages`, {
     method: 'POST',
@@ -36,8 +49,8 @@ async function sendWhatsAppCtaUrl({ phoneNumberId, accessToken, to, bodyText, bu
       type: 'interactive',
       interactive: {
         type: 'cta_url',
-        body: { text: (bodyText && bodyText.trim()) ? bodyText.slice(0, 1024) : '📅' },
-        action: { name: 'cta_url', parameters: { display_text: (buttonText || 'Abrir').slice(0, 20), url } },
+        body: { text: (bodyText && bodyText.trim()) ? bodyText.slice(0, 1024) : 'Agenda tu cita' },
+        action: { name: 'cta_url', parameters: { display_text: sanitizeButtonLabel(buttonText), url } },
       },
     }),
   })
@@ -163,6 +176,24 @@ async function sendMessengerText({ pageId, pageAccessToken, recipientId, text })
   return res.json()
 }
 
+// Envía un mensaje con botones (template "button") en Messenger.
+// buttons: [{ type:'web_url', url, title }] (title ≤ 20 chars).
+async function sendMessengerButtons({ pageId, pageAccessToken, recipientId, text, buttons }) {
+  const res = await fetch(`${GRAPH_BASE}/me/messages?access_token=${encodeURIComponent(pageAccessToken)}`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({
+      recipient: { id: recipientId },
+      message: { attachment: { type: 'template', payload: { template_type: 'button', text: (text || 'Agenda tu cita').slice(0, 640), buttons } } },
+    }),
+  })
+  if (!res.ok) {
+    const err = await res.json().catch(() => ({}))
+    throw new Error(`[Messenger] ${err?.error?.message || `HTTP ${res.status}`}`)
+  }
+  return res.json()
+}
+
 function parseMessengerWebhook(body) {
   const messages = []
   for (const entry of body?.entry || []) {
@@ -244,6 +275,6 @@ function parseInstagramWebhook(body) {
 module.exports = {
   sendWhatsAppText, sendWhatsAppMedia, sendWhatsAppRead, sendWhatsAppCtaUrl, parseWhatsAppWebhook,
   sendWhatsAppTemplate, listWhatsAppTemplates,
-  sendMessengerText, parseMessengerWebhook,
+  sendMessengerText, sendMessengerButtons, parseMessengerWebhook,
   sendInstagramText, parseInstagramWebhook,
 }

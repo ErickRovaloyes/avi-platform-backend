@@ -18,7 +18,7 @@
 const pool = require('../db')
 const { parseJ } = require('../utils')
 const {
-  sendWhatsAppText, sendWhatsAppMedia, sendMessengerText, sendInstagramText, sendWhatsAppTemplate, sendWhatsAppCtaUrl,
+  sendWhatsAppText, sendWhatsAppMedia, sendMessengerText, sendMessengerButtons, sendInstagramText, sendWhatsAppTemplate, sendWhatsAppCtaUrl,
 } = require('./metaSend')
 
 async function resolveWhatsAppChannel(accId, agentId, channelId) {
@@ -62,7 +62,14 @@ function buildOutbound(agent, channelType, channelId, to) {
     const ch = (channelId && chans.find(c => c.type === 'messenger' && c.id === channelId)) || chans.find(c => c.type === 'messenger')
     const cfg = ch?.config || {}
     if (!cfg.pageId || !cfg.pageAccessToken || !to) return null
-    return async (text, meta) => { const body = meta?.media?.url ? `${text ? text + '\n' : ''}${meta.media.url}` : text; if (body) return sendMessengerText({ pageId: cfg.pageId, pageAccessToken: cfg.pageAccessToken, recipientId: to, text: body }) }
+    return async (text, meta) => {
+      if (meta?.calendar?.url) {
+        try { return await sendMessengerButtons({ pageId: cfg.pageId, pageAccessToken: cfg.pageAccessToken, recipientId: to, text: meta.calendar.message || text, buttons: [{ type: 'web_url', url: meta.calendar.url, title: (meta.calendar.buttonText || 'Agendar').slice(0, 20) }] }) }
+        catch { return sendMessengerText({ pageId: cfg.pageId, pageAccessToken: cfg.pageAccessToken, recipientId: to, text: `${meta.calendar.message ? meta.calendar.message + '\n' : ''}${meta.calendar.url}` }) }
+      }
+      const body = meta?.media?.url ? `${text ? text + '\n' : ''}${meta.media.url}` : text
+      if (body) return sendMessengerText({ pageId: cfg.pageId, pageAccessToken: cfg.pageAccessToken, recipientId: to, text: body })
+    }
   }
   if (channelType === 'instagram') {
     const ch = (channelId && chans.find(c => c.type === 'instagram' && c.id === channelId)) || chans.find(c => c.type === 'instagram')

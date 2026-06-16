@@ -13,7 +13,7 @@ const engine = require('./engine')
 const mediaAI = require('../services/mediaAI')
 const {
   parseWhatsAppWebhook, sendWhatsAppText, sendWhatsAppMedia, sendWhatsAppRead, sendWhatsAppCtaUrl,
-  parseMessengerWebhook, sendMessengerText,
+  parseMessengerWebhook, sendMessengerText, sendMessengerButtons,
   parseInstagramWebhook, sendInstagramText,
 } = require('../services/metaSend')
 
@@ -108,6 +108,8 @@ async function processWhatsApp(accId, agentId, body) {
         try {
           return await sendWhatsAppCtaUrl({ phoneNumberId: cfg.phoneNumberId, accessToken: cfg.accessToken, to: msg.from, bodyText: meta.calendar.message || text, buttonText: meta.calendar.buttonText, url: meta.calendar.url })
         } catch (e) {
+          console.warn('[WA cta_url] falló, fallback a texto:', e.message)
+          await store.appendDebugEntry(accId, agentId, convId, { type: 'error', title: `WhatsApp: botón de calendario falló — ${e.message}`, detail: { url: meta.calendar.url } }).catch(() => {})
           // Fallback: texto con el enlace (siempre clickeable en WhatsApp)
           if (text) return await sendWhatsAppText({ phoneNumberId: cfg.phoneNumberId, accessToken: cfg.accessToken, to: msg.from, text })
           throw e
@@ -170,6 +172,16 @@ async function processMessenger(accId, agentId, body) {
     if (!(await shouldRun(accId, agentId, convId))) continue
 
     const fbOutbound = async (text, meta) => {
+      // Botón con enlace → template de botón nativo de Messenger.
+      if (meta?.calendar?.url) {
+        try {
+          return await sendMessengerButtons({ pageId: channel.config.pageId, pageAccessToken: channel.config.pageAccessToken, recipientId: msg.senderId, text: meta.calendar.message || text, buttons: [{ type: 'web_url', url: meta.calendar.url, title: (meta.calendar.buttonText || 'Agendar').slice(0, 20) }] })
+        } catch (e) {
+          console.warn('[FB botones] falló, fallback a texto:', e.message)
+          const t = `${meta.calendar.message ? meta.calendar.message + '\n' : ''}${meta.calendar.url}`
+          return await sendMessengerText({ pageId: channel.config.pageId, pageAccessToken: channel.config.pageAccessToken, recipientId: msg.senderId, text: t })
+        }
+      }
       const body = meta?.media?.url ? `${text ? text + '\n' : ''}${meta.media.url}` : text
       if (body) return await sendMessengerText({ pageId: channel.config.pageId, pageAccessToken: channel.config.pageAccessToken, recipientId: msg.senderId, text: body })
     }
