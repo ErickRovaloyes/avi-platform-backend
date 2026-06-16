@@ -111,6 +111,7 @@ const getAccount = async (req, res) => {
         timezone: c.timezone, color: c.color, status: c.status,
         availability: parseJ(c.availability, {}), exceptions: parseJ(c.exceptions, []),
         appointment: parseJ(c.appointment, {}), formConfig: parseJ(c.form_config, {}),
+        notifications: parseJ(c.notifications, {}),
         flowId: c.flow_id || null, createdAt: c.created_at, updatedAt: c.updated_at,
       })),
     })

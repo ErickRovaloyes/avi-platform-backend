@@ -370,6 +370,7 @@ app.use('/api',                webhookRoutes)
        updated_at   BIGINT,
        INDEX idx_cal_acc (account_id, status)
      )`,
+    "ALTER TABLE calendars ADD COLUMN notifications JSON",
     `CREATE TABLE IF NOT EXISTS calendar_bookings (
        id           VARCHAR(50) PRIMARY KEY,
        account_id   VARCHAR(50) NOT NULL,
@@ -402,6 +403,8 @@ app.use('/api',                webhookRoutes)
       [JSON.stringify({ basic: 50000, medium: 30000, complex: 15000 })]
     )
   } catch {}
+  // Bucle de recordatorios de citas por WhatsApp
+  try { require('./services/calendarReminders').start() } catch (e) { console.warn('[reminders] no iniciado:', e.message) }
 })()
 
 // ── Start ─────────────────────────────────────────────────────────────────────

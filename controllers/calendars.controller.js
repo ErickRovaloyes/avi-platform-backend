@@ -59,7 +59,7 @@ const update = async (req, res) => {
     type: 'type', name: 'name', description: 'description', timezone: 'timezone',
     color: 'color', status: 'status', flowId: 'flow_id',
   }
-  const jsonMap = { availability: 'availability', exceptions: 'exceptions', appointment: 'appointment', formConfig: 'form_config' }
+  const jsonMap = { availability: 'availability', exceptions: 'exceptions', appointment: 'appointment', formConfig: 'form_config', notifications: 'notifications' }
   const sets = []; const vals = []
   for (const [k, col] of Object.entries(map)) if (b[k] !== undefined) { sets.push(`${col}=?`); vals.push(b[k]) }
   for (const [k, col] of Object.entries(jsonMap)) if (b[k] !== undefined) { sets.push(`${col}=?`); vals.push(JSON.stringify(b[k])) }

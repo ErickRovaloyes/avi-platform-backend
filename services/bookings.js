@@ -10,6 +10,7 @@ const pool = require('../db')
 const { uid, parseJ } = require('../utils')
 const av = require('./availability')
 const holidays = require('./holidays')
+const { notify } = require('./calendarNotify')
 
 // ¿La fecha cae en un festivo que el calendario decidió bloquear?
 async function holidayBlocked(calendar, dateStr) {
@@ -30,6 +31,7 @@ function mapCalendar(r) {
     exceptions:   parseJ(r.exceptions, []),
     appointment:  parseJ(r.appointment, {}),
     formConfig:   parseJ(r.form_config, {}),
+    notifications: parseJ(r.notifications, {}),
     flowId: r.flow_id || null,
     createdAt: r.created_at, updatedAt: r.updated_at,
   }
@@ -124,7 +126,9 @@ async function createBooking(accId, calendarId, data = {}, { validate = true } =
      data.channel || 'manual', status, data.notes || '',
      JSON.stringify(data.meta || {}), data.externalId || null, ts, ts]
   )
-  return getBooking(accId, id)
+  const bk = await getBooking(accId, id)
+  notify(accId, calendar, bk, 'confirmation').catch(() => {})
+  return bk
 }
 
 async function rescheduleBooking(accId, bookingId, newDate, newTime, { validate = true } = {}) {
@@ -144,7 +148,10 @@ async function rescheduleBooking(accId, bookingId, newDate, newTime, { validate 
     'UPDATE calendar_bookings SET date=?, time=?, status=?, updated_at=? WHERE id=? AND account_id=?',
     [date, time, 'rescheduled', Date.now(), bookingId, accId]
   )
-  return getBooking(accId, bookingId)
+  const bk = await getBooking(accId, bookingId)
+  const calendar = await getCalendar(accId, booking.calendarId)
+  if (calendar) notify(accId, calendar, bk, 'reschedule').catch(() => {})
+  return bk
 }
 
 async function setBookingStatus(accId, bookingId, status) {
@@ -155,7 +162,9 @@ async function setBookingStatus(accId, bookingId, status) {
 }
 
 async function cancelBooking(accId, bookingId) {
-  return setBookingStatus(accId, bookingId, 'cancelled')
+  const bk = await setBookingStatus(accId, bookingId, 'cancelled')
+  if (bk) { const calendar = await getCalendar(accId, bk.calendarId); if (calendar) notify(accId, calendar, bk, 'cancellation').catch(() => {}) }
+  return bk
 }
 
 async function updateBooking(accId, bookingId, updates = {}) {
