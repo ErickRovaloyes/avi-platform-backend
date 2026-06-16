@@ -2,9 +2,14 @@
 const router = require('express').Router()
 const { authMiddleware } = require('../auth')
 const ctrl = require('../controllers/platform.controller')
+const coex = require('../controllers/whatsappCoexistence.controller')
 
 // Public — no auth required
 router.get('/platform/integrations',    ctrl.getPublicIntegrations)
+
+// WhatsApp Coexistence (Embedded Signup con la app global)
+router.get('/whatsapp/coexistence/config',    coex.getConfig)
+router.post('/whatsapp/coexistence/exchange', authMiddleware, coex.exchange)
 
 // Platform settings — /api/platform/settings (called by SuperAdminShell)
 router.get('/platform/settings',        authMiddleware, ctrl.getSettings)

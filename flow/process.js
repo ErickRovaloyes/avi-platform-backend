@@ -18,13 +18,21 @@ const {
 } = require('../services/metaSend')
 
 // Transcribe la nota de voz del usuario (si la hay) y usa la transcripción como
-// texto del mensaje → así se persiste como contenido y queda en {{_lastUserMessage}}.
-async function transcribeIfAudio(accId, msg) {
+// texto del mensaje → así se persiste como contenido y queda en {{_lastUserMessage}}
+// ANTES de ejecutar el flujo (el agente IA solo procesa texto). Si falla, deja
+// constancia en el log de la conversación para que sea diagnosticable.
+async function transcribeIfAudio(accId, agId, convId, msg) {
   if (msg.text || msg.internalMedia?.kind !== 'audio') return msg.text || ''
   try {
     const text = await mediaAI.transcribeMedia(accId, msg.internalMedia.mediaId)
-    if (text) msg.text = text
-  } catch (e) { console.warn('[flow/process] transcripción', e.message) }
+    if (text) {
+      msg.text = text
+      try { await store.appendDebugEntry(accId, agId, convId, { type: 'flow_run', title: `🎤 Audio transcrito: "${text.slice(0, 80)}"`, detail: {} }) } catch {}
+    }
+  } catch (e) {
+    console.warn('[flow/process] transcripción', e.message)
+    try { await store.appendDebugEntry(accId, agId, convId, { type: 'error', title: `No se pudo transcribir el audio: ${e.message}`, detail: { mediaId: msg.internalMedia?.mediaId } }) } catch {}
+  }
   return msg.text || ''
 }
 
@@ -78,7 +86,7 @@ async function processWhatsApp(accId, agentId, body) {
     }
 
     // Audio → transcripción automática (queda como texto del mensaje)
-    await transcribeIfAudio(accId, msg)
+    await transcribeIfAudio(accId, agentId, convId, msg)
 
     await store.appendMsg(accId, agentId, convId, {
       role: 'user', sender: 'user',
@@ -154,7 +162,7 @@ async function processMessenger(accId, agentId, body) {
     }
 
     // Audio → transcripción automática
-    await transcribeIfAudio(accId, msg)
+    await transcribeIfAudio(accId, agentId, convId, msg)
 
     await store.appendMsg(accId, agentId, convId, {
       role: 'user', sender: 'user',
@@ -219,7 +227,7 @@ async function processInstagram(accId, agentId, body) {
     }
 
     // Audio → transcripción automática
-    await transcribeIfAudio(accId, msg)
+    await transcribeIfAudio(accId, agentId, convId, msg)
 
     await store.appendMsg(accId, agentId, convId, {
       role: 'user', sender: 'user',

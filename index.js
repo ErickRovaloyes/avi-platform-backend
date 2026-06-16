@@ -393,6 +393,9 @@ app.use('/api',                webhookRoutes)
        INDEX idx_book_status (account_id, status),
        INDEX idx_book_ext (external_id)
      )`,
+    // ── App global de Meta para Embedded Signup / Coexistencia de WhatsApp ──
+    "ALTER TABLE platform_settings ADD COLUMN meta_app_secret TEXT",
+    "ALTER TABLE platform_settings ADD COLUMN meta_config_id VARCHAR(64) DEFAULT ''",
   ]
   for (const sql of migrations) {
     try { await pool.query(sql) } catch (e) { /* column exists or unsupported */ }

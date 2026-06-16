@@ -46,6 +46,10 @@ const getSettings = async (req, res) => {
           changeAgentTokenLimits: parseJ(r.change_agent_token_limits, DEFAULT_TOKEN_LIMITS),
           channelLimits: parseJ(r.channel_limits, {}),
           metaAppId: r.meta_app_id || '',
+          metaConfigId: r.meta_config_id || '',
+          // El App Secret solo lo ve el super admin; al resto se le indica si existe.
+          metaAppSecret: isSA ? (r.meta_app_secret || '') : '',
+          hasMetaAppSecret: !!r.meta_app_secret,
           promptGeneratorModel: r.prompt_generator_model || 'gpt-4o',
           promptGeneratorStructure: r.prompt_generator_structure || DEFAULT_STRUCTURE,
           promptGeneratorConditions: r.prompt_generator_conditions || DEFAULT_CONDITIONS,
@@ -69,6 +73,9 @@ const getSettings = async (req, res) => {
           changeAgentTokenLimits: DEFAULT_TOKEN_LIMITS,
           channelLimits: {},
           metaAppId: '',
+          metaConfigId: '',
+          metaAppSecret: '',
+          hasMetaAppSecret: false,
           promptGeneratorModel: 'gpt-4o',
           promptGeneratorStructure: DEFAULT_STRUCTURE,
           promptGeneratorConditions: DEFAULT_CONDITIONS,
@@ -86,7 +93,7 @@ const updateSettings = async (req, res) => {
   if (req.user.type !== 'superadmin') return res.status(403).json({ error: 'Solo super admin' })
   const {
     changeAgentModel, changeAgentDefaultLimit, changeAgentTokenLimits,
-    channelLimits, metaAppId,
+    channelLimits, metaAppId, metaConfigId, metaAppSecret,
     promptGeneratorModel, promptGeneratorStructure, promptGeneratorConditions,
     promptGeneratorMaxTokens, promptGeneratorTemperature, promptGeneratorMaxDocChars,
     promptGeneratorAllowFlows,
@@ -101,6 +108,9 @@ const updateSettings = async (req, res) => {
     if (changeAgentTokenLimits    !== undefined) { sets.push('change_agent_token_limits=?');    vals.push(JSON.stringify(changeAgentTokenLimits)) }
     if (channelLimits             !== undefined) { sets.push('channel_limits=?');               vals.push(JSON.stringify(channelLimits)) }
     if (metaAppId                 !== undefined) { sets.push('meta_app_id=?');                  vals.push(metaAppId) }
+    if (metaConfigId              !== undefined) { sets.push('meta_config_id=?');               vals.push(metaConfigId) }
+    // Solo se actualiza el secret si llega un valor no vacío (evita borrarlo al guardar enmascarado)
+    if (metaAppSecret             !== undefined && metaAppSecret !== '') { sets.push('meta_app_secret=?'); vals.push(metaAppSecret) }
     if (promptGeneratorModel      !== undefined) { sets.push('prompt_generator_model=?');       vals.push(promptGeneratorModel) }
     if (promptGeneratorStructure  !== undefined) { sets.push('prompt_generator_structure=?');   vals.push(promptGeneratorStructure) }
     if (promptGeneratorConditions !== undefined) { sets.push('prompt_generator_conditions=?');  vals.push(promptGeneratorConditions) }
@@ -129,9 +139,10 @@ const updateSettings = async (req, res) => {
 // Public endpoint — returns only safe/public platform fields (no auth required)
 const getPublicIntegrations = async (req, res) => {
   try {
-    const [[r]] = await pool.query('SELECT meta_app_id, media_max_size_mb FROM platform_settings WHERE id=1')
+    const [[r]] = await pool.query('SELECT meta_app_id, meta_config_id, media_max_size_mb FROM platform_settings WHERE id=1')
     res.json({
       metaAppId: r?.meta_app_id || '',
+      metaConfigId: r?.meta_config_id || '',
       mediaMaxSizeMb: r?.media_max_size_mb || 30,
     })
   } catch (err) { res.status(500).json({ error: 'Error interno' }) }
