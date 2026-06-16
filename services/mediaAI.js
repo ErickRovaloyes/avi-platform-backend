@@ -26,12 +26,24 @@ async function getOpenAIKey(accId) {
   return acc?.openaiKey || ''
 }
 
+// Modelo de transcripción configurado por el super admin (OpenAI). Deepseek NO
+// ofrece transcripción de audio, por eso solo hay modelos de OpenAI.
+async function getTranscriptionModel() {
+  try {
+    const [[r]] = await pool.query('SELECT transcription_model FROM platform_settings WHERE id=1')
+    const allowed = ['whisper-1', 'gpt-4o-mini-transcribe', 'gpt-4o-transcribe']
+    return allowed.includes(r?.transcription_model) ? r.transcription_model : 'whisper-1'
+  } catch { return 'whisper-1' }
+}
+
 // ── Transcripción de audio (OpenAI Whisper / gpt-4o-transcribe) ───────────────
-async function transcribeMedia(accId, mediaId, { model = 'whisper-1', language } = {}) {
+async function transcribeMedia(accId, mediaId, { model, language } = {}) {
   const m = await loadMedia(accId, mediaId)
   if (!m) throw new Error('Audio no encontrado')
   const apiKey = await getOpenAIKey(accId)
   if (!apiKey) throw new Error('Sin API Key de OpenAI para transcribir audios')
+  // Modelo: el que pase el llamador, o el configurado en el Super Panel.
+  if (!model) model = await getTranscriptionModel()
 
   const buf = Buffer.from(m.data_base64, 'base64')
   if (!buf.length) throw new Error('El audio está vacío')

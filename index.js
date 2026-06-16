@@ -396,6 +396,8 @@ app.use('/api',                webhookRoutes)
     // ── App global de Meta para Embedded Signup / Coexistencia de WhatsApp ──
     "ALTER TABLE platform_settings ADD COLUMN meta_app_secret TEXT",
     "ALTER TABLE platform_settings ADD COLUMN meta_config_id VARCHAR(64) DEFAULT ''",
+    // ── Modelo para transcripción de audios (OpenAI) ──
+    "ALTER TABLE platform_settings ADD COLUMN transcription_model VARCHAR(50) DEFAULT 'whisper-1'",
   ]
   for (const sql of migrations) {
     try { await pool.query(sql) } catch (e) { /* column exists or unsupported */ }

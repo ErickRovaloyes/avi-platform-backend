@@ -66,6 +66,7 @@ const getSettings = async (req, res) => {
           hasPlatformDeepseekKey:  !!r.deepseek_key,
           hasPlatformAnthropicKey: !!r.anthropic_key,
           mediaMaxSizeMb: r.media_max_size_mb || 30,
+          transcriptionModel: r.transcription_model || 'whisper-1',
         }
       : {
           changeAgentModel: 'gpt-4o-mini',
@@ -85,6 +86,7 @@ const getSettings = async (req, res) => {
           promptGeneratorAllowFlows: true,
           promptGeneratorMaxFileMb: 30,
           mediaMaxSizeMb: 30,
+          transcriptionModel: 'whisper-1',
         })
   } catch (err) { res.status(500).json({ error: 'Error interno' }) }
 }
@@ -99,7 +101,7 @@ const updateSettings = async (req, res) => {
     promptGeneratorAllowFlows,
     promptGeneratorMaxFileMb,
     platformOpenaiKey, platformDeepseekKey, platformAnthropicKey,
-    mediaMaxSizeMb,
+    mediaMaxSizeMb, transcriptionModel,
   } = req.body
   try {
     const sets = []; const vals = []
@@ -130,6 +132,10 @@ const updateSettings = async (req, res) => {
       const n = parseInt(mediaMaxSizeMb) || 30
       // Hard cap at 100 MB to match the multer ceiling
       sets.push('media_max_size_mb=?'); vals.push(Math.max(1, Math.min(100, n)))
+    }
+    if (transcriptionModel        !== undefined) {
+      const allowed = ['whisper-1', 'gpt-4o-mini-transcribe', 'gpt-4o-transcribe']
+      sets.push('transcription_model=?'); vals.push(allowed.includes(transcriptionModel) ? transcriptionModel : 'whisper-1')
     }
     if (sets.length) { vals.push(1); await pool.query(`UPDATE platform_settings SET ${sets.join(',')} WHERE id=?`, vals) }
     res.json({ ok: true })
