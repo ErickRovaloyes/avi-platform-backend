@@ -62,56 +62,76 @@ function windowsForDate(calendar, dateStr) {
   return (day.slots || []).map(s => ({ start: toMin(s.start), end: toMin(s.end) }))
 }
 
+// Slots candidatos (antes de filtrar por antelación/reservas). Cada uno lleva su
+// propia duración. Soporta:
+//   - excepción type 'block'  → ninguno
+//   - excepción type 'slots'  → LISTA EXPLÍCITA de slots individuales {start,duration,blocked}
+//   - excepción type 'custom' → rangos especiales → se generan por duración
+//   - sin excepción           → horario semanal del día → se generan por duración
+function generateCandidates(calendar, dateStr, durationMin) {
+  const ap = calendar.appointment || {}
+  const defDur = Number(durationMin) || Number(ap.defaultDuration) || 30
+  const buffer = Number(ap.buffer) || 0
+  const exceptions = Array.isArray(calendar.exceptions) ? calendar.exceptions : []
+  const exc = exceptions.find(e => e && e.date === dateStr)
+
+  if (exc?.type === 'block') return []
+  if (exc?.type === 'slots') {
+    return (exc.slots || [])
+      .filter(sl => sl && !sl.blocked && (sl.start || sl.time))
+      .map(sl => ({ start: toMin(sl.start || sl.time), duration: Number(sl.duration) || defDur }))
+  }
+
+  let windows
+  if (exc?.type === 'custom') windows = (exc.slots || []).map(s => ({ start: toMin(s.start), end: toMin(s.end) }))
+  else {
+    const day = (calendar.availability || {})[weekdayKey(dateStr)]
+    if (!day || day.enabled === false) return []
+    windows = (day.slots || []).map(s => ({ start: toMin(s.start), end: toMin(s.end) }))
+  }
+  const step = defDur + buffer
+  const out = []
+  for (const w of windows) for (let t = w.start; t + defDur <= w.end; t += step) out.push({ start: t, duration: defDur })
+  return out
+}
+
 /**
  * Devuelve los slots disponibles para una fecha.
  * @returns string[] — horas "HH:MM"
  */
 function computeSlots(calendar, dateStr, bookings = [], { durationMin } = {}) {
   const ap = calendar.appointment || {}
-  const duration = Number(durationMin) || Number(ap.defaultDuration) || 30
+  const defDur = Number(durationMin) || Number(ap.defaultDuration) || 30
   const buffer = Number(ap.buffer) || 0
   const maxPerDay = Number(ap.maxPerDay) || 0
   const minAdvance = Number(ap.minAdvanceMin) || 0
   const maxAdvanceDays = ap.maxAdvanceDays != null ? Number(ap.maxAdvanceDays) : 60
-  const allowSimultaneous = !!ap.allowSimultaneous
-  const capacity = allowSimultaneous ? Math.max(1, Number(ap.capacity) || 1) : 1
+  const capacity = ap.allowSimultaneous ? Math.max(1, Number(ap.capacity) || 1) : 1
 
   if (calendar.status === 'inactive') return []
 
-  // Reservas activas de esa fecha (las canceladas/no-show liberan espacio).
   const active = bookings.filter(b => b.date === dateStr && !['cancelled', 'noshow'].includes(b.status))
   if (maxPerDay > 0 && active.length >= maxPerDay) return []
 
   const now = nowInTz(calendar.timezone)
   const dayOffset = diffDays(now.date, dateStr)
-  if (dayOffset < 0) return []                       // fecha pasada
+  if (dayOffset < 0) return []
   if (maxAdvanceDays >= 0 && dayOffset > maxAdvanceDays) return []
 
-  const windows = windowsForDate(calendar, dateStr)
-  const step = duration + buffer
-
-  // Intervalos ocupados por reservas (con buffer alrededor).
+  const candidates = generateCandidates(calendar, dateStr, durationMin)
   const busy = active.map(b => {
-    const s = toMin(b.time)
-    const dur = Number(b.duration) || duration
-    return { start: s - buffer, end: s + dur + buffer, raw: { start: s, end: s + dur } }
+    const s = toMin(b.time); const dur = Number(b.duration) || defDur
+    return { start: s - buffer, end: s + dur + buffer }
   })
 
   const slots = []
-  for (const w of windows) {
-    for (let t = w.start; t + duration <= w.end; t += step) {
-      // Antelación mínima / no permitir slots en el pasado del día actual
-      const absFromNow = dayOffset * 1440 + (t - now.minutes)
-      if (absFromNow < minAdvance) continue
-
-      // Conflicto con reservas (respeta capacidad para simultáneas)
-      const overlapCount = busy.filter(b => t < b.end && (t + duration) > b.start).length
-      if (overlapCount >= capacity) continue
-
-      slots.push(toHHMM(t))
-    }
+  for (const c of candidates) {
+    const absFromNow = dayOffset * 1440 + (c.start - now.minutes)
+    if (absFromNow < minAdvance) continue
+    const overlap = busy.filter(b => c.start < b.end && (c.start + c.duration) > b.start).length
+    if (overlap >= capacity) continue
+    slots.push(toHHMM(c.start))
   }
-  // Únicos y ordenados
   return [...new Set(slots)].sort()
 }
 
@@ -122,4 +142,4 @@ function isSlotAvailable(calendar, dateStr, timeStr, bookings = [], { durationMi
   return slots.includes(timeStr)
 }
 
-module.exports = { computeSlots, isSlotAvailable, windowsForDate, nowInTz, WEEKDAYS }
+module.exports = { computeSlots, isSlotAvailable, generateCandidates, windowsForDate, nowInTz, WEEKDAYS }
