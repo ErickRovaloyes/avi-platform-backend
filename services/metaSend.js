@@ -24,6 +24,30 @@ async function sendWhatsAppText({ phoneNumberId, accessToken, to, text }) {
   return res.json()
 }
 
+// Envía un botón interactivo "CTA URL" (botón que abre una URL). Es la forma
+// nativa de WhatsApp para enviar un botón con enlace (p. ej. agendar cita).
+// body.text es obligatorio; display_text máx 20 chars; url debe ser absoluta.
+async function sendWhatsAppCtaUrl({ phoneNumberId, accessToken, to, bodyText, buttonText, url }) {
+  const res = await fetch(`${GRAPH_BASE}/${phoneNumberId}/messages`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${accessToken}` },
+    body: JSON.stringify({
+      messaging_product: 'whatsapp', recipient_type: 'individual', to,
+      type: 'interactive',
+      interactive: {
+        type: 'cta_url',
+        body: { text: (bodyText && bodyText.trim()) ? bodyText.slice(0, 1024) : '📅' },
+        action: { name: 'cta_url', parameters: { display_text: (buttonText || 'Abrir').slice(0, 20), url } },
+      },
+    }),
+  })
+  if (!res.ok) {
+    const err = await res.json().catch(() => ({}))
+    throw new Error(err?.error?.message || `HTTP ${res.status}`)
+  }
+  return res.json()
+}
+
 // Marca un mensaje entrante como leído y, opcionalmente, muestra el indicador
 // "escribiendo…" al usuario (hasta 25s o hasta que se envíe un mensaje).
 // No es crítico: cualquier error se ignora para no bloquear el flujo.
@@ -218,7 +242,7 @@ function parseInstagramWebhook(body) {
 }
 
 module.exports = {
-  sendWhatsAppText, sendWhatsAppMedia, sendWhatsAppRead, parseWhatsAppWebhook,
+  sendWhatsAppText, sendWhatsAppMedia, sendWhatsAppRead, sendWhatsAppCtaUrl, parseWhatsAppWebhook,
   sendWhatsAppTemplate, listWhatsAppTemplates,
   sendMessengerText, parseMessengerWebhook,
   sendInstagramText, parseInstagramWebhook,

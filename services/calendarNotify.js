@@ -18,7 +18,7 @@
 const pool = require('../db')
 const { parseJ } = require('../utils')
 const {
-  sendWhatsAppText, sendWhatsAppMedia, sendMessengerText, sendInstagramText, sendWhatsAppTemplate,
+  sendWhatsAppText, sendWhatsAppMedia, sendMessengerText, sendInstagramText, sendWhatsAppTemplate, sendWhatsAppCtaUrl,
 } = require('./metaSend')
 
 async function resolveWhatsAppChannel(accId, agentId, channelId) {
@@ -50,6 +50,10 @@ function buildOutbound(agent, channelType, channelId, to) {
     const num = String(to || '').replace(/[^\d]/g, '')
     if (!cfg.phoneNumberId || !cfg.accessToken || !num) return null
     return async (text, meta) => {
+      if (meta?.calendar?.url) {
+        try { return await sendWhatsAppCtaUrl({ phoneNumberId: cfg.phoneNumberId, accessToken: cfg.accessToken, to: num, bodyText: meta.calendar.message || text, buttonText: meta.calendar.buttonText, url: meta.calendar.url }) }
+        catch (e) { if (text) return sendWhatsAppText({ phoneNumberId: cfg.phoneNumberId, accessToken: cfg.accessToken, to: num, text }); throw e }
+      }
       if (meta?.media?.url) return sendWhatsAppMedia({ phoneNumberId: cfg.phoneNumberId, accessToken: cfg.accessToken, to: num, kind: meta.media.kind, link: meta.media.url, caption: meta.caption, filename: meta.media.filename })
       if (text) return sendWhatsAppText({ phoneNumberId: cfg.phoneNumberId, accessToken: cfg.accessToken, to: num, text })
     }

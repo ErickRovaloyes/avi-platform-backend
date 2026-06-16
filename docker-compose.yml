@@ -26,6 +26,8 @@ services:
       DB_NAME: avi_platform
       JWT_SECRET: ${JWT_SECRET}
       PORT: 3001
+      # URL pública (para enlaces absolutos: página de reservas, botón CTA de WhatsApp)
+      PUBLIC_URL: ${PUBLIC_URL:-https://platform.aviasistente.com}
     depends_on:
       avi-mysql:
         condition: service_started

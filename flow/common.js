@@ -36,9 +36,9 @@ async function sendBotMsg(ctx, content, metadata = {}) {
   let providerMsgId = null
   let status        = null
   let sendError     = null
-  if (ctx?._outbound && (text || media)) {
+  if (ctx?._outbound && (text || media || metadata.calendar)) {
     try {
-      const r = await ctx._outbound(text, { media, caption: text })
+      const r = await ctx._outbound(text, { media, caption: text, calendar: metadata.calendar })
       providerMsgId = r?.messages?.[0]?.id || r?.message_id || null
       status = 'sent'
     } catch (e) {

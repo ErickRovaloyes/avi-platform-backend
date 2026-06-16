@@ -12,7 +12,7 @@ const store = require('./store')
 const engine = require('./engine')
 const mediaAI = require('../services/mediaAI')
 const {
-  parseWhatsAppWebhook, sendWhatsAppText, sendWhatsAppMedia, sendWhatsAppRead,
+  parseWhatsAppWebhook, sendWhatsAppText, sendWhatsAppMedia, sendWhatsAppRead, sendWhatsAppCtaUrl,
   parseMessengerWebhook, sendMessengerText,
   parseInstagramWebhook, sendInstagramText,
 } = require('../services/metaSend')
@@ -103,6 +103,16 @@ async function processWhatsApp(accId, agentId, body) {
     const waOutbound = async (text, meta) => {
       const cfg = channel?.config
       if (!cfg?.phoneNumberId || !cfg?.accessToken) return
+      // Botón con enlace (p. ej. "Enviar calendario") → botón interactivo nativo.
+      if (meta?.calendar?.url) {
+        try {
+          return await sendWhatsAppCtaUrl({ phoneNumberId: cfg.phoneNumberId, accessToken: cfg.accessToken, to: msg.from, bodyText: meta.calendar.message || text, buttonText: meta.calendar.buttonText, url: meta.calendar.url })
+        } catch (e) {
+          // Fallback: texto con el enlace (siempre clickeable en WhatsApp)
+          if (text) return await sendWhatsAppText({ phoneNumberId: cfg.phoneNumberId, accessToken: cfg.accessToken, to: msg.from, text })
+          throw e
+        }
+      }
       if (meta?.media?.url) {
         return await sendWhatsAppMedia({ phoneNumberId: cfg.phoneNumberId, accessToken: cfg.accessToken, to: msg.from, kind: meta.media.kind, link: meta.media.url, caption: meta.caption, filename: meta.media.filename })
       }

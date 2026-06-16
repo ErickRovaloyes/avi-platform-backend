@@ -9,8 +9,11 @@ const { interpolate, logDebug, setVarBoth, sendBotMsg } = require('../common')
 const bookings = require('../../services/bookings')
 const av = require('../../services/availability')
 
-// Base pública para construir el enlace de la página de reservas.
-function publicBase() { return (process.env.PUBLIC_URL || process.env.BASE_URL || '').replace(/\/$/, '') }
+// Base pública para construir el enlace ABSOLUTO de la página de reservas.
+// Debe ser absoluta para que WhatsApp la haga clickeable / acepte el botón CTA.
+function publicBase() {
+  return (process.env.PUBLIC_URL || process.env.BASE_URL || 'https://platform.aviasistente.com').replace(/\/$/, '')
+}
 
 function addDays(dateStr, n) {
   const d = new Date(dateStr + 'T00:00:00Z')
@@ -52,10 +55,11 @@ const calendarNodes = [
       // La reserva queda referenciada a ESTA conversación (?conv=) → las
       // notificaciones de la reserva correrán en este mismo chat.
       const url = `${publicBase()}/book/${ctx.accId}/${calId}?conv=${encodeURIComponent(ctx.convId)}`
-      // Texto con el enlace (clickeable en WhatsApp) + metadata para renderizar
-      // una tarjeta/botón con calendario en webchat e inbox.
+      // Texto con el enlace (clickeable en WhatsApp) + metadata. En WhatsApp el
+      // outbound usa la metadata para enviar un botón interactivo CTA-URL; en
+      // webchat/inbox renderiza la tarjeta de calendario (CalendarMessage).
       await sendBotMsg(ctx, `${msg}\n${url}`, {
-        calendar: { accId: ctx.accId, calId, convId: ctx.convId, name: cal.name, color: cal.color || '#7c6fff', buttonText, url },
+        calendar: { accId: ctx.accId, calId, convId: ctx.convId, name: cal.name, color: cal.color || '#7c6fff', buttonText, url, message: msg },
       })
       logDebug(ctx, 'flow_run', `🗓 Calendario enviado: ${cal.name}`, { url })
     },
