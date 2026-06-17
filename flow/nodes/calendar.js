@@ -8,6 +8,7 @@
 const { interpolate, logDebug, setVarBoth, sendBotMsg } = require('../common')
 const bookings = require('../../services/bookings')
 const av = require('../../services/availability')
+const restaurant = require('../../services/restaurant')
 
 // Base pública para construir el enlace ABSOLUTO de la página de reservas.
 // Debe ser absoluta para que WhatsApp la haga clickeable / acepte el botón CTA.
@@ -177,6 +178,82 @@ const calendarNodes = [
       if (node.data?.destino) await setVarBoth(ctx, node.data.destino, JSON.stringify(bk))
       ctx.variables._last_booking = bk
       logDebug(ctx, 'flow_run', `🔎 Reserva ${bookingId} · ${bk.status}`, {})
+    },
+  },
+
+  // ── Restaurante (Fase 2c) ──────────────────────────────────────────────────
+  {
+    type: 'restaurant_availability', category: 'calendar', label: 'Restaurante: ver mesas',
+    fields: calFields([
+      { key: 'fecha', label: 'Fecha', type: 'text', default: 'hoy' },
+      { key: 'personas', label: 'Nº de personas', type: 'text', default: '2' },
+      { key: 'destino', label: 'Guardar horarios en', type: 'variableRef' },
+    ]),
+    async exec(node, ctx) {
+      const calId = interpolate(node.data?.calendarId || '', ctx.variables)
+      if (!calId) throw new Error('Elige un calendario')
+      const date = resolveDate(node.data?.fecha, ctx.variables, await calTz(ctx.accId, calId))
+      const party = Math.max(1, parseInt(interpolate(node.data?.personas || '2', ctx.variables), 10) || 2)
+      const slots = await bookings.getAvailability(ctx.accId, calId, date, undefined, party)
+      if (node.data?.destino) await setVarBoth(ctx, node.data.destino, JSON.stringify(slots))
+      ctx.variables._restaurant_slots = slots
+      ctx.variables._restaurant_date = date
+      ctx.variables._restaurant_party = party
+      logDebug(ctx, 'flow_run', `🍽 ${slots.length} horario(s) para ${party} persona(s) el ${date}`, { slots })
+    },
+  },
+  {
+    type: 'restaurant_book', category: 'calendar', label: 'Restaurante: reservar mesa',
+    fields: calFields([
+      { key: 'fecha', label: 'Fecha', type: 'text', placeholder: '{{_restaurant_date}}' },
+      { key: 'hora', label: 'Hora (HH:MM)', type: 'text' },
+      { key: 'personas', label: 'Nº de personas', type: 'text', placeholder: '{{_restaurant_party}}' },
+      { key: 'nombre', label: 'Nombre del cliente', type: 'text', placeholder: '{{cliente_nombre}}' },
+      { key: 'telefono', label: 'Teléfono', type: 'text', placeholder: '{{cliente_telefono}}' },
+      { key: 'email', label: 'Email', type: 'text', placeholder: '{{cliente_email}}' },
+      { key: 'destino', label: 'Guardar ID de reserva en', type: 'variableRef' },
+    ]),
+    async exec(node, ctx) {
+      const calId = interpolate(node.data?.calendarId || '', ctx.variables)
+      if (!calId) throw new Error('Elige un calendario')
+      const date = resolveDate(node.data?.fecha, ctx.variables, await calTz(ctx.accId, calId))
+      const time = interpolate(node.data?.hora || '', ctx.variables).slice(0, 5)
+      const party = Math.max(1, parseInt(interpolate(node.data?.personas || '2', ctx.variables), 10) || 2)
+      const bk = await bookings.createBooking(ctx.accId, calId, {
+        date, time, partySize: party,
+        clientName: interpolate(node.data?.nombre || '', ctx.variables),
+        clientPhone: interpolate(node.data?.telefono || '', ctx.variables),
+        clientEmail: interpolate(node.data?.email || '', ctx.variables),
+        channel: 'flow', status: 'confirmed',
+      }, { validate: true })
+      if (node.data?.destino) await setVarBoth(ctx, node.data.destino, bk.id)
+      ctx.variables._last_booking_id = bk.id
+      logDebug(ctx, 'flow_run', `✅ Mesa reservada ${bk.id} · ${date} ${time} (${party}p)`, {})
+    },
+  },
+  {
+    type: 'restaurant_waitlist', category: 'calendar', label: 'Restaurante: lista de espera',
+    fields: calFields([
+      { key: 'fecha', label: 'Fecha', type: 'text', placeholder: '{{_restaurant_date}}' },
+      { key: 'hora', label: 'Hora (opcional)', type: 'text' },
+      { key: 'personas', label: 'Nº de personas', type: 'text', placeholder: '{{_restaurant_party}}' },
+      { key: 'nombre', label: 'Nombre del cliente', type: 'text', placeholder: '{{cliente_nombre}}' },
+      { key: 'telefono', label: 'Teléfono', type: 'text', placeholder: '{{cliente_telefono}}' },
+      { key: 'destino', label: 'Guardar ID de la espera en', type: 'variableRef' },
+    ]),
+    async exec(node, ctx) {
+      const calId = interpolate(node.data?.calendarId || '', ctx.variables)
+      if (!calId) throw new Error('Elige un calendario')
+      const date = resolveDate(node.data?.fecha, ctx.variables, await calTz(ctx.accId, calId))
+      const party = Math.max(1, parseInt(interpolate(node.data?.personas || '2', ctx.variables), 10) || 2)
+      const w = await restaurant.addWaitlist(ctx.accId, calId, {
+        date, time: interpolate(node.data?.hora || '', ctx.variables).slice(0, 5), partySize: party,
+        clientName: interpolate(node.data?.nombre || '', ctx.variables),
+        clientPhone: interpolate(node.data?.telefono || '', ctx.variables),
+      })
+      if (node.data?.destino) await setVarBoth(ctx, node.data.destino, w.id)
+      ctx.variables._waitlist_id = w.id
+      logDebug(ctx, 'flow_run', `📝 Lista de espera ${w.id} · ${date} (${party}p)`, {})
     },
   },
 ]

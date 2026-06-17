@@ -288,6 +288,13 @@ const flowOp = async (req, res) => {
       }, { validate: true })
       return res.json({ booking: bk })
     }
+    if (op === 'waitlist') {
+      const restaurant = require('../services/restaurant')
+      const w = await restaurant.addWaitlist(accId, calendarId, {
+        date, time, partySize, clientName: client.name, clientPhone: client.phone,
+      })
+      return res.json({ waitlist: w })
+    }
     if (op === 'reschedule')   return res.json({ booking: await bookings.rescheduleBooking(accId, bookingId, date, time) })
     if (op === 'cancel')       return res.json({ booking: await bookings.cancelBooking(accId, bookingId) })
     if (op === 'get')          return res.json({ booking: await bookings.getBooking(accId, bookingId) })
