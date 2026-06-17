@@ -167,37 +167,131 @@ async function inboundReservation(accId, calId, provider, payload = {}) {
 }
 async function defaultRoomType(accId, calId) { const types = await hotel.listRoomTypes(accId, calId); return types[0]?.id }
 
-// ── Adaptadores de API por proveedor (pull de reservas) ─────────────────────
-// HosRoom / Kunas / Booking exponen APIs propias (requieren credenciales/convenio).
-// Aquí el "pull" usa iCal si está configurado; el hook de API queda listo para
-// cablear el endpoint real del proveedor cuando haya credenciales.
-async function pullReservations(accId, channel) {
-  if (channel.config?.icalImportUrl) return importIcal(accId, channel)
-  // TODO API real del proveedor (channel.config.apiKey/endpoint). Sin credenciales → no-op.
-  return { ok: false, error: `Sin iCal ni API configurada para ${channel.provider}` }
-}
+// ── Adaptadores de API reales por proveedor ─────────────────────────────────
+const channelAdapters = require('./channels')
 
-async function syncChannel(accId, channelId) {
+function providerSchemas() { return channelAdapters.providerSchemas() }
+
+async function testConnection(accId, channelId) {
   const channel = await getChannel(accId, channelId)
   if (!channel) throw new Error('Canal no encontrado')
-  const r = await pullReservations(accId, channel)
-  await pool.query('UPDATE hotel_channels SET last_sync=?, last_result=? WHERE id=?', [Date.now(), JSON.stringify(r).slice(0, 500), channelId]).catch(() => {})
-  return r
+  const a = channelAdapters.getAdapter(channel.provider)
+  if (!a) return { ok: false, message: 'Proveedor no soportado' }
+  return a.testConnection(channel.config || {})
+}
+
+// Importa la ficha de habitaciones (con fotos/descripción/amenidades) desde la OTA,
+// crea/actualiza nuestros tipos y construye el mapeo externalId → nuestro tipo.
+async function syncRoomTypes(accId, channel) {
+  const a = channelAdapters.getAdapter(channel.provider)
+  if (!a) return { ok: false, error: 'Proveedor no soportado', rooms: 0 }
+  let list = []
+  try { list = await a.importRoomTypes(channel.config || {}) } catch (e) { return { ok: false, error: e.message, rooms: 0 } }
+  const map = { ...(channel.config?.roomTypeMap || {}) }
+  let first = null
+  for (const ext of list) {
+    try {
+      const id = await hotel.upsertExternalRoomType(accId, channel.calendarId, channel.provider, ext)
+      map[String(ext.externalId)] = id
+      if (!first) first = id
+    } catch (e) { console.warn('[syncRoomTypes]', e.message) }
+  }
+  // Persiste el mapeo y un tipo por defecto si no había.
+  const cfgPatch = { roomTypeMap: map }
+  if (!channel.config?.roomTypeId && first) cfgPatch.roomTypeId = first
+  await updateChannel(accId, channel.id, { config: cfgPatch })
+  return { ok: true, rooms: list.length }
+}
+
+// Cancela una reserva externa por su referencia (la OTA la canceló).
+async function cancelExternal(accId, calId, ref) {
+  const [[b]] = await pool.query("SELECT id FROM calendar_bookings WHERE account_id=? AND calendar_id=? AND channel_ref=? AND status NOT IN ('cancelled') LIMIT 1", [accId, calId, ref])
+  if (!b) return
+  await pool.query('UPDATE calendar_bookings SET status=? , updated_at=? WHERE id=?', ['cancelled', Date.now(), b.id])
+  await pool.query('DELETE FROM booking_allocations WHERE booking_id=? AND account_id=?', [b.id, accId]).catch(() => {})
+}
+
+// Importa reservas vía API del proveedor (mapeando habitación externa → tipo).
+async function syncReservations(accId, channel) {
+  const a = channelAdapters.getAdapter(channel.provider)
+  if (!a) return { ok: false, error: 'Proveedor no soportado', imported: 0 }
+  let list = []
+  try { list = await a.importReservations(channel.config || {}) } catch (e) { return { ok: false, error: e.message, imported: 0 } }
+  const map = channel.config?.roomTypeMap || {}
+  const fallback = channel.config?.roomTypeId
+  let imported = 0
+  for (const r of list) {
+    try {
+      if (r.status === 'cancelled') { await cancelExternal(accId, channel.calendarId, r.ref); continue }
+      const roomTypeId = map[String(r.externalRoomId)] || fallback
+      if (!roomTypeId || !r.checkin || !r.checkout) continue
+      await upsertExternalStay(accId, channel.calendarId, {
+        roomTypeId, checkin: r.checkin, checkout: r.checkout, provider: channel.provider,
+        ref: r.ref, guestName: r.guestName, guests: Number(r.guests) || 1, total: r.total, currency: r.currency,
+      })
+      imported++
+    } catch (e) { console.warn('[syncReservations]', e.message) }
+  }
+  return { ok: true, imported }
+}
+
+// Importa disponibilidad/tarifas → aplica precios por noche al tipo mapeado.
+async function syncAvailability(accId, channel) {
+  const a = channelAdapters.getAdapter(channel.provider)
+  if (!a || !a.importAvailability) return { ok: true, rates: 0 }
+  let list = []
+  try { list = await a.importAvailability(channel.config || {}, {}) } catch { return { ok: true, rates: 0 } }
+  const map = channel.config?.roomTypeMap || {}
+  let rates = 0
+  for (const it of list) {
+    const roomTypeId = map[String(it.externalRoomId)] || channel.config?.roomTypeId
+    if (!roomTypeId || !it.date) continue
+    if (it.price != null && Number(it.price) > 0) {
+      try { await hotel.setRateRange(accId, roomTypeId, it.date, it.date, Number(it.price)); rates++ } catch {}
+    }
+  }
+  return { ok: true, rates }
+}
+
+// Sincronización COMPLETA de un canal: habitaciones (ficha) → reservas (API) →
+// disponibilidad/tarifas → iCal (fechas, si hay URL). Devuelve el resumen.
+async function syncChannel(accId, channelId) {
+  let channel = await getChannel(accId, channelId)
+  if (!channel) throw new Error('Canal no encontrado')
+  const summary = {}
+  // 1) Habitaciones (crea el mapeo) — primero para mapear reservas.
+  summary.rooms = await syncRoomTypes(accId, channel).catch(e => ({ ok: false, error: e.message }))
+  channel = await getChannel(accId, channelId) // recarga el mapeo recién guardado
+  // 2) Reservas por API.
+  summary.reservations = await syncReservations(accId, channel).catch(e => ({ ok: false, error: e.message }))
+  // 3) Disponibilidad/tarifas.
+  summary.availability = await syncAvailability(accId, channel).catch(e => ({ ok: false, error: e.message }))
+  // 4) iCal (fechas) si hay URL configurada.
+  if (channel.config?.icalImportUrl) summary.ical = await importIcal(accId, channel).catch(e => ({ ok: false, error: e.message }))
+  const ok = Object.values(summary).every(s => s?.ok !== false)
+  await pool.query('UPDATE hotel_channels SET last_sync=?, last_result=? WHERE id=?', [Date.now(), JSON.stringify(summary).slice(0, 1000), channelId]).catch(() => {})
+  return { ok, ...summary }
 }
 
 // Sincroniza todos los canales habilitados (lo llama el worker).
 async function syncAll() {
   try {
-    const [rows] = await pool.query('SELECT * FROM hotel_channels WHERE enabled=1')
+    const [rows] = await pool.query('SELECT id, account_id FROM hotel_channels WHERE enabled=1')
     for (const r of rows) {
-      const ch = mapCh(r)
-      try { const res = await pullReservations(r.account_id, ch); await pool.query('UPDATE hotel_channels SET last_sync=?, last_result=? WHERE id=?', [Date.now(), JSON.stringify(res).slice(0, 500), ch.id]).catch(() => {}) }
-      catch (e) { console.warn('[channels sync]', ch.provider, e.message) }
+      try { await syncChannel(r.account_id, r.id) }
+      catch (e) { console.warn('[channels sync]', r.id, e.message) }
     }
   } catch (e) { console.warn('[channels syncAll]', e.message) }
 }
 
+async function importRoomsById(accId, channelId) {
+  const c = await getChannel(accId, channelId)
+  if (!c) throw new Error('Canal no encontrado')
+  return syncRoomTypes(accId, c)
+}
+
 module.exports = {
   PROVIDERS, listChannels, getChannel, createChannel, updateChannel, deleteChannel,
-  buildIcal, parseIcal, importIcal, inboundReservation, syncChannel, syncAll,
+  buildIcal, parseIcal, importIcal, inboundReservation,
+  providerSchemas, testConnection, syncRoomTypes, syncReservations, syncAvailability, syncChannel, syncAll, importRoomsById,
 }

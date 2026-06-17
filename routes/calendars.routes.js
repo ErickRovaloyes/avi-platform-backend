@@ -103,6 +103,9 @@ router.post('/accounts/:accId/calendars/:calId/channels',   authMiddleware, chan
 router.put('/accounts/:accId/channels/:chanId',             authMiddleware, chan.update)
 router.delete('/accounts/:accId/channels/:chanId',          authMiddleware, chan.remove)
 router.post('/accounts/:accId/channels/:chanId/sync',       authMiddleware, chan.sync)
+router.get('/accounts/:accId/channel-providers',            authMiddleware, chan.schemas)
+router.post('/accounts/:accId/channels/:chanId/test',       authMiddleware, chan.test)
+router.post('/accounts/:accId/channels/:chanId/import-rooms', authMiddleware, chan.importRooms)
 // Público: iCal export (la OTA se suscribe) + webhook de reserva entrante.
 router.get('/public/hotel/:accId/:calId/ical/:roomTypeId.ics', chan.ical)
 router.post('/public/hotel/:accId/:calId/channels/:provider/reservation', chan.inbound)

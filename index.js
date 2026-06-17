@@ -592,6 +592,11 @@ app.use('/api',                webhookRoutes)
     // ── Canales / OTAs del hotel (Airbnb, HosRoom, Booking, Kunas) ──────────
     "ALTER TABLE calendar_bookings ADD COLUMN channel_ref VARCHAR(150)",
     "ALTER TABLE calendar_bookings ADD COLUMN ical_uid VARCHAR(200)",
+    // Habitaciones: ficha completa (descripción, fotos) + mapeo a listado externo.
+    "ALTER TABLE hotel_room_types ADD COLUMN description TEXT",
+    "ALTER TABLE hotel_room_types ADD COLUMN photos JSON",
+    "ALTER TABLE hotel_room_types ADD COLUMN external_provider VARCHAR(20)",
+    "ALTER TABLE hotel_room_types ADD COLUMN external_ref VARCHAR(150)",
     `CREATE TABLE IF NOT EXISTS hotel_channels (
        id            VARCHAR(50) PRIMARY KEY,
        account_id    VARCHAR(50) NOT NULL, calendar_id VARCHAR(50) NOT NULL,

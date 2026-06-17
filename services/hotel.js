@@ -38,6 +38,8 @@ const mapRT = r => r && ({
   totalRooms: r.total_rooms, overbookLimit: r.overbook_limit,
   basePrice: r.base_price != null ? Number(r.base_price) : 0, currency: r.currency || 'USD',
   amenities: parseJ(r.amenities, []), status: r.status || 'active',
+  description: r.description || '', photos: parseJ(r.photos, []),
+  externalProvider: r.external_provider || null, externalRef: r.external_ref || null,
 })
 async function listRoomTypes(accId, calId, { all = false } = {}) {
   const [rows] = await pool.query(`SELECT * FROM hotel_room_types WHERE account_id=? AND calendar_id=? ${all ? '' : "AND status<>'inactive'"} ORDER BY base_price ASC, name ASC`, [accId, calId])
@@ -51,15 +53,41 @@ async function createRoomType(accId, calId, b = {}) {
   return getRoomType(accId, id)
 }
 async function updateRoomType(accId, id, b = {}) {
-  const map = { name: 'name', baseCapacity: 'base_capacity', maxCapacity: 'max_capacity', totalRooms: 'total_rooms', overbookLimit: 'overbook_limit', basePrice: 'base_price', currency: 'currency', status: 'status' }
+  const map = { name: 'name', baseCapacity: 'base_capacity', maxCapacity: 'max_capacity', totalRooms: 'total_rooms', overbookLimit: 'overbook_limit', basePrice: 'base_price', currency: 'currency', status: 'status', description: 'description' }
   const sets = []; const vals = []
   for (const [k, col] of Object.entries(map)) if (b[k] !== undefined) { sets.push(`${col}=?`); vals.push(b[k]) }
   if (b.amenities !== undefined) { sets.push('amenities=?'); vals.push(JSON.stringify(b.amenities)) }
+  if (b.photos !== undefined) { sets.push('photos=?'); vals.push(JSON.stringify(b.photos)) }
   if (!sets.length) return
   sets.push('updated_at=?'); vals.push(Date.now(), id, accId)
   await pool.query(`UPDATE hotel_room_types SET ${sets.join(',')} WHERE id=? AND account_id=?`, vals)
 }
 async function deleteRoomType(accId, id) { await pool.query('DELETE FROM hotel_room_types WHERE id=? AND account_id=?', [id, accId]) }
+
+// Crea o actualiza un tipo de habitación importado de una OTA (por external_ref).
+// Devuelve el id de nuestro tipo. ext = { externalId, name, description, capacity,
+// maxCapacity, totalRooms, basePrice, currency, amenities[], photos[] }
+async function upsertExternalRoomType(accId, calId, provider, ext = {}) {
+  const [[exist]] = await pool.query('SELECT id FROM hotel_room_types WHERE account_id=? AND calendar_id=? AND external_provider=? AND external_ref=? LIMIT 1', [accId, calId, provider, String(ext.externalId || '')])
+  const ts = Date.now()
+  const cap = Number(ext.maxCapacity || ext.capacity) || 2
+  if (exist) {
+    // Actualiza ficha; total_rooms/base_price solo si vinieron (no pisar config local).
+    const sets = ['name=?', 'description=?', 'base_capacity=?', 'max_capacity=?', 'currency=?', 'amenities=?', 'photos=?', 'updated_at=?']
+    const vals = [ext.name || 'Habitación', ext.description || '', Number(ext.capacity) || cap, cap, ext.currency || 'USD', JSON.stringify(ext.amenities || []), JSON.stringify(ext.photos || []), ts]
+    if (ext.totalRooms != null) { sets.push('total_rooms=?'); vals.push(Number(ext.totalRooms)) }
+    if (ext.basePrice != null) { sets.push('base_price=?'); vals.push(Number(ext.basePrice)) }
+    vals.push(exist.id)
+    await pool.query(`UPDATE hotel_room_types SET ${sets.join(',')} WHERE id=?`, vals)
+    return exist.id
+  }
+  const id = 'rt_' + uid()
+  await pool.query(
+    'INSERT INTO hotel_room_types (id, account_id, calendar_id, name, base_capacity, max_capacity, total_rooms, overbook_limit, base_price, currency, amenities, description, photos, external_provider, external_ref, status, created_at, updated_at) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)',
+    [id, accId, calId, ext.name || 'Habitación', Number(ext.capacity) || cap, cap, Number(ext.totalRooms) || 1, 0, Number(ext.basePrice) || 0, ext.currency || 'USD', JSON.stringify(ext.amenities || []), ext.description || '', JSON.stringify(ext.photos || []), provider, String(ext.externalId || ''), 'active', ts, ts]
+  )
+  return id
+}
 
 // ── Tarifas (overrides por noche) ─────────────────────────────────────────────
 async function overridesFor(accId, roomTypeId, from, to) {
@@ -166,7 +194,7 @@ async function searchAvailability(accId, calId, { checkin, checkout, guests = 2 
     if (!avail.ok) continue
     const ovr = await overridesFor(accId, rt.id, checkin, checkout)
     const q = quoteNights(nights, rt.basePrice, ovr)
-    options.push({ roomTypeId: rt.id, name: rt.name, capacity: rt.maxCapacity, amenities: rt.amenities, nights: nights.length, currency: rt.currency, total: q.total, perNight: q.perNight })
+    options.push({ roomTypeId: rt.id, name: rt.name, capacity: rt.maxCapacity, amenities: rt.amenities, description: rt.description, photos: rt.photos, nights: nights.length, currency: rt.currency, total: q.total, perNight: q.perNight })
   }
   return { checkin, checkout, guests, nights: nights.length, options }
 }
@@ -268,7 +296,7 @@ async function autoBook(accId, calId, { roomType, checkin, checkout, guests = 2,
 
 module.exports = {
   nightsBetween, quoteNights,
-  listRoomTypes, getRoomType, createRoomType, updateRoomType, deleteRoomType,
+  listRoomTypes, getRoomType, createRoomType, updateRoomType, deleteRoomType, upsertExternalRoomType,
   listRates, setRateRange, clearRate,
   searchAvailability, quoteStay, bookStay, autoBook, monthCheckinDays, soldPerNight,
 }

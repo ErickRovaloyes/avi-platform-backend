@@ -17,6 +17,9 @@ const create = W(async req => { const c = await ch.createChannel(req.params.accI
 const update = W(async req => { await ch.updateChannel(req.params.accId, req.params.chanId, req.body || {}); touch(req); return { ok: true } })
 const remove = W(async req => { await ch.deleteChannel(req.params.accId, req.params.chanId); touch(req); return { ok: true } })
 const sync = W(async req => { const r = await ch.syncChannel(req.params.accId, req.params.chanId); touch(req); return r })
+const schemas = W(() => ch.providerSchemas())
+const test = W(req => ch.testConnection(req.params.accId, req.params.chanId))
+const importRooms = W(async req => { const r = await ch.importRoomsById(req.params.accId, req.params.chanId); touch(req); return r })
 
 // ── Público: iCal export (la OTA se suscribe a esta URL) ─────────────────────
 const ical = async (req, res) => {
@@ -41,4 +44,4 @@ const inbound = W(async (req, res) => {
   return { ok: true, ...r }
 })
 
-module.exports = { list, create, update, remove, sync, ical, inbound }
+module.exports = { list, create, update, remove, sync, schemas, test, importRooms, ical, inbound }
