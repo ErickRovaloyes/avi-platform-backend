@@ -212,8 +212,57 @@ async function bookSeats(accId, showtimeId, seats = [], client = {}, { sessionId
   return { id, showtimeId, date: show.date, time: show.time, seats: list, status: 'confirmed' }
 }
 
+// ── Ayudas para la IA ───────────────────────────────────────────────────────
+// Resuelve una función por título de película (contiene), fecha y/u hora.
+async function findShowtime(accId, calId, { movie, date, time } = {}) {
+  let cands = await listShowtimes(accId, calId, date ? { date } : {})
+  if (time) cands = cands.filter(s => s.time === time)
+  if (movie) {
+    const movies = await listMovies(accId, calId)
+    const ids = movies.filter(m => (m.title || '').toLowerCase().includes(String(movie).toLowerCase())).map(m => m.id)
+    cands = cands.filter(s => ids.includes(s.movieId))
+  }
+  return cands[0] || null
+}
+
+// Elige `qty` asientos: PURO. Prefiere un bloque contiguo en filas centrales y
+// centrado; si no hay bloque, toma asientos libres sueltos; [] si no alcanzan.
+function pickSeats(seatMap, qty) {
+  const n = Math.max(1, Number(qty) || 1)
+  const rows = (seatMap && seatMap.rows) || []
+  const order = [...rows.keys()].sort((a, b) => Math.abs(a - (rows.length - 1) / 2) - Math.abs(b - (rows.length - 1) / 2))
+  for (const idx of order) {
+    const seats = rows[idx].seats || []
+    let best = null
+    for (let i = 0; i + n <= seats.length; i++) {
+      const slice = seats.slice(i, i + n)
+      if (slice.every(s => s.state === 'free')) {
+        const center = Math.abs((i + n / 2) - seats.length / 2)
+        if (!best || center < best.center) best = { codes: slice.map(s => s.code), center }
+      }
+    }
+    if (best) return best.codes
+  }
+  const free = []
+  for (const r of rows) for (const s of (r.seats || [])) if (s.state === 'free') free.push(s.code)
+  return free.length >= n ? free.slice(0, n) : []
+}
+
+// Compra para la IA: resuelve la función, elige asientos (explícitos o auto) y reserva.
+async function autoBook(accId, calId, { movie, date, time, qty, seats, client } = {}) {
+  const show = await findShowtime(accId, calId, { movie, date, time })
+  if (!show) throw new Error('No encontré esa función (revisa película, fecha y hora).')
+  let chosen = Array.isArray(seats) && seats.length ? seats : null
+  if (!chosen) {
+    const sm = await getSeatMap(accId, show.id)
+    chosen = pickSeats(sm, qty)
+    if (!chosen.length) throw new Error('No hay asientos suficientes para ese grupo en esa función.')
+  }
+  return bookSeats(accId, show.id, chosen, client || {}, { channel: 'flow' })
+}
+
 module.exports = {
-  buildSeatMap, HOLD_TTL_MIN,
+  buildSeatMap, HOLD_TTL_MIN, pickSeats, findShowtime, autoBook,
   listMovies, createMovie, updateMovie, deleteMovie,
   listAuditoriums, getAuditorium, createAuditorium, updateAuditorium, deleteAuditorium,
   listShowtimes, getShowtime, createShowtime, updateShowtime, deleteShowtime,

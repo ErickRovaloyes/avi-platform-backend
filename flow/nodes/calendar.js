@@ -9,6 +9,7 @@ const { interpolate, logDebug, setVarBoth, sendBotMsg } = require('../common')
 const bookings = require('../../services/bookings')
 const av = require('../../services/availability')
 const restaurant = require('../../services/restaurant')
+const cinema = require('../../services/cinema')
 
 // Base pública para construir el enlace ABSOLUTO de la página de reservas.
 // Debe ser absoluta para que WhatsApp la haga clickeable / acepte el botón CTA.
@@ -254,6 +255,60 @@ const calendarNodes = [
       if (node.data?.destino) await setVarBoth(ctx, node.data.destino, w.id)
       ctx.variables._waitlist_id = w.id
       logDebug(ctx, 'flow_run', `📝 Lista de espera ${w.id} · ${date} (${party}p)`, {})
+    },
+  },
+
+  // ── Cine (Fase 3c) ─────────────────────────────────────────────────────────
+  {
+    type: 'cinema_showtimes', category: 'calendar', label: 'Cine: ver funciones',
+    fields: calFields([
+      { key: 'pelicula', label: 'Película (filtro, opcional)', type: 'text' },
+      { key: 'fecha', label: 'Fecha', type: 'text', default: 'hoy' },
+      { key: 'destino', label: 'Guardar funciones en', type: 'variableRef' },
+    ]),
+    async exec(node, ctx) {
+      const calId = interpolate(node.data?.calendarId || '', ctx.variables)
+      if (!calId) throw new Error('Elige un calendario')
+      const date = resolveDate(node.data?.fecha, ctx.variables, await calTz(ctx.accId, calId))
+      const movieFilter = interpolate(node.data?.pelicula || '', ctx.variables).trim()
+      const [shows, movies] = await Promise.all([cinema.listShowtimes(ctx.accId, calId, { date }), cinema.listMovies(ctx.accId, calId)])
+      const byId = Object.fromEntries(movies.map(m => [m.id, m]))
+      let list = shows.map(s => ({ id: s.id, movie: byId[s.movieId]?.title || '', date: s.date, time: s.time, format: s.format, price: s.price }))
+      if (movieFilter) list = list.filter(s => (s.movie || '').toLowerCase().includes(movieFilter.toLowerCase()))
+      if (node.data?.destino) await setVarBoth(ctx, node.data.destino, JSON.stringify(list))
+      ctx.variables._cinema_showtimes = list
+      ctx.variables._cinema_date = date
+      logDebug(ctx, 'flow_run', `🎬 ${list.length} función(es) el ${date}`, { list })
+    },
+  },
+  {
+    type: 'cinema_book', category: 'calendar', label: 'Cine: comprar entradas',
+    fields: calFields([
+      { key: 'pelicula', label: 'Película', type: 'text' },
+      { key: 'fecha', label: 'Fecha', type: 'text', placeholder: '{{_cinema_date}}' },
+      { key: 'hora', label: 'Hora (HH:MM)', type: 'text' },
+      { key: 'cantidad', label: 'Nº de entradas', type: 'text', default: '2' },
+      { key: 'asientos', label: 'Asientos (opcional, ej: F5,F6)', type: 'text' },
+      { key: 'nombre', label: 'Nombre del cliente', type: 'text', placeholder: '{{cliente_nombre}}' },
+      { key: 'telefono', label: 'Teléfono', type: 'text', placeholder: '{{cliente_telefono}}' },
+      { key: 'destino', label: 'Guardar ID de reserva en', type: 'variableRef' },
+    ]),
+    async exec(node, ctx) {
+      const calId = interpolate(node.data?.calendarId || '', ctx.variables)
+      if (!calId) throw new Error('Elige un calendario')
+      const date = resolveDate(node.data?.fecha, ctx.variables, await calTz(ctx.accId, calId))
+      const time = interpolate(node.data?.hora || '', ctx.variables).slice(0, 5)
+      const qty = Math.max(1, parseInt(interpolate(node.data?.cantidad || '2', ctx.variables), 10) || 2)
+      const seatsRaw = interpolate(node.data?.asientos || '', ctx.variables).trim()
+      const seats = seatsRaw ? seatsRaw.split(/[,\s]+/).filter(Boolean) : null
+      const booking = await cinema.autoBook(ctx.accId, calId, {
+        movie: interpolate(node.data?.pelicula || '', ctx.variables), date, time, qty, seats,
+        client: { name: interpolate(node.data?.nombre || '', ctx.variables), phone: interpolate(node.data?.telefono || '', ctx.variables) },
+      })
+      if (node.data?.destino) await setVarBoth(ctx, node.data.destino, booking.id)
+      ctx.variables._last_booking_id = booking.id
+      ctx.variables._cinema_seats = booking.seats
+      logDebug(ctx, 'flow_run', `🎟 Entradas ${booking.id} · ${booking.date} ${booking.time} · asientos ${booking.seats.join(', ')}`, {})
     },
   },
 ]

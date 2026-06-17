@@ -276,8 +276,21 @@ async function runBookingFlow(accId, calendar, booking, convRef = null) {
 // Un único endpoint optionalAuth que mapea a los métodos del servicio de reservas.
 const flowOp = async (req, res) => {
   const { accId } = req.params
-  const { op, calendarId, date, time, duration, bookingId, partySize, client = {} } = req.body || {}
+  const { op, calendarId, date, time, duration, bookingId, partySize, movie, seats, client = {} } = req.body || {}
   try {
+    if (op === 'cinema_showtimes') {
+      const cinema = require('../services/cinema')
+      const [shows, movies] = await Promise.all([cinema.listShowtimes(accId, calendarId, date ? { date } : {}), cinema.listMovies(accId, calendarId)])
+      const byId = Object.fromEntries(movies.map(m => [m.id, m]))
+      let list = shows.map(s => ({ id: s.id, movie: byId[s.movieId]?.title || '', date: s.date, time: s.time, format: s.format, price: s.price }))
+      if (movie) list = list.filter(s => (s.movie || '').toLowerCase().includes(String(movie).toLowerCase()))
+      return res.json({ showtimes: list })
+    }
+    if (op === 'cinema_book') {
+      const cinema = require('../services/cinema')
+      const booking = await cinema.autoBook(accId, calendarId, { movie, date, time, qty: partySize, seats, client })
+      return res.json({ booking })
+    }
     if (op === 'availability') return res.json({ slots: await bookings.getAvailability(accId, calendarId, date, duration, partySize) })
     if (op === 'list')         return res.json({ bookings: await bookings.listBookings(accId, calendarId, { date }) })
     if (op === 'create') {
