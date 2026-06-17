@@ -3,6 +3,7 @@ const router = require('express').Router()
 const { authMiddleware, optionalAuth } = require('../auth')
 const ctrl = require('../controllers/calendars.controller')
 const rest = require('../controllers/restaurant.controller')
+const cine = require('../controllers/cinema.controller')
 
 // ── Gestión (autenticado) ────────────────────────────────────────────────────
 router.get('/accounts/:accId/calendars',                 authMiddleware, ctrl.list)
@@ -36,6 +37,26 @@ router.delete('/accounts/:accId/shifts/:shiftId',          authMiddleware, rest.
 router.get('/accounts/:accId/calendars/:calId/waitlist',   authMiddleware, rest.listWaitlist)
 router.post('/accounts/:accId/calendars/:calId/waitlist',  authMiddleware, rest.addWaitlist)
 router.put('/accounts/:accId/waitlist/:wid',               authMiddleware, rest.updateWaitlist)
+
+// ── Cine (Fase 3): config (autenticado) ──────────────────────────────────────
+router.get('/accounts/:accId/calendars/:calId/movies',      authMiddleware, cine.listMovies)
+router.post('/accounts/:accId/calendars/:calId/movies',     authMiddleware, cine.createMovie)
+router.put('/accounts/:accId/movies/:movieId',              authMiddleware, cine.updateMovie)
+router.delete('/accounts/:accId/movies/:movieId',           authMiddleware, cine.deleteMovie)
+router.get('/accounts/:accId/calendars/:calId/auditoriums', authMiddleware, cine.listAuditoriums)
+router.post('/accounts/:accId/calendars/:calId/auditoriums',authMiddleware, cine.createAuditorium)
+router.put('/accounts/:accId/auditoriums/:audId',           authMiddleware, cine.updateAuditorium)
+router.delete('/accounts/:accId/auditoriums/:audId',        authMiddleware, cine.deleteAuditorium)
+router.get('/accounts/:accId/calendars/:calId/showtimes',   authMiddleware, cine.listShowtimes)
+router.post('/accounts/:accId/calendars/:calId/showtimes',  authMiddleware, cine.createShowtime)
+router.put('/accounts/:accId/showtimes/:showId',            authMiddleware, cine.updateShowtime)
+router.delete('/accounts/:accId/showtimes/:showId',         authMiddleware, cine.deleteShowtime)
+// ── Cine: flujo público de compra ────────────────────────────────────────────
+router.get('/public/cinema/:accId/:calId/listing',          optionalAuth, cine.publicListing)
+router.get('/public/cinema/:accId/showtimes/:showId/seats', optionalAuth, cine.publicSeatMap)
+router.post('/public/cinema/:accId/showtimes/:showId/hold', optionalAuth, cine.publicHold)
+router.post('/public/cinema/:accId/showtimes/:showId/release', optionalAuth, cine.publicRelease)
+router.post('/public/cinema/:accId/showtimes/:showId/book', optionalAuth, cine.publicBook)
 
 // ── Público (página de reservas / formulario) ────────────────────────────────
 router.get('/public/calendars/:accId/:calId',                optionalAuth, ctrl.getPublic)

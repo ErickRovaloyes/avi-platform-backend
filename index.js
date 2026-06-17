@@ -490,6 +490,34 @@ app.use('/api',                webhookRoutes)
        notes       TEXT, created_at BIGINT, updated_at BIGINT,
        INDEX idx_wl (account_id, calendar_id, date, status)
      )`,
+    // ── FASE 3: Cine (SeatMapStrategy) ──────────────────────────────────────
+    `CREATE TABLE IF NOT EXISTS cine_movies (
+       id          VARCHAR(50) PRIMARY KEY,
+       account_id  VARCHAR(50) NOT NULL, calendar_id VARCHAR(50) NOT NULL,
+       title       VARCHAR(200), duration_min INT, rating VARCHAR(10),
+       poster      TEXT, synopsis TEXT, status VARCHAR(20) DEFAULT 'active',
+       created_at  BIGINT, updated_at BIGINT,
+       INDEX idx_movie (account_id, calendar_id, status)
+     )`,
+    `CREATE TABLE IF NOT EXISTS cine_auditoriums (
+       id          VARCHAR(50) PRIMARY KEY,
+       account_id  VARCHAR(50) NOT NULL, calendar_id VARCHAR(50) NOT NULL,
+       name        VARCHAR(80), screen_type VARCHAR(10) DEFAULT '2D',  -- 2D|3D|IMAX|VIP
+       seat_map    JSON,   -- { rows:[{row:'A',count:12,type:'standard'}], blocked:['A1'] }
+       created_at  BIGINT, updated_at BIGINT,
+       INDEX idx_aud (account_id, calendar_id)
+     )`,
+    `CREATE TABLE IF NOT EXISTS cine_showtimes (
+       id          VARCHAR(50) PRIMARY KEY,
+       account_id  VARCHAR(50) NOT NULL, calendar_id VARCHAR(50) NOT NULL,
+       movie_id    VARCHAR(50), auditorium_id VARCHAR(50),
+       date        VARCHAR(10), time VARCHAR(5),
+       format      VARCHAR(10), language VARCHAR(20), price DECIMAL(10,2),
+       status      VARCHAR(20) DEFAULT 'active',
+       created_at  BIGINT, updated_at BIGINT,
+       INDEX idx_show (account_id, calendar_id, date),
+       INDEX idx_show_movie (account_id, movie_id, date)
+     )`,
   ]
   for (const sql of migrations) {
     try { await pool.query(sql) } catch (e) { /* column exists or unsupported */ }
@@ -505,6 +533,12 @@ app.use('/api',                webhookRoutes)
   try { require('./services/calendarReminders').start() } catch (e) { console.warn('[reminders] no iniciado:', e.message) }
   // Procesador del outbox de eventos de dominio (Core Booking Engine, Fase 0)
   try { require('./core/events').startProcessor() } catch (e) { console.warn('[events] no iniciado:', e.message) }
+  // Worker que libera los holds (bloqueos de asiento) vencidos — Cine (Fase 3)
+  try {
+    const cinema = require('./services/cinema')
+    setInterval(() => { cinema.releaseExpiredHolds().catch(() => {}) }, 30000).unref?.()
+    console.log('[holds] worker de liberación iniciado')
+  } catch (e) { console.warn('[holds] worker no iniciado:', e.message) }
 })()
 
 // ── Start ─────────────────────────────────────────────────────────────────────

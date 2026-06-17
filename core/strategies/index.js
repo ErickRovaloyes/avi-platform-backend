@@ -10,14 +10,15 @@
 
 const timeSlot = require('./timeSlot')
 const capacity = require('./capacity')
+const seatMap = require('./seatMap')
 
 const STRATEGIES = {
   time_slot:   timeSlot,
   appointment: timeSlot,   // vertical actual por defecto
   medical:     timeSlot,
   restaurant:  capacity,   // Fase 2
+  cinema:      seatMap,    // Fase 3
   // hotel:      inventory,  // Fase 4
-  // cinema:     seatMap,    // Fase 3
 }
 
 function resolveStrategy(calendar) {
@@ -25,4 +26,4 @@ function resolveStrategy(calendar) {
   return STRATEGIES[key] || timeSlot
 }
 
-module.exports = { resolveStrategy, STRATEGIES, timeSlot, capacity }
+module.exports = { resolveStrategy, STRATEGIES, timeSlot, capacity, seatMap }
