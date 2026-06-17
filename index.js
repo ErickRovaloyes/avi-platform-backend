@@ -457,6 +457,39 @@ app.use('/api',                webhookRoutes)
        UNIQUE KEY uq_hold_unit (account_id, resource_id, unit_key),
        INDEX idx_hold_exp (expires_at)
      )`,
+    // ── FASE 2: Restaurante (CapacityStrategy) ──────────────────────────────
+    "ALTER TABLE calendar_bookings ADD COLUMN party_size INT DEFAULT 1",
+    `CREATE TABLE IF NOT EXISTS rest_tables (
+       id          VARCHAR(50) PRIMARY KEY,
+       account_id  VARCHAR(50) NOT NULL, calendar_id VARCHAR(50) NOT NULL,
+       name        VARCHAR(60),
+       area        VARCHAR(20) DEFAULT 'indoor',   -- indoor|terrace|vip|bar
+       cap_min     INT DEFAULT 1, cap_max INT DEFAULT 2,
+       joinable    TINYINT DEFAULT 1, sort_order INT DEFAULT 0,
+       status      VARCHAR(20) DEFAULT 'active',
+       created_at  BIGINT, updated_at BIGINT,
+       INDEX idx_rtbl (account_id, calendar_id, status)
+     )`,
+    `CREATE TABLE IF NOT EXISTS rest_shifts (
+       id          VARCHAR(50) PRIMARY KEY,
+       account_id  VARCHAR(50) NOT NULL, calendar_id VARCHAR(50) NOT NULL,
+       name        VARCHAR(40),
+       start_time  VARCHAR(5), end_time VARCHAR(5),
+       avg_occupancy_min INT DEFAULT 90, slot_every_min INT DEFAULT 15,
+       days        JSON,                            -- ['mon',...] o null=todos
+       sort_order  INT DEFAULT 0, created_at BIGINT, updated_at BIGINT,
+       INDEX idx_rsh (account_id, calendar_id)
+     )`,
+    `CREATE TABLE IF NOT EXISTS rest_waitlist (
+       id          VARCHAR(50) PRIMARY KEY,
+       account_id  VARCHAR(50) NOT NULL, calendar_id VARCHAR(50) NOT NULL,
+       date        VARCHAR(10), time VARCHAR(5), shift_id VARCHAR(50),
+       party_size  INT, customer_id VARCHAR(50),
+       client_name VARCHAR(150), client_phone VARCHAR(40),
+       status      VARCHAR(20) DEFAULT 'waiting',   -- waiting|notified|seated|cancelled|expired
+       notes       TEXT, created_at BIGINT, updated_at BIGINT,
+       INDEX idx_wl (account_id, calendar_id, date, status)
+     )`,
   ]
   for (const sql of migrations) {
     try { await pool.query(sql) } catch (e) { /* column exists or unsupported */ }

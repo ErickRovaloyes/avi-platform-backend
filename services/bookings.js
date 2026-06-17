@@ -15,6 +15,18 @@ const sync = require('./calendarSync')
 const events = require('../core/events')
 const { resolveStrategy } = require('../core/strategies')
 const states = require('../core/booking/states')
+const restaurant = require('./restaurant')
+
+// Contexto de datos que las estrategias de disponibilidad reciben por inyección.
+// Cada estrategia usa solo lo que necesita (time-slot: holiday/bookings/google;
+// capacity: tables/shifts/allocations).
+function strategyCtx() {
+  return {
+    holidayBlocked, bookingsForDate, googleBusyForDate: sync.googleBusyForDate,
+    getTables: restaurant.getTables, getShifts: restaurant.getShifts,
+    getDateAllocations: restaurant.getDateAllocations, insertAllocations: restaurant.insertAllocations,
+  }
+}
 
 // ¿La fecha cae en un festivo que el calendario decidió bloquear?
 async function holidayBlocked(calendar, dateStr) {
@@ -49,7 +61,7 @@ function mapBooking(r) {
     id: r.id, accountId: r.account_id, calendarId: r.calendar_id,
     date: r.date, time: r.time, duration: r.duration,
     clientName: r.client_name, clientPhone: r.client_phone, clientEmail: r.client_email,
-    customerId: r.customer_id || null,
+    customerId: r.customer_id || null, partySize: r.party_size || 1,
     channel: r.channel || 'manual', status: r.status || 'pending',
     notes: r.notes || '', meta: parseJ(r.meta, {}), externalId: r.external_id || null,
     createdAt: r.created_at, updatedAt: r.updated_at,
@@ -161,15 +173,12 @@ async function allocateSlot(accId, calendarId, bookingId, date, time, duration, 
   } catch { return false }
 }
 
-async function getAvailability(accId, calendarId, dateStr, durationMin) {
+async function getAvailability(accId, calendarId, dateStr, durationMin, partySize) {
   const calendar = await getCalendar(accId, calendarId)
   if (!calendar) throw new Error('Calendario no encontrado')
-  // El cálculo se delega a la estrategia del vertical (Fase 0 = time-slot, idéntico).
+  // El cálculo se delega a la estrategia del vertical (time-slot / capacity / …).
   const strategy = resolveStrategy(calendar)
-  return strategy.getDayAvailability(calendar, dateStr, {
-    durationMin,
-    ctx: { holidayBlocked, bookingsForDate, googleBusyForDate: sync.googleBusyForDate },
-  })
+  return strategy.getDayAvailability(calendar, dateStr, { durationMin, partySize, ctx: strategyCtx() })
 }
 
 const toDateKey = (d) => (typeof d === 'string' ? d.slice(0, 10) : new Date(d).toISOString().slice(0, 10))
@@ -178,11 +187,16 @@ const toDateKey = (d) => (typeof d === 'string' ? d.slice(0, 10) : new Date(d).t
 // libre. Para que la cuadrícula cargue rápido NO consulta Google por día (eso se
 // resuelve al elegir el día); sí considera horario semanal, excepciones,
 // festivos, reservas existentes y la ventana de antelación.
-async function getMonthAvailability(accId, calendarId, year, month, durationMin) {
+async function getMonthAvailability(accId, calendarId, year, month, durationMin, partySize) {
   const calendar = await getCalendar(accId, calendarId)
   if (!calendar) throw new Error('Calendario no encontrado')
   const y = Number(year), m = Number(month)
   if (!y || !m || m < 1 || m > 12) throw new Error('Mes inválido')
+  // Estrategias no time-slot definen su propia lógica de "días abiertos" del mes.
+  const strategy = resolveStrategy(calendar)
+  if (typeof strategy.getMonthDays === 'function') {
+    return strategy.getMonthDays(calendar, { year: y, month: m, durationMin, partySize, ctx: strategyCtx() })
+  }
   const mm = String(m).padStart(2, '0')
   const lastDay = new Date(Date.UTC(y, m, 0)).getUTCDate()
   const first = `${y}-${mm}-01`, last = `${y}-${mm}-${String(lastDay).padStart(2, '0')}`
@@ -195,7 +209,6 @@ async function getMonthAvailability(accId, calendarId, year, month, durationMin)
     const dk = toDateKey(r.date)
     ;(byDate[dk] ||= []).push({ date: dk, time: r.time, duration: r.duration, status: r.status })
   }
-  const strategy = resolveStrategy(calendar)
   const days = []
   for (let d = 1; d <= lastDay; d++) {
     const ds = `${y}-${mm}-${String(d).padStart(2, '0')}`
@@ -214,12 +227,20 @@ async function createBooking(accId, calendarId, data = {}, { validate = true } =
   const time = String(data.time || '').slice(0, 5)
   if (!date || !time) throw new Error('Fecha y hora requeridas')
   const duration = Number(data.duration) || Number(calendar.appointment?.defaultDuration) || 30
+  const strategy = resolveStrategy(calendar)
+  const isCapacity = strategy.id === 'capacity'
+  const partySize = Math.max(1, Number(data.partySize) || (isCapacity ? 2 : 1))
 
   if (validate) {
-    if (await holidayBlocked(calendar, date)) throw new Error('Ese día es festivo y está bloqueado para reservas')
-    const bookings = await bookingsForDate(accId, calendarId, date)
-    if (!av.isSlotAvailable(calendar, date, time, bookings, { durationMin: duration })) {
-      throw new Error('El horario seleccionado ya no está disponible')
+    if (isCapacity) {
+      const ok = await strategy.isAvailable(calendar, { date, time, partySize, ctx: strategyCtx() })
+      if (!ok) throw new Error('No hay mesa disponible para ese horario y número de personas')
+    } else {
+      if (await holidayBlocked(calendar, date)) throw new Error('Ese día es festivo y está bloqueado para reservas')
+      const bookings = await bookingsForDate(accId, calendarId, date)
+      if (!av.isSlotAvailable(calendar, date, time, bookings, { durationMin: duration })) {
+        throw new Error('El horario seleccionado ya no está disponible')
+      }
     }
   }
 
@@ -232,15 +253,26 @@ async function createBooking(accId, calendarId, data = {}, { validate = true } =
   })
   await pool.query(
     `INSERT INTO calendar_bookings
-       (id, account_id, calendar_id, date, time, duration, client_name, client_phone, client_email, customer_id, channel, status, notes, meta, external_id, created_at, updated_at)
-     VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`,
-    [id, accId, calendarId, date, time, duration,
+       (id, account_id, calendar_id, date, time, duration, party_size, client_name, client_phone, client_email, customer_id, channel, status, notes, meta, external_id, created_at, updated_at)
+     VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`,
+    [id, accId, calendarId, date, time, duration, partySize,
      data.clientName || '', data.clientPhone || '', data.clientEmail || '', customerId,
      data.channel || 'manual', status, data.notes || '',
      JSON.stringify(data.meta || {}), data.externalId || null, ts, ts]
   )
-  // Reserva la unidad del slot (cimiento del núcleo + anti doble-reserva). Best-effort.
-  allocateSlot(accId, calendarId, id, date, time, duration, calendar).catch(() => {})
+  // Asignación según la estrategia del vertical.
+  if (isCapacity) {
+    // Restaurante: asigna mesa(s). Si no hay (y se valida), revierte la reserva.
+    const plan = await strategy.allocate(calendar, id, { date, time, partySize, ctx: strategyCtx() }).catch(() => null)
+    if (!plan && validate) {
+      await pool.query('DELETE FROM calendar_bookings WHERE id=?', [id]).catch(() => {})
+      throw new Error('No hay mesa disponible para ese horario y número de personas')
+    }
+    if (plan?.windowMin) await pool.query('UPDATE calendar_bookings SET duration=? WHERE id=?', [plan.windowMin, id]).catch(() => {})
+  } else {
+    // Time-slot: reserva la unidad del slot (anti doble-reserva). Best-effort.
+    allocateSlot(accId, calendarId, id, date, time, duration, calendar).catch(() => {})
+  }
   const bk = await getBooking(accId, id)
   // notify (confirmación) + Google sync ahora son HANDLERS del outbox (ver registro al final).
   emit(calendar, 'BookingCreated', bk)
@@ -266,21 +298,30 @@ async function rescheduleBooking(accId, bookingId, newDate, newTime, { validate 
   const date = String(newDate || '').slice(0, 10)
   const time = String(newTime || '').slice(0, 5)
   if (!date || !time) throw new Error('Nueva fecha y hora requeridas')
-  if (validate) {
-    const calendar = await getCalendar(accId, booking.calendarId)
-    const bookings = await bookingsForDate(accId, booking.calendarId, date)
-    if (!av.isSlotAvailable(calendar, date, time, bookings, { durationMin: booking.duration, ignoreBookingId: bookingId })) {
-      throw new Error('El nuevo horario no está disponible')
-    }
-  }
-  await pool.query(
-    'UPDATE calendar_bookings SET date=?, time=?, status=?, updated_at=? WHERE id=? AND account_id=?',
-    [date, time, 'rescheduled', Date.now(), bookingId, accId]
-  )
   const calendar = await getCalendar(accId, booking.calendarId)
-  // Mueve la asignación de la unidad al nuevo horario.
-  await pool.query('DELETE FROM booking_allocations WHERE booking_id=? AND account_id=?', [bookingId, accId]).catch(() => {})
-  if (calendar) allocateSlot(accId, booking.calendarId, bookingId, date, time, booking.duration, calendar).catch(() => {})
+  const strategy = resolveStrategy(calendar || {})
+
+  if (strategy.id === 'capacity') {
+    // Restaurante: libera la mesa actual, revalida y reasigna en el nuevo horario.
+    await pool.query('DELETE FROM booking_allocations WHERE booking_id=? AND account_id=?', [bookingId, accId]).catch(() => {})
+    if (validate && !(await strategy.isAvailable(calendar, { date, time, partySize: booking.partySize, ctx: strategyCtx() }))) {
+      // restaura la asignación anterior y aborta
+      await strategy.allocate(calendar, bookingId, { date: booking.date, time: booking.time, partySize: booking.partySize, ctx: strategyCtx() }).catch(() => {})
+      throw new Error('No hay mesa disponible para el nuevo horario')
+    }
+    await pool.query('UPDATE calendar_bookings SET date=?, time=?, status=?, updated_at=? WHERE id=? AND account_id=?', [date, time, 'rescheduled', Date.now(), bookingId, accId])
+    await strategy.allocate(calendar, bookingId, { date, time, partySize: booking.partySize, ctx: strategyCtx() }).catch(() => {})
+  } else {
+    if (validate) {
+      const bookings = await bookingsForDate(accId, booking.calendarId, date)
+      if (!av.isSlotAvailable(calendar, date, time, bookings, { durationMin: booking.duration, ignoreBookingId: bookingId })) {
+        throw new Error('El nuevo horario no está disponible')
+      }
+    }
+    await pool.query('UPDATE calendar_bookings SET date=?, time=?, status=?, updated_at=? WHERE id=? AND account_id=?', [date, time, 'rescheduled', Date.now(), bookingId, accId])
+    await pool.query('DELETE FROM booking_allocations WHERE booking_id=? AND account_id=?', [bookingId, accId]).catch(() => {})
+    if (calendar) allocateSlot(accId, booking.calendarId, bookingId, date, time, booking.duration, calendar).catch(() => {})
+  }
   const bk = await getBooking(accId, bookingId)
   // notify (reagendamiento) + Google sync vía outbox (handler BookingRescheduled).
   emit(calendar, 'BookingRescheduled', bk)

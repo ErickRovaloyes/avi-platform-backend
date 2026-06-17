@@ -2,6 +2,7 @@
 const router = require('express').Router()
 const { authMiddleware, optionalAuth } = require('../auth')
 const ctrl = require('../controllers/calendars.controller')
+const rest = require('../controllers/restaurant.controller')
 
 // ── Gestión (autenticado) ────────────────────────────────────────────────────
 router.get('/accounts/:accId/calendars',                 authMiddleware, ctrl.list)
@@ -22,6 +23,19 @@ router.post('/accounts/:accId/bookings/:bookingId/status',   authMiddleware, ctr
 router.delete('/accounts/:accId/bookings/:bookingId',        authMiddleware, ctrl.deleteBooking)
 // Cliente / paciente / huésped — historial (datos + reservas)
 router.get('/accounts/:accId/customers/:customerId/history', authMiddleware, ctrl.customerHistory)
+
+// ── Restaurante (Fase 2): mesas, turnos, waitlist ────────────────────────────
+router.get('/accounts/:accId/calendars/:calId/tables',     authMiddleware, rest.listTables)
+router.post('/accounts/:accId/calendars/:calId/tables',    authMiddleware, rest.createTable)
+router.put('/accounts/:accId/tables/:tableId',             authMiddleware, rest.updateTable)
+router.delete('/accounts/:accId/tables/:tableId',          authMiddleware, rest.deleteTable)
+router.get('/accounts/:accId/calendars/:calId/shifts',     authMiddleware, rest.listShifts)
+router.post('/accounts/:accId/calendars/:calId/shifts',    authMiddleware, rest.createShift)
+router.put('/accounts/:accId/shifts/:shiftId',             authMiddleware, rest.updateShift)
+router.delete('/accounts/:accId/shifts/:shiftId',          authMiddleware, rest.deleteShift)
+router.get('/accounts/:accId/calendars/:calId/waitlist',   authMiddleware, rest.listWaitlist)
+router.post('/accounts/:accId/calendars/:calId/waitlist',  authMiddleware, rest.addWaitlist)
+router.put('/accounts/:accId/waitlist/:wid',               authMiddleware, rest.updateWaitlist)
 
 // ── Público (página de reservas / formulario) ────────────────────────────────
 router.get('/public/calendars/:accId/:calId',                optionalAuth, ctrl.getPublic)

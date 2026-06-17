@@ -9,12 +9,13 @@
  */
 
 const timeSlot = require('./timeSlot')
+const capacity = require('./capacity')
 
 const STRATEGIES = {
   time_slot:   timeSlot,
   appointment: timeSlot,   // vertical actual por defecto
   medical:     timeSlot,
-  // restaurant: capacity,   // Fase 2
+  restaurant:  capacity,   // Fase 2
   // hotel:      inventory,  // Fase 4
   // cinema:     seatMap,    // Fase 3
 }
@@ -24,4 +25,4 @@ function resolveStrategy(calendar) {
   return STRATEGIES[key] || timeSlot
 }
 
-module.exports = { resolveStrategy, STRATEGIES, timeSlot }
+module.exports = { resolveStrategy, STRATEGIES, timeSlot, capacity }

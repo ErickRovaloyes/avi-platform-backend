@@ -86,10 +86,10 @@ const remove = async (req, res) => {
 // ── Availability ─────────────────────────────────────────────────────────────
 const availability = async (req, res) => {
   const { accId, calId } = req.params
-  const { date, duration } = req.query
+  const { date, duration, party } = req.query
   if (!date) return res.status(400).json({ error: 'Falta la fecha' })
   try {
-    const slots = await bookings.getAvailability(accId, calId, date, duration ? Number(duration) : undefined)
+    const slots = await bookings.getAvailability(accId, calId, date, duration ? Number(duration) : undefined, party ? Number(party) : undefined)
     res.json({ date, slots })
   } catch (err) { res.status(400).json({ error: err.message || 'Error' }) }
 }
@@ -97,10 +97,10 @@ const availability = async (req, res) => {
 // Días con disponibilidad de un mes (para la cuadrícula de la página pública).
 const monthAvailability = async (req, res) => {
   const { accId, calId } = req.params
-  const { year, month, duration } = req.query
+  const { year, month, duration, party } = req.query
   if (!year || !month) return res.status(400).json({ error: 'Falta el mes' })
   try {
-    const r = await bookings.getMonthAvailability(accId, calId, year, month, duration ? Number(duration) : undefined)
+    const r = await bookings.getMonthAvailability(accId, calId, year, month, duration ? Number(duration) : undefined, party ? Number(party) : undefined)
     res.json(r)
   } catch (err) { res.status(400).json({ error: err.message || 'Error' }) }
 }
@@ -276,13 +276,13 @@ async function runBookingFlow(accId, calendar, booking, convRef = null) {
 // Un único endpoint optionalAuth que mapea a los métodos del servicio de reservas.
 const flowOp = async (req, res) => {
   const { accId } = req.params
-  const { op, calendarId, date, time, duration, bookingId, client = {} } = req.body || {}
+  const { op, calendarId, date, time, duration, bookingId, partySize, client = {} } = req.body || {}
   try {
-    if (op === 'availability') return res.json({ slots: await bookings.getAvailability(accId, calendarId, date, duration) })
+    if (op === 'availability') return res.json({ slots: await bookings.getAvailability(accId, calendarId, date, duration, partySize) })
     if (op === 'list')         return res.json({ bookings: await bookings.listBookings(accId, calendarId, { date }) })
     if (op === 'create') {
       const bk = await bookings.createBooking(accId, calendarId, {
-        date, time, duration,
+        date, time, duration, partySize,
         clientName: client.name, clientPhone: client.phone, clientEmail: client.email,
         channel: client.channel || 'flow', status: 'confirmed',
       }, { validate: true })
