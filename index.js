@@ -589,6 +589,19 @@ app.use('/api',                webhookRoutes)
        is_deposit    TINYINT DEFAULT 0, ts BIGINT,
        INDEX idx_pay (account_id, folio_id)
      )`,
+    // ── Canales / OTAs del hotel (Airbnb, HosRoom, Booking, Kunas) ──────────
+    "ALTER TABLE calendar_bookings ADD COLUMN channel_ref VARCHAR(150)",
+    "ALTER TABLE calendar_bookings ADD COLUMN ical_uid VARCHAR(200)",
+    `CREATE TABLE IF NOT EXISTS hotel_channels (
+       id            VARCHAR(50) PRIMARY KEY,
+       account_id    VARCHAR(50) NOT NULL, calendar_id VARCHAR(50) NOT NULL,
+       provider      VARCHAR(20) NOT NULL,   -- airbnb|hosroom|booking|kunas
+       name          VARCHAR(120), enabled TINYINT DEFAULT 1,
+       config        JSON,   -- { icalImportUrl, apiKey, endpoint, propertyId, roomTypeId, roomTypeMap, webhookSecret }
+       last_sync     BIGINT, last_result TEXT,
+       created_at    BIGINT, updated_at BIGINT,
+       INDEX idx_chan (account_id, calendar_id, provider)
+     )`,
   ]
   for (const sql of migrations) {
     try { await pool.query(sql) } catch (e) { /* column exists or unsupported */ }
@@ -610,6 +623,13 @@ app.use('/api',                webhookRoutes)
     setInterval(() => { cinema.releaseExpiredHolds().catch(() => {}) }, 30000).unref?.()
     console.log('[holds] worker de liberación iniciado')
   } catch (e) { console.warn('[holds] worker no iniciado:', e.message) }
+  // Worker de sincronización de canales/OTAs del hotel (iCal pull) cada 15 min.
+  try {
+    const channels = require('./services/hotelChannels')
+    setInterval(() => { channels.syncAll().catch(() => {}) }, 15 * 60000).unref?.()
+    setTimeout(() => { channels.syncAll().catch(() => {}) }, 60000).unref?.() // primer pull al minuto
+    console.log('[channels] worker de sincronización iniciado')
+  } catch (e) { console.warn('[channels] worker no iniciado:', e.message) }
 })()
 
 // ── Start ─────────────────────────────────────────────────────────────────────

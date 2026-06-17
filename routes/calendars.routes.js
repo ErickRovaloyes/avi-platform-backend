@@ -6,6 +6,7 @@ const rest = require('../controllers/restaurant.controller')
 const cine = require('../controllers/cinema.controller')
 const hotel = require('../controllers/hotel.controller')
 const pms = require('../controllers/hotelPms.controller')
+const chan = require('../controllers/hotelChannels.controller')
 
 // ── Gestión (autenticado) ────────────────────────────────────────────────────
 router.get('/accounts/:accId/calendars',                 authMiddleware, ctrl.list)
@@ -95,6 +96,16 @@ router.get('/accounts/:accId/bookings/:bookingId/folio',    authMiddleware, pms.
 router.post('/accounts/:accId/bookings/:bookingId/folio/charge',  authMiddleware, pms.addCharge)
 router.post('/accounts/:accId/bookings/:bookingId/folio/payment', authMiddleware, pms.addPayment)
 router.get('/accounts/:accId/calendars/:calId/report',      authMiddleware, pms.report)
+
+// ── Hotel: canales / OTAs (Airbnb, HosRoom, Booking, Kunas) ──────────────────
+router.get('/accounts/:accId/calendars/:calId/channels',    authMiddleware, chan.list)
+router.post('/accounts/:accId/calendars/:calId/channels',   authMiddleware, chan.create)
+router.put('/accounts/:accId/channels/:chanId',             authMiddleware, chan.update)
+router.delete('/accounts/:accId/channels/:chanId',          authMiddleware, chan.remove)
+router.post('/accounts/:accId/channels/:chanId/sync',       authMiddleware, chan.sync)
+// Público: iCal export (la OTA se suscribe) + webhook de reserva entrante.
+router.get('/public/hotel/:accId/:calId/ical/:roomTypeId.ics', chan.ical)
+router.post('/public/hotel/:accId/:calId/channels/:provider/reservation', chan.inbound)
 
 // ── Público (página de reservas / formulario) ────────────────────────────────
 router.get('/public/calendars/:accId/:calId',                optionalAuth, ctrl.getPublic)
