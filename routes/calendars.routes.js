@@ -4,6 +4,7 @@ const { authMiddleware, optionalAuth } = require('../auth')
 const ctrl = require('../controllers/calendars.controller')
 const rest = require('../controllers/restaurant.controller')
 const cine = require('../controllers/cinema.controller')
+const hotel = require('../controllers/hotel.controller')
 
 // ── Gestión (autenticado) ────────────────────────────────────────────────────
 router.get('/accounts/:accId/calendars',                 authMiddleware, ctrl.list)
@@ -57,6 +58,19 @@ router.get('/public/cinema/:accId/showtimes/:showId/seats', optionalAuth, cine.p
 router.post('/public/cinema/:accId/showtimes/:showId/hold', optionalAuth, cine.publicHold)
 router.post('/public/cinema/:accId/showtimes/:showId/release', optionalAuth, cine.publicRelease)
 router.post('/public/cinema/:accId/showtimes/:showId/book', optionalAuth, cine.publicBook)
+
+// ── Hotel (Fase 4a): config (autenticado) ────────────────────────────────────
+router.get('/accounts/:accId/calendars/:calId/room-types',  authMiddleware, hotel.listRoomTypes)
+router.post('/accounts/:accId/calendars/:calId/room-types', authMiddleware, hotel.createRoomType)
+router.put('/accounts/:accId/room-types/:rtId',             authMiddleware, hotel.updateRoomType)
+router.delete('/accounts/:accId/room-types/:rtId',          authMiddleware, hotel.deleteRoomType)
+router.get('/accounts/:accId/room-types/:rtId/rates',       authMiddleware, hotel.listRates)
+router.post('/accounts/:accId/room-types/:rtId/rates',      authMiddleware, hotel.setRates)
+router.delete('/accounts/:accId/room-types/:rtId/rates',    authMiddleware, hotel.clearRate)
+// ── Hotel: flujo público de reserva ──────────────────────────────────────────
+router.get('/public/hotel/:accId/:calId/search',            optionalAuth, hotel.publicSearch)
+router.get('/public/hotel/:accId/:calId/quote',             optionalAuth, hotel.publicQuote)
+router.post('/public/hotel/:accId/:calId/book',             optionalAuth, hotel.publicBook)
 
 // ── Público (página de reservas / formulario) ────────────────────────────────
 router.get('/public/calendars/:accId/:calId',                optionalAuth, ctrl.getPublic)

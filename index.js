@@ -518,6 +518,25 @@ app.use('/api',                webhookRoutes)
        INDEX idx_show (account_id, calendar_id, date),
        INDEX idx_show_movie (account_id, movie_id, date)
      )`,
+    // ── FASE 4a: Hotel PMS (InventoryStrategy room-nights) ──────────────────
+    "ALTER TABLE calendar_bookings ADD COLUMN checkout VARCHAR(10)",
+    `CREATE TABLE IF NOT EXISTS hotel_room_types (
+       id            VARCHAR(50) PRIMARY KEY,
+       account_id    VARCHAR(50) NOT NULL, calendar_id VARCHAR(50) NOT NULL,
+       name          VARCHAR(120), base_capacity INT DEFAULT 2, max_capacity INT DEFAULT 2,
+       total_rooms   INT DEFAULT 1, overbook_limit INT DEFAULT 0,
+       base_price    DECIMAL(12,2) DEFAULT 0, currency VARCHAR(3) DEFAULT 'USD',
+       amenities     JSON, status VARCHAR(20) DEFAULT 'active',
+       created_at    BIGINT, updated_at BIGINT,
+       INDEX idx_rt (account_id, calendar_id, status)
+     )`,
+    // Tarifas por noche (temporadas / fechas con precio distinto al base).
+    `CREATE TABLE IF NOT EXISTS hotel_rate_overrides (
+       id            VARCHAR(50) PRIMARY KEY,
+       account_id    VARCHAR(50) NOT NULL, room_type_id VARCHAR(50) NOT NULL,
+       date          VARCHAR(10), price DECIMAL(12,2),
+       UNIQUE KEY uq_rate (account_id, room_type_id, date)
+     )`,
   ]
   for (const sql of migrations) {
     try { await pool.query(sql) } catch (e) { /* column exists or unsupported */ }
