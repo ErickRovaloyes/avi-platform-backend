@@ -12,6 +12,8 @@ const av = require('./availability')
 const holidays = require('./holidays')
 const { notify } = require('./calendarNotify')
 const sync = require('./calendarSync')
+const events = require('../core/events')
+const { resolveStrategy } = require('../core/strategies')
 
 // ¿La fecha cae en un festivo que el calendario decidió bloquear?
 async function holidayBlocked(calendar, dateStr) {
@@ -26,6 +28,7 @@ function mapCalendar(r) {
   if (!r) return null
   return {
     id: r.id, accountId: r.account_id, type: r.type || 'booking',
+    vertical: r.vertical || 'appointment',
     name: r.name, description: r.description || '', timezone: r.timezone || 'America/Lima',
     color: r.color || '#7c6fff', status: r.status || 'active',
     availability: parseJ(r.availability, {}),
@@ -94,11 +97,12 @@ async function bookingsForDate(accId, calendarId, dateStr) {
 async function getAvailability(accId, calendarId, dateStr, durationMin) {
   const calendar = await getCalendar(accId, calendarId)
   if (!calendar) throw new Error('Calendario no encontrado')
-  if (await holidayBlocked(calendar, dateStr)) return []
-  const bookings = await bookingsForDate(accId, calendarId, dateStr)
-  // Eventos ocupados de Google Calendar bloquean también (si está activo).
-  const gBusy = await sync.googleBusyForDate(accId, calendar, dateStr)
-  return av.computeSlots(calendar, dateStr, [...bookings, ...gBusy], { durationMin })
+  // El cálculo se delega a la estrategia del vertical (Fase 0 = time-slot, idéntico).
+  const strategy = resolveStrategy(calendar)
+  return strategy.getDayAvailability(calendar, dateStr, {
+    durationMin,
+    ctx: { holidayBlocked, bookingsForDate, googleBusyForDate: sync.googleBusyForDate },
+  })
 }
 
 const toDateKey = (d) => (typeof d === 'string' ? d.slice(0, 10) : new Date(d).toISOString().slice(0, 10))
@@ -124,11 +128,12 @@ async function getMonthAvailability(accId, calendarId, year, month, durationMin)
     const dk = toDateKey(r.date)
     ;(byDate[dk] ||= []).push({ date: dk, time: r.time, duration: r.duration, status: r.status })
   }
+  const strategy = resolveStrategy(calendar)
   const days = []
   for (let d = 1; d <= lastDay; d++) {
     const ds = `${y}-${mm}-${String(d).padStart(2, '0')}`
     if (await holidayBlocked(calendar, ds)) continue
-    const slots = av.computeSlots(calendar, ds, byDate[ds] || [], { durationMin })
+    const slots = strategy.slots(calendar, ds, byDate[ds] || [], { durationMin })
     if (slots.length > 0) days.push(ds)
   }
   return { year: y, month: m, days }
@@ -169,7 +174,18 @@ async function createBooking(accId, calendarId, data = {}, { validate = true } =
   sync.pushBooking(accId, calendar, bk, 'create').then(eventId => {
     if (eventId) pool.query('UPDATE calendar_bookings SET external_id=? WHERE id=?', [eventId, id]).catch(() => {})
   }).catch(() => {})
+  emit(calendar, 'BookingCreated', bk)
   return bk
+}
+
+// Emite un evento de dominio para una reserva (best-effort). El `vertical` sale
+// del calendario; no altera el comportamiento actual (notify/sync siguen inline).
+function emit(calendar, type, bk) {
+  if (!bk) return
+  events.emit(type, {
+    accId: bk.accountId, vertical: calendar?.vertical || 'appointment', aggregateId: bk.id,
+    payload: { calendarId: bk.calendarId, date: bk.date, time: bk.time, duration: bk.duration, status: bk.status, channel: bk.channel },
+  }).catch(() => {})
 }
 
 async function rescheduleBooking(accId, bookingId, newDate, newTime, { validate = true } = {}) {
@@ -192,6 +208,7 @@ async function rescheduleBooking(accId, bookingId, newDate, newTime, { validate 
   const bk = await getBooking(accId, bookingId)
   const calendar = await getCalendar(accId, booking.calendarId)
   if (calendar) { notify(accId, calendar, bk, 'reschedule').catch(() => {}); sync.pushBooking(accId, calendar, bk, 'update').catch(() => {}) }
+  emit(calendar, 'BookingRescheduled', bk)
   return bk
 }
 
@@ -199,12 +216,24 @@ async function setBookingStatus(accId, bookingId, status) {
   if (!BOOKING_STATUSES.includes(status)) throw new Error('Estado inválido')
   await pool.query('UPDATE calendar_bookings SET status=?, updated_at=? WHERE id=? AND account_id=?',
     [status, Date.now(), bookingId, accId])
-  return getBooking(accId, bookingId)
+  const bk = await getBooking(accId, bookingId)
+  // Evento de cambio de estado. 'cancelled' lo emite cancelBooking con su evento
+  // específico (BookingCancelled), por eso aquí se omite para no duplicar.
+  if (bk && status !== 'cancelled') {
+    const map = { confirmed: 'BookingConfirmed', noshow: 'BookingNoShow', completed: 'BookingCompleted' }
+    const calendar = await getCalendar(accId, bk.calendarId)
+    emit(calendar, map[status] || 'BookingStatusChanged', bk)
+  }
+  return bk
 }
 
 async function cancelBooking(accId, bookingId) {
   const bk = await setBookingStatus(accId, bookingId, 'cancelled')
-  if (bk) { const calendar = await getCalendar(accId, bk.calendarId); if (calendar) { notify(accId, calendar, bk, 'cancellation').catch(() => {}); sync.pushBooking(accId, calendar, bk, 'delete').catch(() => {}) } }
+  if (bk) {
+    const calendar = await getCalendar(accId, bk.calendarId)
+    if (calendar) { notify(accId, calendar, bk, 'cancellation').catch(() => {}); sync.pushBooking(accId, calendar, bk, 'delete').catch(() => {}) }
+    emit(calendar, 'BookingCancelled', bk)
+  }
   return bk
 }
 

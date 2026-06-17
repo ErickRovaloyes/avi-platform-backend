@@ -38,9 +38,9 @@ const create = async (req, res) => {
   const ts = Date.now()
   try {
     await pool.query(
-      `INSERT INTO calendars (id, account_id, type, name, description, timezone, color, status, availability, exceptions, appointment, form_config, flow_id, created_at, updated_at)
-       VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`,
-      [id, accId, b.type || 'booking', b.name || 'Calendario', b.description || '',
+      `INSERT INTO calendars (id, account_id, type, vertical, name, description, timezone, color, status, availability, exceptions, appointment, form_config, flow_id, created_at, updated_at)
+       VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`,
+      [id, accId, b.type || 'booking', b.vertical || 'appointment', b.name || 'Calendario', b.description || '',
        b.timezone || 'America/Lima', b.color || '#7c6fff', b.status || 'active',
        JSON.stringify(b.availability || DEFAULT_AVAILABILITY),
        JSON.stringify(b.exceptions || []),
@@ -56,7 +56,7 @@ const update = async (req, res) => {
   const { accId, calId } = req.params
   const b = req.body || {}
   const map = {
-    type: 'type', name: 'name', description: 'description', timezone: 'timezone',
+    type: 'type', vertical: 'vertical', name: 'name', description: 'description', timezone: 'timezone',
     color: 'color', status: 'status', flowId: 'flow_id',
   }
   const jsonMap = { availability: 'availability', exceptions: 'exceptions', appointment: 'appointment', formConfig: 'form_config', notifications: 'notifications', integrations: 'integrations' }

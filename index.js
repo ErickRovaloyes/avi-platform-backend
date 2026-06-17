@@ -398,6 +398,27 @@ app.use('/api',                webhookRoutes)
     "ALTER TABLE platform_settings ADD COLUMN meta_config_id VARCHAR(64) DEFAULT ''",
     // ── Modelo para transcripción de audios (OpenAI) ──
     "ALTER TABLE platform_settings ADD COLUMN transcription_model VARCHAR(50) DEFAULT 'whisper-1'",
+    // ── FASE 0: núcleo multi-industria (no disruptivo) ──────────────────────
+    // Vertical del calendario (medical|restaurant|hotel|cinema|appointment).
+    // Default 'appointment' = comportamiento actual (time-slot + Google sync).
+    "ALTER TABLE calendars ADD COLUMN vertical VARCHAR(20) DEFAULT 'appointment'",
+    // Outbox de eventos de dominio (microservices-ready). Solo registra por ahora;
+    // los consumidores (notify/sync/webhooks/reportes) se migran en fases siguientes.
+    `CREATE TABLE IF NOT EXISTS domain_events (
+       id          BIGINT PRIMARY KEY AUTO_INCREMENT,
+       account_id  VARCHAR(50),
+       agent_id    VARCHAR(50),
+       vertical    VARCHAR(20) DEFAULT 'appointment',
+       type        VARCHAR(50) NOT NULL,
+       aggregate_id VARCHAR(50),
+       payload     JSON,
+       status      VARCHAR(12) DEFAULT 'pending',   -- pending|done|error
+       attempts    INT DEFAULT 0,
+       ts          BIGINT,
+       processed_at BIGINT,
+       INDEX idx_evt_status (status, id),
+       INDEX idx_evt_acc (account_id, type, ts)
+     )`,
   ]
   for (const sql of migrations) {
     try { await pool.query(sql) } catch (e) { /* column exists or unsupported */ }
@@ -411,6 +432,8 @@ app.use('/api',                webhookRoutes)
   } catch {}
   // Bucle de recordatorios de citas por WhatsApp
   try { require('./services/calendarReminders').start() } catch (e) { console.warn('[reminders] no iniciado:', e.message) }
+  // Procesador del outbox de eventos de dominio (Core Booking Engine, Fase 0)
+  try { require('./core/events').startProcessor() } catch (e) { console.warn('[events] no iniciado:', e.message) }
 })()
 
 // ── Start ─────────────────────────────────────────────────────────────────────
