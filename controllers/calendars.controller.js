@@ -178,9 +178,9 @@ function publicCalendar(cal) {
   if (!cal) return null
   // Solo lo necesario para reservar (no exponemos flowId interno, etc.)
   return {
-    id: cal.id, type: cal.type, name: cal.name, description: cal.description,
+    id: cal.id, type: cal.type, vertical: cal.vertical || 'appointment', name: cal.name, description: cal.description,
     timezone: cal.timezone, color: cal.color, status: cal.status,
-    appointment: { defaultDuration: cal.appointment?.defaultDuration || 30, types: cal.appointment?.types || [] },
+    appointment: { defaultDuration: cal.appointment?.defaultDuration || 30, types: cal.appointment?.types || [], maxPartySize: cal.appointment?.maxPartySize || 12 },
     formConfig: cal.formConfig || {},
   }
 }
