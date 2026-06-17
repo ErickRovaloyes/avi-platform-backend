@@ -11,6 +11,7 @@
 
 const pool = require('../db')
 const g = require('./google')
+const ms = require('./outlook')
 
 function pad(n) { return String(n).padStart(2, '0') }
 function minToHm(m) { return `${pad(Math.floor(m / 60))}:${pad(m % 60)}` }
@@ -51,8 +52,42 @@ function buildEvent(calendar, booking) {
   }
 }
 
-// Crea/actualiza/borra el evento en Google. Devuelve el eventId (o null).
+// Evento en formato Microsoft Graph.
+function buildGraphEvent(calendar, booking) {
+  const e = buildEvent(calendar, booking)
+  return {
+    subject: e.summary,
+    body: { contentType: 'text', content: e.description },
+    start: { dateTime: e.start.dateTime, timeZone: e.start.timeZone },
+    end: { dateTime: e.end.dateTime, timeZone: e.end.timeZone },
+  }
+}
+
+// Push a Outlook (persiste el eventId en meta.outlookEventId). Best-effort.
+async function pushOutlook(accId, calendar, booking, action) {
+  try {
+    const oi = calendar.integrations?.outlook
+    if (!oi?.enabled) return
+    const token = await ms.getValidAccessToken(calendar)
+    if (!token) return
+    const calId = oi.calendarId || 'primary'
+    const existingId = booking.meta?.outlookEventId
+    if (action === 'delete') { if (existingId) await ms.deleteEvent(token, existingId); return }
+    const event = buildGraphEvent(calendar, booking)
+    if (action === 'update' && existingId) { await ms.updateEvent(token, existingId, event); return }
+    const r = await ms.createEvent(token, calId, event)
+    if (r?.id) {
+      const newMeta = { ...(booking.meta || {}), outlookEventId: r.id }
+      await pool.query('UPDATE calendar_bookings SET meta=? WHERE id=? AND account_id=?', [JSON.stringify(newMeta), booking.id, accId]).catch(() => {})
+    }
+  } catch (e) { console.warn('[calendarSync outlook]', action, e.message) }
+}
+
+// Crea/actualiza/borra el evento en Google (+ Outlook). Devuelve el eventId de
+// Google (o null) — el llamador lo guarda en external_id (back-compat).
 async function pushBooking(accId, calendar, booking, action) {
+  // Outlook en paralelo (no bloquea ni afecta el retorno de Google).
+  pushOutlook(accId, calendar, booking, action).catch(() => {})
   try {
     const gi = calendar.integrations?.google
     if (!gi?.enabled) return null
@@ -89,4 +124,33 @@ async function googleBusyForDate(accId, calendar, dateStr) {
   } catch (e) { console.warn('[calendarSync busy]', e.message); return [] }
 }
 
-module.exports = { pushBooking, googleBusyForDate }
+// Intervalos ocupados de Outlook para una fecha → "reservas" virtuales.
+async function outlookBusyForDate(accId, calendar, dateStr) {
+  try {
+    const oi = calendar.integrations?.outlook
+    if (!oi?.enabled || !oi.blockBusy || !oi.email) return []
+    const tz = calendar.timezone || 'UTC'
+    const token = await ms.getValidAccessToken(calendar)
+    if (!token) return []
+    const dayStart = wallTimeToUtcMs(dateStr, '00:00', tz)
+    const busy = await ms.freeBusy(token, oi.email, new Date(dayStart).toISOString(), new Date(dayStart + 86400000).toISOString(), tz)
+    const out = []
+    for (const b of busy) {
+      const s = wallInTz(Date.parse(b.start.endsWith('Z') ? b.start : b.start + 'Z'), tz)
+      const e = wallInTz(Date.parse(b.end.endsWith('Z') ? b.end : b.end + 'Z'), tz)
+      const startMin = s.date < dateStr ? 0 : s.date > dateStr ? null : s.min
+      const endMin = e.date > dateStr ? 1440 : e.date < dateStr ? null : e.min
+      if (startMin == null || endMin == null || endMin <= startMin) continue
+      out.push({ date: dateStr, time: minToHm(startMin), duration: endMin - startMin, status: 'confirmed', _outlook: true })
+    }
+    return out
+  } catch (e) { console.warn('[calendarSync outlook busy]', e.message); return [] }
+}
+
+// Ocupado agregado de TODAS las estrategias de calendario externas (Google + Outlook).
+async function busyForDate(accId, calendar, dateStr) {
+  const [g, o] = await Promise.all([googleBusyForDate(accId, calendar, dateStr), outlookBusyForDate(accId, calendar, dateStr)])
+  return [...g, ...o]
+}
+
+module.exports = { pushBooking, googleBusyForDate, outlookBusyForDate, busyForDate }

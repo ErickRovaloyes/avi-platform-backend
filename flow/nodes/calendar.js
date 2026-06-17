@@ -363,6 +363,64 @@ const calendarNodes = [
       logDebug(ctx, 'flow_run', `🏨 Reserva ${booking.id} · ${booking.roomType} · ${booking.checkin}→${booking.checkout} · ${booking.total} ${booking.currency}`, {})
     },
   },
+
+  // ── Router multi-vertical (contrato uniforme offers[]) ─────────────────────
+  {
+    type: 'booking_search', category: 'calendar', label: 'Reserva: buscar (cualquier vertical)',
+    fields: calFields([
+      { key: 'fecha', label: 'Fecha (cita/restaurante/cine)', type: 'text', default: 'hoy' },
+      { key: 'checkin', label: 'Check-in (hotel)', type: 'text' },
+      { key: 'checkout', label: 'Check-out (hotel)', type: 'text' },
+      { key: 'personas', label: 'Nº personas/huéspedes', type: 'text', default: '2' },
+      { key: 'destino', label: 'Guardar ofertas en', type: 'variableRef' },
+    ]),
+    async exec(node, ctx) {
+      const router = require('../../core/booking/router')
+      const calId = interpolate(node.data?.calendarId || '', ctx.variables)
+      if (!calId) throw new Error('Elige un calendario')
+      const date = resolveDate(node.data?.fecha, ctx.variables, await calTz(ctx.accId, calId))
+      const r = await router.search(ctx.accId, calId, {
+        date,
+        checkin: interpolate(node.data?.checkin || '', ctx.variables).slice(0, 10) || undefined,
+        checkout: interpolate(node.data?.checkout || '', ctx.variables).slice(0, 10) || undefined,
+        partySize: Math.max(1, parseInt(interpolate(node.data?.personas || '2', ctx.variables), 10) || 2),
+      })
+      if (node.data?.destino) await setVarBoth(ctx, node.data.destino, JSON.stringify(r.offers))
+      ctx.variables._offers = r.offers
+      ctx.variables._offers_vertical = r.vertical
+      logDebug(ctx, 'flow_run', `🔎 ${r.offers.length} oferta(s) [${r.vertical}]`, { offers: r.offers })
+    },
+  },
+  {
+    type: 'booking_book', category: 'calendar', label: 'Reserva: confirmar (cualquier vertical)',
+    fields: calFields([
+      { key: 'offerId', label: 'ID de oferta (hora / función / tipo)', type: 'text' },
+      { key: 'fecha', label: 'Fecha (cita/restaurante/cine)', type: 'text' },
+      { key: 'checkin', label: 'Check-in (hotel)', type: 'text' },
+      { key: 'checkout', label: 'Check-out (hotel)', type: 'text' },
+      { key: 'personas', label: 'Nº personas/huéspedes', type: 'text', default: '2' },
+      { key: 'nombre', label: 'Nombre del cliente', type: 'text', placeholder: '{{cliente_nombre}}' },
+      { key: 'telefono', label: 'Teléfono', type: 'text', placeholder: '{{cliente_telefono}}' },
+      { key: 'email', label: 'Email', type: 'text', placeholder: '{{cliente_email}}' },
+      { key: 'destino', label: 'Guardar ID de reserva en', type: 'variableRef' },
+    ]),
+    async exec(node, ctx) {
+      const router = require('../../core/booking/router')
+      const calId = interpolate(node.data?.calendarId || '', ctx.variables)
+      if (!calId) throw new Error('Elige un calendario')
+      const booking = await router.book(ctx.accId, calId, {
+        offerId: interpolate(node.data?.offerId || '', ctx.variables),
+        date: resolveDate(node.data?.fecha, ctx.variables, await calTz(ctx.accId, calId)),
+        checkin: interpolate(node.data?.checkin || '', ctx.variables).slice(0, 10) || undefined,
+        checkout: interpolate(node.data?.checkout || '', ctx.variables).slice(0, 10) || undefined,
+        partySize: Math.max(1, parseInt(interpolate(node.data?.personas || '2', ctx.variables), 10) || 2),
+        client: { name: interpolate(node.data?.nombre || '', ctx.variables), phone: interpolate(node.data?.telefono || '', ctx.variables), email: interpolate(node.data?.email || '', ctx.variables) },
+      })
+      if (node.data?.destino) await setVarBoth(ctx, node.data.destino, booking.id)
+      ctx.variables._last_booking_id = booking.id
+      logDebug(ctx, 'flow_run', `✅ Reserva ${booking.id}`, {})
+    },
+  },
 ]
 
 module.exports = { calendarNodes }

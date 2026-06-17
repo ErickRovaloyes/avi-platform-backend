@@ -120,6 +120,40 @@ async function oosPerNight(accId, roomTypeId, nights) {
   return m
 }
 
+// ── Habitaciones físicas (disponibilidad por habitación concreta) ───────────
+// Si un tipo tiene habitaciones físicas definidas, la disponibilidad y la
+// asignación se hacen por habitación concreta (no por contador de cupo).
+async function physicalRooms(accId, roomTypeId, conn = pool) {
+  const [rows] = await conn.query("SELECT id, number, hk_status FROM hotel_rooms WHERE account_id=? AND room_type_id=? AND status<>'inactive'", [accId, roomTypeId])
+  return rows
+}
+// Habitaciones físicas de un tipo ya asignadas a estadías que solapan [ci, co).
+async function occupiedRoomIds(accId, roomTypeId, ci, co, conn = pool) {
+  const [rows] = await conn.query(
+    `SELECT DISTINCT b.room_id FROM calendar_bookings b
+      WHERE b.account_id=? AND b.room_id IS NOT NULL AND b.status NOT IN ('cancelled','noshow')
+        AND b.date < ? AND (b.checkout IS NULL OR b.checkout > ?)
+        AND b.room_id IN (SELECT id FROM hotel_rooms WHERE account_id=? AND room_type_id=?)`,
+    [accId, co, ci, accId, roomTypeId]
+  )
+  return new Set(rows.map(r => r.room_id))
+}
+// Habitaciones físicas libres para la estadía. null = el tipo no usa hab. físicas.
+async function freePhysicalRooms(accId, roomTypeId, ci, co, conn = pool) {
+  const rooms = await physicalRooms(accId, roomTypeId, conn)
+  if (!rooms.length) return null
+  const occ = await occupiedRoomIds(accId, roomTypeId, ci, co, conn)
+  return rooms.filter(r => r.hk_status !== 'oos' && !occ.has(r.id))
+}
+// ¿Hay disponibilidad del tipo para la estadía? (físicas si existen, si no, cupo).
+async function typeAvailable(accId, rt, nights, ci, co, conn = pool) {
+  const free = await freePhysicalRooms(accId, rt.id, ci, co, conn)
+  if (free !== null) return { ok: free.length >= 1, room: free[0] || null }
+  const [sold, oos] = await Promise.all([soldPerNight(accId, rt.id, ci, co), oosPerNight(accId, rt.id, nights)])
+  const cap = (rt.totalRooms || 0) + (rt.overbookLimit || 0)
+  return { ok: nights.every(n => (cap - (sold[n] || 0) - (oos[n] || 0)) >= 1), room: null }
+}
+
 // ── Disponibilidad / cotización de una estadía ──────────────────────────────
 async function searchAvailability(accId, calId, { checkin, checkout, guests = 2 } = {}) {
   const nights = nightsBetween(checkin, checkout)
@@ -128,9 +162,9 @@ async function searchAvailability(accId, calId, { checkin, checkout, guests = 2 
   const options = []
   for (const rt of types) {
     if ((rt.maxCapacity || rt.baseCapacity || 2) < guests) continue
-    const [sold, ovr, oos] = await Promise.all([soldPerNight(accId, rt.id, checkin, checkout), overridesFor(accId, rt.id, checkin, checkout), oosPerNight(accId, rt.id, nights)])
-    const cap = (rt.totalRooms || 0) + (rt.overbookLimit || 0)
-    if (!nights.every(n => (cap - (sold[n] || 0) - (oos[n] || 0)) >= 1)) continue
+    const avail = await typeAvailable(accId, rt, nights, checkin, checkout)
+    if (!avail.ok) continue
+    const ovr = await overridesFor(accId, rt.id, checkin, checkout)
     const q = quoteNights(nights, rt.basePrice, ovr)
     options.push({ roomTypeId: rt.id, name: rt.name, capacity: rt.maxCapacity, amenities: rt.amenities, nights: nights.length, currency: rt.currency, total: q.total, perNight: q.perNight })
   }
@@ -147,35 +181,50 @@ async function quoteStay(accId, calId, { roomTypeId, checkin, checkout } = {}) {
   return { roomTypeId, name: rt.name, checkin, checkout, nights: nights.length, currency: rt.currency, ...q }
 }
 
-// Reserva una estadía: crea la reserva (vertical hotel) + asignaciones por noche.
+// Reserva una estadía de forma TRANSACCIONAL (anti-overbooking): bloquea la fila
+// del tipo de habitación (FOR UPDATE), revalida cupo/habitación física y, si
+// procede, crea la reserva + asignaciones por noche. Asigna una habitación física
+// concreta si el tipo las usa.
 async function bookStay(accId, calId, { roomTypeId, checkin, checkout, guests = 2, ratePlan = 'BAR', client = {}, channel = 'web' } = {}) {
-  const rt = await getRoomType(accId, roomTypeId)
-  if (!rt) throw new Error('Tipo de habitación no encontrado')
   const nights = nightsBetween(checkin, checkout)
   if (!nights.length) throw new Error('Fechas inválidas')
-  const [sold, oos] = await Promise.all([soldPerNight(accId, roomTypeId, checkin, checkout), oosPerNight(accId, roomTypeId, nights)])
-  const cap = (rt.totalRooms || 0) + (rt.overbookLimit || 0)
-  const full = nights.filter(n => (cap - (sold[n] || 0) - (oos[n] || 0)) < 1)
-  if (full.length) throw new Error(`Sin disponibilidad las noches: ${full.join(', ')}`)
-  const ovr = await overridesFor(accId, roomTypeId, checkin, checkout)
-  const q = quoteNights(nights, rt.basePrice, ovr)
-
-  const id = 'bk_' + uid(); const ts = Date.now()
   let customerId = null
   try { const bk = require('./bookings'); customerId = await bk.findOrCreateCustomer(accId, { name: client.name, phone: client.phone, email: client.email }) } catch { /* opcional */ }
-  const meta = { checkout, nights: nights.length, roomTypeId, roomType: rt.name, ratePlan, total: q.total, currency: rt.currency, perNight: q.perNight, guests }
-  await pool.query(
-    `INSERT INTO calendar_bookings (id, account_id, calendar_id, date, time, duration, party_size, checkout, client_name, client_phone, client_email, customer_id, channel, status, notes, meta, created_at, updated_at)
-     VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`,
-    [id, accId, calId, checkin, '', nights.length * 1440, guests, checkout,
-     client.name || '', client.phone || '', client.email || '', customerId, channel, 'confirmed', '', JSON.stringify(meta), ts, ts]
-  )
-  for (const night of nights) {
-    await pool.query('INSERT INTO booking_allocations (id, account_id, booking_id, resource_id, unit_key, slot_start, slot_end, qty) VALUES (?,?,?,?,?,?,?,?)',
-      ['alloc_' + uid(), accId, id, roomTypeId, `${night}#${id}`, `${night} 00:00:00`, `${night} 23:59:59`, 1])
+
+  const conn = await pool.getConnection()
+  try {
+    await conn.beginTransaction()
+    // Mutex por tipo de habitación → serializa las reservas concurrentes del tipo.
+    const [[rtRow]] = await conn.query('SELECT * FROM hotel_room_types WHERE id=? AND account_id=? FOR UPDATE', [roomTypeId, accId])
+    if (!rtRow) throw new Error('Tipo de habitación no encontrado')
+    const rt = mapRT(rtRow)
+    const avail = await typeAvailable(accId, rt, nights, checkin, checkout, conn)
+    if (!avail.ok) throw new Error('Sin disponibilidad para esas fechas')
+    const roomId = avail.room ? avail.room.id : null
+
+    const ovr = await overridesFor(accId, roomTypeId, checkin, checkout)
+    const q = quoteNights(nights, rt.basePrice, ovr)
+    const id = 'bk_' + uid(); const ts = Date.now()
+    const meta = { checkout, nights: nights.length, roomTypeId, roomType: rt.name, ratePlan, total: q.total, currency: rt.currency, perNight: q.perNight, guests }
+    await conn.query(
+      `INSERT INTO calendar_bookings (id, account_id, calendar_id, date, time, duration, party_size, checkout, room_id, client_name, client_phone, client_email, customer_id, channel, status, notes, meta, created_at, updated_at)
+       VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`,
+      [id, accId, calId, checkin, '', nights.length * 1440, guests, checkout, roomId,
+       client.name || '', client.phone || '', client.email || '', customerId, channel, 'confirmed', '', JSON.stringify(meta), ts, ts]
+    )
+    for (const night of nights) {
+      await conn.query('INSERT INTO booking_allocations (id, account_id, booking_id, resource_id, unit_key, slot_start, slot_end, qty) VALUES (?,?,?,?,?,?,?,?)',
+        ['alloc_' + uid(), accId, id, roomTypeId, `${night}#${id}`, `${night} 00:00:00`, `${night} 23:59:59`, 1])
+    }
+    await conn.commit()
+    events.emit('BookingCreated', { accId, vertical: 'hotel', aggregateId: id, payload: { calendarId: calId, date: checkin, checkout, roomTypeId, roomId, nights: nights.length } }).catch(() => {})
+    return { id, roomTypeId, roomType: rt.name, roomId, checkin, checkout, nights: nights.length, total: q.total, currency: rt.currency, status: 'confirmed' }
+  } catch (e) {
+    try { await conn.rollback() } catch {}
+    throw e
+  } finally {
+    conn.release()
   }
-  events.emit('BookingCreated', { accId, vertical: 'hotel', aggregateId: id, payload: { calendarId: calId, date: checkin, checkout, roomTypeId, nights: nights.length } }).catch(() => {})
-  return { id, roomTypeId, roomType: rt.name, checkin, checkout, nights: nights.length, total: q.total, currency: rt.currency, status: 'confirmed' }
 }
 
 // Días del mes seleccionables como check-in (hay ≥1 tipo con cupo esa noche).

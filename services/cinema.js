@@ -261,8 +261,16 @@ async function autoBook(accId, calId, { movie, date, time, qty, seats, client } 
   return bookSeats(accId, show.id, chosen, client || {}, { channel: 'flow' })
 }
 
+// Reserva una FUNCIÓN concreta eligiendo automáticamente `qty` asientos.
+async function bookShowtimeAuto(accId, showtimeId, qty, client = {}) {
+  const sm = await getSeatMap(accId, showtimeId)
+  const seats = pickSeats(sm, qty)
+  if (!seats.length) throw new Error('No hay asientos suficientes para esa función.')
+  return bookSeats(accId, showtimeId, seats, client, { channel: 'flow' })
+}
+
 module.exports = {
-  buildSeatMap, HOLD_TTL_MIN, pickSeats, findShowtime, autoBook,
+  buildSeatMap, HOLD_TTL_MIN, pickSeats, findShowtime, autoBook, bookShowtimeAuto,
   listMovies, createMovie, updateMovie, deleteMovie,
   listAuditoriums, getAuditorium, createAuditorium, updateAuditorium, deleteAuditorium,
   listShowtimes, getShowtime, createShowtime, updateShowtime, deleteShowtime,

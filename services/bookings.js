@@ -22,7 +22,7 @@ const restaurant = require('./restaurant')
 // capacity: tables/shifts/allocations).
 function strategyCtx() {
   return {
-    holidayBlocked, bookingsForDate, googleBusyForDate: sync.googleBusyForDate,
+    holidayBlocked, bookingsForDate, googleBusyForDate: sync.busyForDate,
     getTables: restaurant.getTables, getShifts: restaurant.getShifts,
     getDateAllocations: restaurant.getDateAllocations, insertAllocations: restaurant.insertAllocations,
   }
@@ -231,52 +231,63 @@ async function createBooking(accId, calendarId, data = {}, { validate = true } =
   const isCapacity = strategy.id === 'capacity'
   const partySize = Math.max(1, Number(data.partySize) || (isCapacity ? 2 : 1))
 
-  if (validate) {
-    if (isCapacity) {
-      const ok = await strategy.isAvailable(calendar, { date, time, partySize, ctx: strategyCtx() })
-      if (!ok) throw new Error('No hay mesa disponible para ese horario y número de personas')
-    } else {
-      if (await holidayBlocked(calendar, date)) throw new Error('Ese día es festivo y está bloqueado para reservas')
-      const bookings = await bookingsForDate(accId, calendarId, date)
-      if (!av.isSlotAvailable(calendar, date, time, bookings, { durationMin: duration })) {
-        throw new Error('El horario seleccionado ya no está disponible')
+  // Concurrencia (restaurante): lock con nombre por calendario serializa la
+  // validación + asignación de mesas para evitar dobles reservas en carrera.
+  let lockConn = null
+  if (isCapacity) {
+    try { lockConn = await pool.getConnection(); await lockConn.query('SELECT GET_LOCK(?, 10) AS l', [`book_${calendarId}`]) }
+    catch { if (lockConn) { try { lockConn.release() } catch {} ; lockConn = null } }
+  }
+  try {
+    if (validate) {
+      if (isCapacity) {
+        const ok = await strategy.isAvailable(calendar, { date, time, partySize, ctx: strategyCtx() })
+        if (!ok) throw new Error('No hay mesa disponible para ese horario y número de personas')
+      } else {
+        if (await holidayBlocked(calendar, date)) throw new Error('Ese día es festivo y está bloqueado para reservas')
+        const bookings = await bookingsForDate(accId, calendarId, date)
+        if (!av.isSlotAvailable(calendar, date, time, bookings, { durationMin: duration })) {
+          throw new Error('El horario seleccionado ya no está disponible')
+        }
       }
     }
-  }
 
-  const id = 'bk_' + uid()
-  const ts = Date.now()
-  const status = BOOKING_STATUSES.includes(data.status) ? data.status : 'pending'
-  // Cliente como entidad (paciente/huésped) + perfil del vertical si viene.
-  const customerId = await findOrCreateCustomer(accId, {
-    name: data.clientName, phone: data.clientPhone, email: data.clientEmail, profile: data.customerProfile,
-  })
-  await pool.query(
-    `INSERT INTO calendar_bookings
-       (id, account_id, calendar_id, date, time, duration, party_size, client_name, client_phone, client_email, customer_id, channel, status, notes, meta, external_id, created_at, updated_at)
-     VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`,
-    [id, accId, calendarId, date, time, duration, partySize,
-     data.clientName || '', data.clientPhone || '', data.clientEmail || '', customerId,
-     data.channel || 'manual', status, data.notes || '',
-     JSON.stringify(data.meta || {}), data.externalId || null, ts, ts]
-  )
-  // Asignación según la estrategia del vertical.
-  if (isCapacity) {
-    // Restaurante: asigna mesa(s). Si no hay (y se valida), revierte la reserva.
-    const plan = await strategy.allocate(calendar, id, { date, time, partySize, ctx: strategyCtx() }).catch(() => null)
-    if (!plan && validate) {
-      await pool.query('DELETE FROM calendar_bookings WHERE id=?', [id]).catch(() => {})
-      throw new Error('No hay mesa disponible para ese horario y número de personas')
+    const id = 'bk_' + uid()
+    const ts = Date.now()
+    const status = BOOKING_STATUSES.includes(data.status) ? data.status : 'pending'
+    // Cliente como entidad (paciente/huésped) + perfil del vertical si viene.
+    const customerId = await findOrCreateCustomer(accId, {
+      name: data.clientName, phone: data.clientPhone, email: data.clientEmail, profile: data.customerProfile,
+    })
+    await pool.query(
+      `INSERT INTO calendar_bookings
+         (id, account_id, calendar_id, date, time, duration, party_size, client_name, client_phone, client_email, customer_id, channel, status, notes, meta, external_id, created_at, updated_at)
+       VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`,
+      [id, accId, calendarId, date, time, duration, partySize,
+       data.clientName || '', data.clientPhone || '', data.clientEmail || '', customerId,
+       data.channel || 'manual', status, data.notes || '',
+       JSON.stringify(data.meta || {}), data.externalId || null, ts, ts]
+    )
+    // Asignación según la estrategia del vertical.
+    if (isCapacity) {
+      // Restaurante: asigna mesa(s). Si no hay (y se valida), revierte la reserva.
+      const plan = await strategy.allocate(calendar, id, { date, time, partySize, ctx: strategyCtx() }).catch(() => null)
+      if (!plan && validate) {
+        await pool.query('DELETE FROM calendar_bookings WHERE id=?', [id]).catch(() => {})
+        throw new Error('No hay mesa disponible para ese horario y número de personas')
+      }
+      if (plan?.windowMin) await pool.query('UPDATE calendar_bookings SET duration=? WHERE id=?', [plan.windowMin, id]).catch(() => {})
+    } else {
+      // Time-slot: reserva la unidad del slot (anti doble-reserva). Best-effort.
+      allocateSlot(accId, calendarId, id, date, time, duration, calendar).catch(() => {})
     }
-    if (plan?.windowMin) await pool.query('UPDATE calendar_bookings SET duration=? WHERE id=?', [plan.windowMin, id]).catch(() => {})
-  } else {
-    // Time-slot: reserva la unidad del slot (anti doble-reserva). Best-effort.
-    allocateSlot(accId, calendarId, id, date, time, duration, calendar).catch(() => {})
+    const bk = await getBooking(accId, id)
+    // notify (confirmación) + Google sync ahora son HANDLERS del outbox (ver registro al final).
+    emit(calendar, 'BookingCreated', bk)
+    return bk
+  } finally {
+    if (lockConn) { try { await lockConn.query('SELECT RELEASE_LOCK(?)', [`book_${calendarId}`]) } catch {} ; try { lockConn.release() } catch {} }
   }
-  const bk = await getBooking(accId, id)
-  // notify (confirmación) + Google sync ahora son HANDLERS del outbox (ver registro al final).
-  emit(calendar, 'BookingCreated', bk)
-  return bk
 }
 
 // Emite un evento de dominio para una reserva (best-effort). El `vertical` sale

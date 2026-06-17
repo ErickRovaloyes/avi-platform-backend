@@ -276,8 +276,18 @@ async function runBookingFlow(accId, calendar, booking, convRef = null) {
 // Un único endpoint optionalAuth que mapea a los métodos del servicio de reservas.
 const flowOp = async (req, res) => {
   const { accId } = req.params
-  const { op, calendarId, date, time, duration, bookingId, partySize, movie, seats, checkin, checkout, roomType, client = {} } = req.body || {}
+  const { op, calendarId, date, time, duration, bookingId, partySize, movie, seats, checkin, checkout, roomType, offerId, client = {} } = req.body || {}
   try {
+    // Router multi-vertical (contrato uniforme offers[]).
+    if (op === 'search') {
+      const router = require('../core/booking/router')
+      return res.json(await router.search(accId, calendarId, { date, checkin, checkout, partySize, duration }))
+    }
+    if (op === 'book') {
+      const router = require('../core/booking/router')
+      const booking = await router.book(accId, calendarId, { offerId, date, checkin, checkout, partySize, client })
+      return res.json({ booking })
+    }
     if (op === 'hotel_search') {
       const hotelSvc = require('../services/hotel')
       return res.json(await hotelSvc.searchAvailability(accId, calendarId, { checkin, checkout, guests: partySize }))
