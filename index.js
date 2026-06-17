@@ -402,8 +402,7 @@ app.use('/api',                webhookRoutes)
     // Vertical del calendario (medical|restaurant|hotel|cinema|appointment).
     // Default 'appointment' = comportamiento actual (time-slot + Google sync).
     "ALTER TABLE calendars ADD COLUMN vertical VARCHAR(20) DEFAULT 'appointment'",
-    // Outbox de eventos de dominio (microservices-ready). Solo registra por ahora;
-    // los consumidores (notify/sync/webhooks/reportes) se migran en fases siguientes.
+    // Outbox de eventos de dominio (microservices-ready).
     `CREATE TABLE IF NOT EXISTS domain_events (
        id          BIGINT PRIMARY KEY AUTO_INCREMENT,
        account_id  VARCHAR(50),
@@ -418,6 +417,45 @@ app.use('/api',                webhookRoutes)
        processed_at BIGINT,
        INDEX idx_evt_status (status, id),
        INDEX idx_evt_acc (account_id, type, ts)
+     )`,
+    // ── FASE 1: Núcleo + Médico formalizado ─────────────────────────────────
+    // Cliente/paciente/huésped como entidad de primer nivel (+ historial).
+    `CREATE TABLE IF NOT EXISTS customers (
+       id          VARCHAR(50) PRIMARY KEY,
+       account_id  VARCHAR(50) NOT NULL,
+       name        VARCHAR(150),
+       phone       VARCHAR(40),
+       email       VARCHAR(150),
+       doc_id      VARCHAR(60),
+       profile     JSON,            -- aseguradora, referencia, preferencias, alergias…
+       created_at  BIGINT, updated_at BIGINT,
+       INDEX idx_cust_phone (account_id, phone),
+       INDEX idx_cust_email (account_id, email)
+     )`,
+    "ALTER TABLE calendar_bookings ADD COLUMN customer_id VARCHAR(50)",
+    // Asignación reserva ↔ unidad de inventario (1..N). Médico: 1:1 (slot del
+    // calendario). El UNIQUE es el seguro anti doble-reserva a nivel de BD.
+    `CREATE TABLE IF NOT EXISTS booking_allocations (
+       id          VARCHAR(50) PRIMARY KEY,
+       account_id  VARCHAR(50) NOT NULL,
+       booking_id  VARCHAR(50) NOT NULL,
+       resource_id VARCHAR(50),          -- médico: el calendarId (agenda)
+       unit_key    VARCHAR(120),         -- médico: 'YYYY-MM-DDTHH:MM#seat'
+       slot_start  DATETIME, slot_end DATETIME,
+       qty         INT DEFAULT 1, meta JSON,
+       UNIQUE KEY uq_alloc_unit (account_id, resource_id, unit_key),
+       INDEX idx_alloc_bk (booking_id)
+     )`,
+    // Bloqueos temporales con expiración (holds). Núcleo para cine/restaurante;
+    // disponible desde ya para evitar dobles reservas en ventanas de pago.
+    `CREATE TABLE IF NOT EXISTS holds (
+       id          VARCHAR(50) PRIMARY KEY,
+       account_id  VARCHAR(50) NOT NULL,
+       vertical    VARCHAR(20),
+       resource_id VARCHAR(50), unit_key VARCHAR(120),
+       slot_start  DATETIME, expires_at BIGINT, session_id VARCHAR(80),
+       UNIQUE KEY uq_hold_unit (account_id, resource_id, unit_key),
+       INDEX idx_hold_exp (expires_at)
      )`,
   ]
   for (const sql of migrations) {

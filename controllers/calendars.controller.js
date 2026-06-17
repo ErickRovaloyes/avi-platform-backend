@@ -105,6 +105,16 @@ const monthAvailability = async (req, res) => {
   } catch (err) { res.status(400).json({ error: err.message || 'Error' }) }
 }
 
+// Historial de un cliente (datos + reservas) — para el panel y la IA.
+const customerHistory = async (req, res) => {
+  const { accId, customerId } = req.params
+  try {
+    const r = await bookings.getCustomerHistory(accId, customerId, { limit: req.query.limit })
+    if (!r) return res.status(404).json({ error: 'Cliente no encontrado' })
+    res.json(r)
+  } catch (err) { res.status(500).json({ error: 'Error interno' }) }
+}
+
 // ── Bookings ─────────────────────────────────────────────────────────────────
 const listBookings = async (req, res) => {
   const { accId, calId } = req.params
@@ -296,4 +306,5 @@ module.exports = {
   list, get, create, update, remove, availability, monthAvailability,
   listBookings, createBooking, updateBooking, rescheduleBooking, setStatus, deleteBooking, exportBookings,
   getPublic, getPublicAvailability, getPublicMonthAvailability, createPublicBooking, flowOp, holidays,
+  customerHistory,
 }

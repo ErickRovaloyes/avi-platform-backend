@@ -14,6 +14,7 @@ const { notify } = require('./calendarNotify')
 const sync = require('./calendarSync')
 const events = require('../core/events')
 const { resolveStrategy } = require('../core/strategies')
+const states = require('../core/booking/states')
 
 // ¿La fecha cae en un festivo que el calendario decidió bloquear?
 async function holidayBlocked(calendar, dateStr) {
@@ -48,6 +49,7 @@ function mapBooking(r) {
     id: r.id, accountId: r.account_id, calendarId: r.calendar_id,
     date: r.date, time: r.time, duration: r.duration,
     clientName: r.client_name, clientPhone: r.client_phone, clientEmail: r.client_email,
+    customerId: r.customer_id || null,
     channel: r.channel || 'manual', status: r.status || 'pending',
     notes: r.notes || '', meta: parseJ(r.meta, {}), externalId: r.external_id || null,
     createdAt: r.created_at, updatedAt: r.updated_at,
@@ -92,6 +94,71 @@ async function bookingsForDate(accId, calendarId, dateStr) {
     [accId, calendarId, dateStr]
   )
   return rows.map(r => ({ id: r.id, date: r.date, time: r.time, duration: r.duration, status: r.status }))
+}
+
+// ── Clientes (paciente/huésped) como entidad de primer nivel ────────────────
+// Busca por teléfono o email; si no existe, lo crea. Best-effort (no bloquea).
+async function findOrCreateCustomer(accId, { name, phone, email, profile } = {}) {
+  const ph = String(phone || '').replace(/[^\d]/g, '')
+  const em = String(email || '').trim().toLowerCase()
+  if (!ph && !em && !String(name || '').trim()) return null
+  try {
+    let row = null
+    if (ph) { const [[r]] = await pool.query('SELECT id FROM customers WHERE account_id=? AND phone=? LIMIT 1', [accId, ph]); row = r }
+    if (!row && em) { const [[r]] = await pool.query('SELECT id FROM customers WHERE account_id=? AND email=? LIMIT 1', [accId, em]); row = r }
+    if (row) {
+      // Completa datos faltantes sin pisar lo existente.
+      await pool.query(
+        "UPDATE customers SET name=COALESCE(NULLIF(name,''), NULLIF(?, '')), email=COALESCE(NULLIF(email,''), NULLIF(?, '')), phone=COALESCE(NULLIF(phone,''), NULLIF(?, '')), profile=COALESCE(?, profile), updated_at=? WHERE id=?",
+        [name || '', em, ph, profile ? JSON.stringify(profile) : null, Date.now(), row.id]
+      ).catch(() => {})
+      return row.id
+    }
+    const id = 'cust_' + uid(); const ts = Date.now()
+    await pool.query(
+      'INSERT INTO customers (id, account_id, name, phone, email, profile, created_at, updated_at) VALUES (?,?,?,?,?,?,?,?)',
+      [id, accId, name || '', ph, em, profile ? JSON.stringify(profile) : null, ts, ts]
+    )
+    return id
+  } catch (e) { console.warn('[findOrCreateCustomer]', e.message); return null }
+}
+
+// Historial de un cliente: sus datos + reservas (para que la IA personalice).
+async function getCustomerHistory(accId, customerId, { limit = 100 } = {}) {
+  const [[c]] = await pool.query('SELECT * FROM customers WHERE id=? AND account_id=?', [customerId, accId])
+  if (!c) return null
+  const [rows] = await pool.query(
+    'SELECT * FROM calendar_bookings WHERE account_id=? AND customer_id=? ORDER BY date DESC, time DESC LIMIT ?',
+    [accId, customerId, Number(limit) || 100]
+  )
+  return {
+    customer: { id: c.id, name: c.name, phone: c.phone, email: c.email, profile: parseJ(c.profile, {}) },
+    bookings: rows.map(mapBooking),
+  }
+}
+
+// Reserva la "unidad" del slot a nivel de BD (anti doble-reserva). Best-effort:
+// distribuye en los asientos 0..capacity-1; el UNIQUE de booking_allocations
+// impide que dos reservas tomen el mismo asiento del mismo slot.
+async function allocateSlot(accId, calendarId, bookingId, date, time, duration, calendar) {
+  try {
+    const ap = calendar.appointment || {}
+    const capacity = ap.allowSimultaneous ? Math.max(1, Number(ap.capacity) || 1) : 1
+    const startDt = `${date} ${time}:00`
+    const endDt = new Date(new Date(`${date}T${time}:00Z`).getTime() + (Number(duration) || 30) * 60000)
+      .toISOString().slice(0, 19).replace('T', ' ')
+    for (let seat = 0; seat < capacity; seat++) {
+      const unitKey = `${date}T${time}#${seat}`
+      try {
+        await pool.query(
+          'INSERT INTO booking_allocations (id, account_id, booking_id, resource_id, unit_key, slot_start, slot_end, qty) VALUES (?,?,?,?,?,?,?,?)',
+          ['alloc_' + uid(), accId, bookingId, calendarId, unitKey, startDt, endDt, 1]
+        )
+        return true   // asiento tomado
+      } catch { /* asiento ocupado → prueba el siguiente */ }
+    }
+    return false
+  } catch { return false }
 }
 
 async function getAvailability(accId, calendarId, dateStr, durationMin) {
@@ -159,21 +226,23 @@ async function createBooking(accId, calendarId, data = {}, { validate = true } =
   const id = 'bk_' + uid()
   const ts = Date.now()
   const status = BOOKING_STATUSES.includes(data.status) ? data.status : 'pending'
+  // Cliente como entidad (paciente/huésped) + perfil del vertical si viene.
+  const customerId = await findOrCreateCustomer(accId, {
+    name: data.clientName, phone: data.clientPhone, email: data.clientEmail, profile: data.customerProfile,
+  })
   await pool.query(
     `INSERT INTO calendar_bookings
-       (id, account_id, calendar_id, date, time, duration, client_name, client_phone, client_email, channel, status, notes, meta, external_id, created_at, updated_at)
-     VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`,
+       (id, account_id, calendar_id, date, time, duration, client_name, client_phone, client_email, customer_id, channel, status, notes, meta, external_id, created_at, updated_at)
+     VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`,
     [id, accId, calendarId, date, time, duration,
-     data.clientName || '', data.clientPhone || '', data.clientEmail || '',
+     data.clientName || '', data.clientPhone || '', data.clientEmail || '', customerId,
      data.channel || 'manual', status, data.notes || '',
      JSON.stringify(data.meta || {}), data.externalId || null, ts, ts]
   )
+  // Reserva la unidad del slot (cimiento del núcleo + anti doble-reserva). Best-effort.
+  allocateSlot(accId, calendarId, id, date, time, duration, calendar).catch(() => {})
   const bk = await getBooking(accId, id)
-  notify(accId, calendar, bk, 'confirmation').catch(() => {})
-  // Push a Google Calendar (fire-and-forget): guarda el eventId en external_id.
-  sync.pushBooking(accId, calendar, bk, 'create').then(eventId => {
-    if (eventId) pool.query('UPDATE calendar_bookings SET external_id=? WHERE id=?', [eventId, id]).catch(() => {})
-  }).catch(() => {})
+  // notify (confirmación) + Google sync ahora son HANDLERS del outbox (ver registro al final).
   emit(calendar, 'BookingCreated', bk)
   return bk
 }
@@ -191,6 +260,9 @@ function emit(calendar, type, bk) {
 async function rescheduleBooking(accId, bookingId, newDate, newTime, { validate = true } = {}) {
   const booking = await getBooking(accId, bookingId)
   if (!booking) throw new Error('Reserva no encontrada')
+  if (!states.canTransition(booking.status, 'rescheduled')) {
+    throw new Error(`No se puede reagendar una reserva en estado "${booking.status}"`)
+  }
   const date = String(newDate || '').slice(0, 10)
   const time = String(newTime || '').slice(0, 5)
   if (!date || !time) throw new Error('Nueva fecha y hora requeridas')
@@ -205,9 +277,12 @@ async function rescheduleBooking(accId, bookingId, newDate, newTime, { validate 
     'UPDATE calendar_bookings SET date=?, time=?, status=?, updated_at=? WHERE id=? AND account_id=?',
     [date, time, 'rescheduled', Date.now(), bookingId, accId]
   )
-  const bk = await getBooking(accId, bookingId)
   const calendar = await getCalendar(accId, booking.calendarId)
-  if (calendar) { notify(accId, calendar, bk, 'reschedule').catch(() => {}); sync.pushBooking(accId, calendar, bk, 'update').catch(() => {}) }
+  // Mueve la asignación de la unidad al nuevo horario.
+  await pool.query('DELETE FROM booking_allocations WHERE booking_id=? AND account_id=?', [bookingId, accId]).catch(() => {})
+  if (calendar) allocateSlot(accId, booking.calendarId, bookingId, date, time, booking.duration, calendar).catch(() => {})
+  const bk = await getBooking(accId, bookingId)
+  // notify (reagendamiento) + Google sync vía outbox (handler BookingRescheduled).
   emit(calendar, 'BookingRescheduled', bk)
   return bk
 }
@@ -231,7 +306,9 @@ async function cancelBooking(accId, bookingId) {
   const bk = await setBookingStatus(accId, bookingId, 'cancelled')
   if (bk) {
     const calendar = await getCalendar(accId, bk.calendarId)
-    if (calendar) { notify(accId, calendar, bk, 'cancellation').catch(() => {}); sync.pushBooking(accId, calendar, bk, 'delete').catch(() => {}) }
+    // Libera la unidad asignada para que el slot vuelva a estar disponible.
+    await pool.query('DELETE FROM booking_allocations WHERE booking_id=? AND account_id=?', [bookingId, accId]).catch(() => {})
+    // notify (cancelación) + Google sync (delete) vía outbox (handler BookingCancelled).
     emit(calendar, 'BookingCancelled', bk)
   }
   return bk
@@ -256,12 +333,59 @@ async function updateBooking(accId, bookingId, updates = {}) {
 }
 
 async function deleteBooking(accId, bookingId) {
+  await pool.query('DELETE FROM booking_allocations WHERE booking_id=? AND account_id=?', [bookingId, accId]).catch(() => {})
   await pool.query('DELETE FROM calendar_bookings WHERE id=? AND account_id=?', [bookingId, accId])
 }
+
+// ── Side-effects vía outbox (Fase 1) ────────────────────────────────────────
+// notify de reserva + sync a Google Calendar dejan de ser inline y pasan a ser
+// handlers de eventos de dominio. Se mantienen best-effort (no lanzan) para
+// replicar exactamente el comportamiento anterior (sin doble notificación) y se
+// procesan de inmediato (kick) tras emitir. Punto de extensión para webhooks,
+// reportes y read-models en fases siguientes.
+let _handlersRegistered = false
+function registerOutboxHandlers() {
+  if (_handlersRegistered) return
+  _handlersRegistered = true
+
+  events.on('BookingCreated', async (ev) => {
+    try {
+      const calendar = await getCalendar(ev.accId, ev.payload.calendarId)
+      const bk = await getBooking(ev.accId, ev.aggregateId)
+      if (!calendar || !bk) return
+      notify(ev.accId, calendar, bk, 'confirmation').catch(() => {})
+      sync.pushBooking(ev.accId, calendar, bk, 'create').then(eventId => {
+        if (eventId) pool.query('UPDATE calendar_bookings SET external_id=? WHERE id=?', [eventId, bk.id]).catch(() => {})
+      }).catch(() => {})
+    } catch (e) { console.warn('[handler BookingCreated]', e.message) }
+  })
+
+  events.on('BookingRescheduled', async (ev) => {
+    try {
+      const calendar = await getCalendar(ev.accId, ev.payload.calendarId)
+      const bk = await getBooking(ev.accId, ev.aggregateId)
+      if (!calendar || !bk) return
+      notify(ev.accId, calendar, bk, 'reschedule').catch(() => {})
+      sync.pushBooking(ev.accId, calendar, bk, 'update').catch(() => {})
+    } catch (e) { console.warn('[handler BookingRescheduled]', e.message) }
+  })
+
+  events.on('BookingCancelled', async (ev) => {
+    try {
+      const calendar = await getCalendar(ev.accId, ev.payload.calendarId)
+      const bk = await getBooking(ev.accId, ev.aggregateId)
+      if (!calendar || !bk) return
+      notify(ev.accId, calendar, bk, 'cancellation').catch(() => {})
+      sync.pushBooking(ev.accId, calendar, bk, 'delete').catch(() => {})
+    } catch (e) { console.warn('[handler BookingCancelled]', e.message) }
+  })
+}
+registerOutboxHandlers()
 
 module.exports = {
   BOOKING_STATUSES, mapCalendar, mapBooking,
   getCalendar, listCalendars, listBookings, getBooking, bookingsForDate,
   getAvailability, getMonthAvailability, createBooking, rescheduleBooking, cancelBooking,
   setBookingStatus, updateBooking, deleteBooking,
+  findOrCreateCustomer, getCustomerHistory, allocateSlot,
 }

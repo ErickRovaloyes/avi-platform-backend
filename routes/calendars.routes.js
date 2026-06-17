@@ -20,6 +20,8 @@ router.put('/accounts/:accId/bookings/:bookingId',           authMiddleware, ctr
 router.post('/accounts/:accId/bookings/:bookingId/reschedule', authMiddleware, ctrl.rescheduleBooking)
 router.post('/accounts/:accId/bookings/:bookingId/status',   authMiddleware, ctrl.setStatus)
 router.delete('/accounts/:accId/bookings/:bookingId',        authMiddleware, ctrl.deleteBooking)
+// Cliente / paciente / huésped — historial (datos + reservas)
+router.get('/accounts/:accId/customers/:customerId/history', authMiddleware, ctrl.customerHistory)
 
 // ── Público (página de reservas / formulario) ────────────────────────────────
 router.get('/public/calendars/:accId/:calId',                optionalAuth, ctrl.getPublic)
