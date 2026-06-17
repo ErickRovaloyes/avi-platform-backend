@@ -10,6 +10,7 @@ const bookings = require('../../services/bookings')
 const av = require('../../services/availability')
 const restaurant = require('../../services/restaurant')
 const cinema = require('../../services/cinema')
+const hotelSvc = require('../../services/hotel')
 
 // Base pública para construir el enlace ABSOLUTO de la página de reservas.
 // Debe ser absoluta para que WhatsApp la haga clickeable / acepte el botón CTA.
@@ -309,6 +310,57 @@ const calendarNodes = [
       ctx.variables._last_booking_id = booking.id
       ctx.variables._cinema_seats = booking.seats
       logDebug(ctx, 'flow_run', `🎟 Entradas ${booking.id} · ${booking.date} ${booking.time} · asientos ${booking.seats.join(', ')}`, {})
+    },
+  },
+
+  // ── Hotel (Fase 4f) ────────────────────────────────────────────────────────
+  {
+    type: 'hotel_search', category: 'calendar', label: 'Hotel: ver habitaciones',
+    fields: calFields([
+      { key: 'checkin', label: 'Check-in (YYYY-MM-DD)', type: 'text' },
+      { key: 'checkout', label: 'Check-out (YYYY-MM-DD)', type: 'text' },
+      { key: 'huespedes', label: 'Nº de huéspedes', type: 'text', default: '2' },
+      { key: 'destino', label: 'Guardar opciones en', type: 'variableRef' },
+    ]),
+    async exec(node, ctx) {
+      const calId = interpolate(node.data?.calendarId || '', ctx.variables)
+      if (!calId) throw new Error('Elige un calendario')
+      const checkin = interpolate(node.data?.checkin || '', ctx.variables).slice(0, 10)
+      const checkout = interpolate(node.data?.checkout || '', ctx.variables).slice(0, 10)
+      const guests = Math.max(1, parseInt(interpolate(node.data?.huespedes || '2', ctx.variables), 10) || 2)
+      const r = await hotelSvc.searchAvailability(ctx.accId, calId, { checkin, checkout, guests })
+      if (node.data?.destino) await setVarBoth(ctx, node.data.destino, JSON.stringify(r.options))
+      ctx.variables._hotel_options = r.options
+      ctx.variables._hotel_checkin = checkin
+      ctx.variables._hotel_checkout = checkout
+      logDebug(ctx, 'flow_run', `🏨 ${r.options.length} habitación(es) ${checkin}→${checkout} (${guests}p)`, { options: r.options })
+    },
+  },
+  {
+    type: 'hotel_book', category: 'calendar', label: 'Hotel: reservar habitación',
+    fields: calFields([
+      { key: 'tipo', label: 'Tipo de habitación (opcional)', type: 'text' },
+      { key: 'checkin', label: 'Check-in', type: 'text', placeholder: '{{_hotel_checkin}}' },
+      { key: 'checkout', label: 'Check-out', type: 'text', placeholder: '{{_hotel_checkout}}' },
+      { key: 'huespedes', label: 'Nº de huéspedes', type: 'text', default: '2' },
+      { key: 'nombre', label: 'Nombre del cliente', type: 'text', placeholder: '{{cliente_nombre}}' },
+      { key: 'telefono', label: 'Teléfono', type: 'text', placeholder: '{{cliente_telefono}}' },
+      { key: 'email', label: 'Email', type: 'text', placeholder: '{{cliente_email}}' },
+      { key: 'destino', label: 'Guardar ID de reserva en', type: 'variableRef' },
+    ]),
+    async exec(node, ctx) {
+      const calId = interpolate(node.data?.calendarId || '', ctx.variables)
+      if (!calId) throw new Error('Elige un calendario')
+      const booking = await hotelSvc.autoBook(ctx.accId, calId, {
+        roomType: interpolate(node.data?.tipo || '', ctx.variables),
+        checkin: interpolate(node.data?.checkin || '', ctx.variables).slice(0, 10),
+        checkout: interpolate(node.data?.checkout || '', ctx.variables).slice(0, 10),
+        guests: Math.max(1, parseInt(interpolate(node.data?.huespedes || '2', ctx.variables), 10) || 2),
+        client: { name: interpolate(node.data?.nombre || '', ctx.variables), phone: interpolate(node.data?.telefono || '', ctx.variables), email: interpolate(node.data?.email || '', ctx.variables) },
+      })
+      if (node.data?.destino) await setVarBoth(ctx, node.data.destino, booking.id)
+      ctx.variables._last_booking_id = booking.id
+      logDebug(ctx, 'flow_run', `🏨 Reserva ${booking.id} · ${booking.roomType} · ${booking.checkin}→${booking.checkout} · ${booking.total} ${booking.currency}`, {})
     },
   },
 ]

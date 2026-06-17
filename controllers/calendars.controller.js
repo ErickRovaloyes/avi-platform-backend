@@ -276,8 +276,17 @@ async function runBookingFlow(accId, calendar, booking, convRef = null) {
 // Un único endpoint optionalAuth que mapea a los métodos del servicio de reservas.
 const flowOp = async (req, res) => {
   const { accId } = req.params
-  const { op, calendarId, date, time, duration, bookingId, partySize, movie, seats, client = {} } = req.body || {}
+  const { op, calendarId, date, time, duration, bookingId, partySize, movie, seats, checkin, checkout, roomType, client = {} } = req.body || {}
   try {
+    if (op === 'hotel_search') {
+      const hotelSvc = require('../services/hotel')
+      return res.json(await hotelSvc.searchAvailability(accId, calendarId, { checkin, checkout, guests: partySize }))
+    }
+    if (op === 'hotel_book') {
+      const hotelSvc = require('../services/hotel')
+      const booking = await hotelSvc.autoBook(accId, calendarId, { roomType, checkin, checkout, guests: partySize, client })
+      return res.json({ booking })
+    }
     if (op === 'cinema_showtimes') {
       const cinema = require('../services/cinema')
       const [shows, movies] = await Promise.all([cinema.listShowtimes(accId, calendarId, date ? { date } : {}), cinema.listMovies(accId, calendarId)])

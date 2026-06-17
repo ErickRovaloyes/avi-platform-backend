@@ -537,6 +537,58 @@ app.use('/api',                webhookRoutes)
        date          VARCHAR(10), price DECIMAL(12,2),
        UNIQUE KEY uq_rate (account_id, room_type_id, date)
      )`,
+    // ── FASE 4b-4e: PMS operativo (recepción, HK, mantenimiento, folios) ────
+    "ALTER TABLE calendar_bookings ADD COLUMN room_id VARCHAR(50)",
+    `CREATE TABLE IF NOT EXISTS hotel_rooms (
+       id            VARCHAR(50) PRIMARY KEY,
+       account_id    VARCHAR(50) NOT NULL, calendar_id VARCHAR(50) NOT NULL,
+       room_type_id  VARCHAR(50), number VARCHAR(20), floor INT,
+       hk_status     VARCHAR(20) DEFAULT 'clean',   -- clean|dirty|inspected|oos
+       status        VARCHAR(20) DEFAULT 'active',
+       created_at    BIGINT, updated_at BIGINT,
+       INDEX idx_room (account_id, calendar_id, room_type_id)
+     )`,
+    `CREATE TABLE IF NOT EXISTS hk_tasks (
+       id            VARCHAR(50) PRIMARY KEY,
+       account_id    VARCHAR(50) NOT NULL, calendar_id VARCHAR(50) NOT NULL,
+       room_id       VARCHAR(50), type VARCHAR(20) DEFAULT 'cleaning',
+       status        VARCHAR(20) DEFAULT 'pending',  -- pending|in_progress|done
+       assignee      VARCHAR(100), date VARCHAR(10), notes TEXT,
+       created_at    BIGINT, updated_at BIGINT,
+       INDEX idx_hk (account_id, calendar_id, status, date)
+     )`,
+    `CREATE TABLE IF NOT EXISTS maintenance_tickets (
+       id            VARCHAR(50) PRIMARY KEY,
+       account_id    VARCHAR(50) NOT NULL, calendar_id VARCHAR(50) NOT NULL,
+       room_id       VARCHAR(50), issue TEXT, severity VARCHAR(10) DEFAULT 'low',
+       status        VARCHAR(20) DEFAULT 'open',     -- open|resolved
+       oos_from      VARCHAR(10), oos_to VARCHAR(10),
+       created_at    BIGINT, updated_at BIGINT,
+       INDEX idx_mnt (account_id, calendar_id, status)
+     )`,
+    `CREATE TABLE IF NOT EXISTS hotel_folios (
+       id            VARCHAR(50) PRIMARY KEY,
+       account_id    VARCHAR(50) NOT NULL, booking_id VARCHAR(50) NOT NULL,
+       status        VARCHAR(20) DEFAULT 'open',     -- open|closed
+       currency      VARCHAR(3) DEFAULT 'USD',
+       created_at    BIGINT, updated_at BIGINT,
+       UNIQUE KEY uq_folio_bk (account_id, booking_id)
+     )`,
+    `CREATE TABLE IF NOT EXISTS hotel_folio_lines (
+       id            VARCHAR(50) PRIMARY KEY,
+       account_id    VARCHAR(50) NOT NULL, folio_id VARCHAR(50) NOT NULL,
+       kind          VARCHAR(20) DEFAULT 'charge',   -- room|fnb|spa|tax|other
+       description   VARCHAR(200), amount DECIMAL(12,2), tax DECIMAL(12,2) DEFAULT 0,
+       ts            BIGINT,
+       INDEX idx_fl (account_id, folio_id)
+     )`,
+    `CREATE TABLE IF NOT EXISTS hotel_payments (
+       id            VARCHAR(50) PRIMARY KEY,
+       account_id    VARCHAR(50) NOT NULL, folio_id VARCHAR(50) NOT NULL,
+       method        VARCHAR(20), amount DECIMAL(12,2), currency VARCHAR(3) DEFAULT 'USD',
+       is_deposit    TINYINT DEFAULT 0, ts BIGINT,
+       INDEX idx_pay (account_id, folio_id)
+     )`,
   ]
   for (const sql of migrations) {
     try { await pool.query(sql) } catch (e) { /* column exists or unsupported */ }

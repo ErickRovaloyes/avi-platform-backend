@@ -100,6 +100,26 @@ async function soldPerNight(accId, roomTypeId, from, to) {
   const m = {}; for (const r of rows) m[r.night] = Number(r.sold); return m
 }
 
+// Habitaciones físicas fuera de servicio (mantenimiento abierto) por noche.
+async function oosPerNight(accId, roomTypeId, nights) {
+  if (!nights.length) return {}
+  let rows
+  try {
+    [rows] = await pool.query(
+      `SELECT m.oos_from, m.oos_to FROM maintenance_tickets m JOIN hotel_rooms r ON r.id=m.room_id
+        WHERE m.account_id=? AND r.room_type_id=? AND m.status='open'`,
+      [accId, roomTypeId]
+    )
+  } catch { return {} }
+  const m = {}
+  for (const t of rows || []) {
+    for (const n of nights) {
+      if ((!t.oos_from || t.oos_from <= n) && (!t.oos_to || t.oos_to >= n)) m[n] = (m[n] || 0) + 1
+    }
+  }
+  return m
+}
+
 // ── Disponibilidad / cotización de una estadía ──────────────────────────────
 async function searchAvailability(accId, calId, { checkin, checkout, guests = 2 } = {}) {
   const nights = nightsBetween(checkin, checkout)
@@ -108,9 +128,9 @@ async function searchAvailability(accId, calId, { checkin, checkout, guests = 2 
   const options = []
   for (const rt of types) {
     if ((rt.maxCapacity || rt.baseCapacity || 2) < guests) continue
-    const [sold, ovr] = await Promise.all([soldPerNight(accId, rt.id, checkin, checkout), overridesFor(accId, rt.id, checkin, checkout)])
+    const [sold, ovr, oos] = await Promise.all([soldPerNight(accId, rt.id, checkin, checkout), overridesFor(accId, rt.id, checkin, checkout), oosPerNight(accId, rt.id, nights)])
     const cap = (rt.totalRooms || 0) + (rt.overbookLimit || 0)
-    if (!nights.every(n => (cap - (sold[n] || 0)) >= 1)) continue
+    if (!nights.every(n => (cap - (sold[n] || 0) - (oos[n] || 0)) >= 1)) continue
     const q = quoteNights(nights, rt.basePrice, ovr)
     options.push({ roomTypeId: rt.id, name: rt.name, capacity: rt.maxCapacity, amenities: rt.amenities, nights: nights.length, currency: rt.currency, total: q.total, perNight: q.perNight })
   }
@@ -133,9 +153,9 @@ async function bookStay(accId, calId, { roomTypeId, checkin, checkout, guests = 
   if (!rt) throw new Error('Tipo de habitación no encontrado')
   const nights = nightsBetween(checkin, checkout)
   if (!nights.length) throw new Error('Fechas inválidas')
-  const sold = await soldPerNight(accId, roomTypeId, checkin, checkout)
+  const [sold, oos] = await Promise.all([soldPerNight(accId, roomTypeId, checkin, checkout), oosPerNight(accId, roomTypeId, nights)])
   const cap = (rt.totalRooms || 0) + (rt.overbookLimit || 0)
-  const full = nights.filter(n => (cap - (sold[n] || 0)) < 1)
+  const full = nights.filter(n => (cap - (sold[n] || 0) - (oos[n] || 0)) < 1)
   if (full.length) throw new Error(`Sin disponibilidad las noches: ${full.join(', ')}`)
   const ovr = await overridesFor(accId, roomTypeId, checkin, checkout)
   const q = quoteNights(nights, rt.basePrice, ovr)
@@ -186,9 +206,20 @@ async function monthCheckinDays(accId, calId, year, month) {
   return { year: y, month: m, days }
 }
 
+// Reserva para la IA: busca disponibilidad, elige el tipo (por nombre o el más
+// económico que acomode) y reserva.
+async function autoBook(accId, calId, { roomType, checkin, checkout, guests = 2, client = {} } = {}) {
+  const { options } = await searchAvailability(accId, calId, { checkin, checkout, guests })
+  if (!options.length) throw new Error('No hay habitaciones disponibles para esas fechas.')
+  let opt = null
+  if (roomType) opt = options.find(o => (o.name || '').toLowerCase().includes(String(roomType).toLowerCase()))
+  opt = opt || options[0] // searchAvailability ordena por precio asc → el más económico
+  return bookStay(accId, calId, { roomTypeId: opt.roomTypeId, checkin, checkout, guests, client, channel: 'flow' })
+}
+
 module.exports = {
   nightsBetween, quoteNights,
   listRoomTypes, getRoomType, createRoomType, updateRoomType, deleteRoomType,
   listRates, setRateRange, clearRate,
-  searchAvailability, quoteStay, bookStay, monthCheckinDays, soldPerNight,
+  searchAvailability, quoteStay, bookStay, autoBook, monthCheckinDays, soldPerNight,
 }
