@@ -89,6 +89,14 @@ async function processWhatsApp(accId, agentId, body) {
     // Audio → transcripción automática (queda como texto del mensaje)
     await transcribeIfAudio(accId, agentId, convId, msg)
 
+    // ¿El cliente respondió/citó un mensaje anterior? Resolvemos su contenido para
+    // mostrarlo en la bandeja Y dárselo de contexto al asistente.
+    let replyTo = null
+    if (msg.quotedId) {
+      const q = await store.getMessageByProviderId(convId, msg.quotedId)
+      if (q) replyTo = { id: q.id, content: q.content, sender: q.sender, kind: q.kind || null, filename: q.filename || null }
+    }
+
     await store.appendMsg(accId, agentId, convId, {
       role: 'user', sender: 'user',
       senderName: msg.fromName || msg.from,
@@ -96,6 +104,7 @@ async function processWhatsApp(accId, agentId, body) {
       ts: Date.now(),
       waMessageId: msg.messageId,
       channel: 'whatsapp', channelId: channel?.id,
+      ...(replyTo ? { replyTo } : {}),
       ...(msg.internalMedia ? {
         mediaId: msg.internalMedia.mediaId, kind: msg.internalMedia.kind,
         mime: msg.internalMedia.mime, filename: msg.internalMedia.filename, sizeBytes: msg.internalMedia.sizeBytes,
@@ -144,14 +153,18 @@ async function processWhatsApp(accId, agentId, body) {
       }
       if (text) return await sendWhatsAppText({ phoneNumberId: cfg.phoneNumberId, accessToken: cfg.accessToken, to: msg.from, text })
     }
+    // El mensaje citado se pasa como _quotedMessage (el nodo Agente IA lo añade al
+    // contexto). `message` se deja crudo para que el matching por palabra clave no
+    // se vea afectado por el texto citado.
+    const quotedCtx = replyTo?.content ? { _quotedMessage: replyTo.content, _quotedSender: replyTo.sender } : {}
     if (agent.fallbackFlowId) {
       await engine.executeFlow({
         flowId: agent.fallbackFlowId, accId, agId: agentId, convId,
-        triggerContext: { message: msg.text, _lastUserMessage: msg.text },
+        triggerContext: { message: msg.text, _lastUserMessage: msg.text, ...quotedCtx },
         outbound: waOutbound,
       })
     } else {
-      await engine.runTrigger({ trigger: 'keyword', accId, agId: agentId, convId, context: { message: msg.text }, outbound: waOutbound })
+      await engine.runTrigger({ trigger: 'keyword', accId, agId: agentId, convId, context: { message: msg.text, ...quotedCtx }, outbound: waOutbound })
     }
   }
 }

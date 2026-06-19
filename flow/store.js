@@ -204,6 +204,29 @@ async function dispatchN8N(integrationId, payload, opts = {}) {
   return callN8N({ integrationId, accountId: payload?._meta?.accountId, payload, forceSync: !!opts.forceSync })
 }
 
+// Resuelve un mensaje por su id de proveedor (wamid / providerMsgId) → contenido
+// legible. Lo usa la función de "responder/citar": cuando el cliente cita un
+// mensaje anterior, recuperamos su texto para dárselo de contexto al asistente.
+async function getMessageByProviderId(convId, providerId) {
+  if (!convId || !providerId) return null
+  try {
+    const [rows] = await pool.query(
+      `SELECT id, sender, content, metadata FROM messages
+       WHERE conversation_id=?
+         AND (JSON_UNQUOTE(JSON_EXTRACT(metadata,'$.waMessageId'))=?
+           OR JSON_UNQUOTE(JSON_EXTRACT(metadata,'$.providerMsgId'))=?)
+       ORDER BY ts DESC LIMIT 1`,
+      [convId, String(providerId), String(providerId)]
+    )
+    const m = rows[0]
+    if (!m) return null
+    const meta = parseJ(m.metadata, {})
+    let content = m.content || ''
+    if (!content && meta.kind) content = `[${meta.kind}${meta.filename ? ': ' + meta.filename : ''}]`
+    return { id: m.id, sender: m.sender, content, kind: meta.kind || null, filename: meta.filename || null }
+  } catch { return null }
+}
+
 // Lee los bytes de un medio nuestro (tabla media) para subirlos a un canal.
 async function getMediaBytes(accId, mediaId) {
   if (!mediaId) return null
@@ -216,5 +239,5 @@ module.exports = {
   loadAccount, readConvos, appendMsg, updateConvo, setLocalVar, appendDebugEntry,
   createOrGetWhatsAppConvo, createOrGetMessengerConvo, createOrGetInstagramConvo,
   recordTokenUsage, dispatchN8N, messageExistsByProviderId, updateMessageStatus,
-  saveExecution, getMediaBytes,
+  saveExecution, getMediaBytes, getMessageByProviderId,
 }

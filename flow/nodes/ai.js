@@ -332,6 +332,14 @@ const aiNodes = [
         const interpolated = interpolate(rawField, ctx.variables)
         userMsg = (interpolated && !/^\{\{.*\}\}$/.test(interpolated.trim())) ? interpolated : fallbackMsg
       }
+      // Mensaje citado (responder/reply): se lo damos de contexto al modelo. Útil
+      // cuando el usuario solo pone un "." para referirse a un mensaje anterior.
+      const quoted = ctx.variables?._quotedMessage
+      if (quoted && String(quoted).trim()) {
+        const u = (userMsg || '').trim()
+        userMsg = `[El usuario está respondiendo a este mensaje anterior: "${String(quoted).trim()}"]\n\n` +
+          (u ? `Mensaje del usuario: ${u}` : 'El usuario no escribió texto; responde basándote en el mensaje citado.')
+      }
 
       const history = await loadHistory(ctx)
       const toolDefs = buildToolDefs(assignedTools, ctx.account)

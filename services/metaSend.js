@@ -153,6 +153,9 @@ function parseWhatsAppWebhook(body) {
           mediaCaption,
           documentName: msg.document?.filename || '',
           internalMedia: msg._internalMedia || null,
+          // Si el usuario respondió/citó un mensaje anterior, Meta envía context.id
+          // (el wamid del mensaje citado). Lo resolveremos contra nuestra BD.
+          quotedId: msg.context?.id || null,
         })
       }
     }
