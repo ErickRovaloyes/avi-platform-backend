@@ -625,6 +625,33 @@ app.use('/api',                webhookRoutes)
        created_at    BIGINT,
        INDEX idx_cms_acc (account_id)
      )`,
+    // CMS: carpetas (simple | unit=super unidad/producto), etiquetas y categorías
+    // globales para parametrizar la biblioteca.
+    "ALTER TABLE cms_assets ADD COLUMN folder_id VARCHAR(50)",
+    "ALTER TABLE cms_assets ADD COLUMN category VARCHAR(120)",
+    `CREATE TABLE IF NOT EXISTS cms_folders (
+       id          VARCHAR(50) PRIMARY KEY,
+       account_id  VARCHAR(50) NOT NULL,
+       name        VARCHAR(180) NOT NULL,
+       type        VARCHAR(20) DEFAULT 'simple',   -- simple | unit
+       description TEXT,
+       created_at  BIGINT,
+       INDEX idx_cmsfolder_acc (account_id)
+     )`,
+    `CREATE TABLE IF NOT EXISTS cms_tags (
+       id          VARCHAR(50) PRIMARY KEY,
+       account_id  VARCHAR(50) NOT NULL,
+       name        VARCHAR(80) NOT NULL,
+       created_at  BIGINT,
+       INDEX idx_cmstag_acc (account_id)
+     )`,
+    `CREATE TABLE IF NOT EXISTS cms_categories (
+       id          VARCHAR(50) PRIMARY KEY,
+       account_id  VARCHAR(50) NOT NULL,
+       name        VARCHAR(120) NOT NULL,
+       created_at  BIGINT,
+       INDEX idx_cmscat_acc (account_id)
+     )`,
   ]
   for (const sql of migrations) {
     try { await pool.query(sql) } catch (e) { /* column exists or unsupported */ }

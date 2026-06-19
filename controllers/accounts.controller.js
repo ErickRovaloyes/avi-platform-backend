@@ -16,12 +16,27 @@ const mapAgent = a => ({
 
 // Recurso del CMS: archivo (imagen/documento) de la biblioteca de la cuenta que
 // el asistente puede enviar en las conversaciones. media_id apunta a la tabla media.
+// Herramienta IA Especial siempre disponible para asignar a un prompt: deja que
+// el asistente envíe recursos del CMS. No es una fila real en ai_tools; se inyecta
+// en la lista. El runtime la reconoce por actionType 'cms_resource'.
+const SPECIAL_CMS_TOOL = {
+  id: 'cms_send_resource',
+  name: 'enviar_recurso',
+  description: 'Envía imágenes o documentos del CMS al usuario (incluye carpetas de producto con varias fotos). Asígnala a un prompt para que el asistente pueda enviar recursos cuando sean relevantes.',
+  collectFields: [],
+  actionType: 'cms_resource',
+  special: true,
+}
+
 const mapCmsAsset = c => ({
   id: c.id, name: c.name, description: c.description || '', tags: parseJ(c.tags, []),
   kind: c.kind, mediaId: c.media_id, filename: c.filename, mime: c.mime,
-  sizeBytes: c.size_bytes, ragFileId: c.rag_file_id || null, ragAgentId: c.rag_agent_id || null,
+  sizeBytes: c.size_bytes, folderId: c.folder_id || null, category: c.category || '',
+  ragFileId: c.rag_file_id || null, ragAgentId: c.rag_agent_id || null,
   createdAt: c.created_at,
 })
+const mapCmsFolder = f => ({ id: f.id, name: f.name, type: f.type || 'simple', description: f.description || '', createdAt: f.created_at })
+const mapNamed = r => ({ id: r.id, name: r.name })
 
 // Core: builds the public account object (agents, vars, tools, flows + effective
 // keys). Reusable by the HTTP handler and by the server-side flow engine.
@@ -33,6 +48,10 @@ async function loadPublicAccount(accId) {
   const [variables] = await pool.query('SELECT * FROM variables WHERE account_id=?', [accId])
   const [aiTools]   = await pool.query('SELECT * FROM ai_tools WHERE account_id=?', [accId])
   const [cmsAssets] = await pool.query('SELECT * FROM cms_assets WHERE account_id=?', [accId])
+  let cmsFolders = [], cmsTags = [], cmsCategories = []
+  try { [cmsFolders]    = await pool.query('SELECT * FROM cms_folders WHERE account_id=?', [accId]) } catch { cmsFolders = [] }
+  try { [cmsTags]       = await pool.query('SELECT * FROM cms_tags WHERE account_id=?', [accId]) } catch { cmsTags = [] }
+  try { [cmsCategories] = await pool.query('SELECT * FROM cms_categories WHERE account_id=?', [accId]) } catch { cmsCategories = [] }
   const [flows]     = await pool.query('SELECT * FROM flows WHERE account_id=?', [accId])
   // Resolve API keys with super-admin platform fallback
   const [[pf]] = await pool.query('SELECT openai_key, deepseek_key, anthropic_key FROM platform_settings WHERE id=1')
@@ -44,8 +63,11 @@ async function loadPublicAccount(accId) {
     openaiKey: effOpenai, deepseekKey: effDeepseek, anthropicKey: effAnthropic,
     agents: agents.map(mapAgent),
     variables: variables.map(v => ({ id: v.id, name: v.name, type: v.type, defaultValue: v.default_value, description: v.description, isSystem: !!v.is_system })),
-    aiTools:   aiTools.map(t => ({ id: t.id, name: t.name, description: t.description, collectFields: parseJ(t.collect_fields, []), flowId: t.flow_id, actionType: t.action_type || 'variable', n8nIntegrationId: t.n8n_integration_id })),
+    aiTools:   [SPECIAL_CMS_TOOL, ...aiTools.map(t => ({ id: t.id, name: t.name, description: t.description, collectFields: parseJ(t.collect_fields, []), flowId: t.flow_id, actionType: t.action_type || 'variable', n8nIntegrationId: t.n8n_integration_id }))],
     cmsAssets: cmsAssets.map(mapCmsAsset),
+    cmsFolders: cmsFolders.map(mapCmsFolder),
+    cmsTags: cmsTags.map(mapNamed),
+    cmsCategories: cmsCategories.map(mapNamed),
     flows:     flows.map(f => ({ id: f.id, name: f.name, trigger: f.trigger, startNodeId: f.start_node_id, nodes: parseJ(f.nodes, []) })),
   }
 }
@@ -76,6 +98,10 @@ const getAccount = async (req, res) => {
     const [variables] = await pool.query('SELECT * FROM variables WHERE account_id=?', [accId])
     const [aiTools]   = await pool.query('SELECT * FROM ai_tools WHERE account_id=?', [accId])
     const [cmsAssets] = await pool.query('SELECT * FROM cms_assets WHERE account_id=?', [accId])
+    let cmsFolders = [], cmsTags = [], cmsCategories = []
+    try { [cmsFolders]    = await pool.query('SELECT * FROM cms_folders WHERE account_id=? ORDER BY created_at', [accId]) } catch { cmsFolders = [] }
+    try { [cmsTags]       = await pool.query('SELECT * FROM cms_tags WHERE account_id=? ORDER BY name', [accId]) } catch { cmsTags = [] }
+    try { [cmsCategories] = await pool.query('SELECT * FROM cms_categories WHERE account_id=? ORDER BY name', [accId]) } catch { cmsCategories = [] }
     const [flows]     = await pool.query('SELECT * FROM flows WHERE account_id=?', [accId])
     const [contacts]  = await pool.query('SELECT * FROM contacts WHERE account_id=?', [accId])
     const [usageRows] = await pool.query('SELECT * FROM change_agent_usage WHERE account_id=?', [accId])
@@ -115,8 +141,11 @@ const getAccount = async (req, res) => {
       labels:    labels.map(l => ({ id: l.id, name: l.name, color: l.color })),
       pipelines: pipelines.map(p => ({ id: p.id, name: p.name, stages: parseJ(p.stages, []), cards: parseJ(p.cards, []) })),
       variables: variables.map(v => ({ id: v.id, name: v.name, type: v.type, defaultValue: v.default_value, description: v.description, isSystem: !!v.is_system })),
-      aiTools:   aiTools.map(t => ({ id: t.id, name: t.name, description: t.description, collectFields: parseJ(t.collect_fields, []), flowId: t.flow_id, actionType: t.action_type || 'variable', n8nIntegrationId: t.n8n_integration_id, createdAt: t.created_at })),
+      aiTools:   [SPECIAL_CMS_TOOL, ...aiTools.map(t => ({ id: t.id, name: t.name, description: t.description, collectFields: parseJ(t.collect_fields, []), flowId: t.flow_id, actionType: t.action_type || 'variable', n8nIntegrationId: t.n8n_integration_id, createdAt: t.created_at }))],
       cmsAssets: cmsAssets.map(mapCmsAsset),
+      cmsFolders: cmsFolders.map(mapCmsFolder),
+      cmsTags: cmsTags.map(mapNamed),
+      cmsCategories: cmsCategories.map(mapNamed),
       flows:     flows.map(f => ({ id: f.id, name: f.name, trigger: f.trigger, startNodeId: f.start_node_id, nodes: parseJ(f.nodes, []), createdAt: f.created_at })),
       contacts:  contacts.map(c => ({ id: c.id, name: c.name, email: c.email, phone: c.phone, ...parseJ(c.extra, {}), createdAt: c.created_at })),
       calendars: calendars.map(c => ({

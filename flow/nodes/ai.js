@@ -10,8 +10,8 @@ const store = require('../store')
 
 const DEFAULT_MODEL = { openai: 'gpt-4o-mini', deepseek: 'deepseek-chat', anthropic: 'claude-sonnet-4-6' }
 
-function buildToolDefs(toolList) {
-  return (toolList || []).map(tool => ({
+function buildOneToolDef(tool) {
+  return {
     type: 'function',
     function: {
       name: tool.name.replace(/\s+/g, '_').toLowerCase(),
@@ -27,7 +27,14 @@ function buildToolDefs(toolList) {
         required: (tool.collectFields || []).filter(f => f.required !== false).map(f => f.paramName || f.label.replace(/\s+/g, '_').toLowerCase()),
       },
     },
-  }))
+  }
+}
+// La herramienta especial "enviar_recurso" (actionType cms_resource) produce su
+// propia definición con el catálogo de recursos. El resto usa la genérica.
+function buildToolDefs(toolList, account) {
+  return (toolList || [])
+    .map(tool => (tool.actionType === 'cms_resource' ? buildResourceToolDef(account) : buildOneToolDef(tool)))
+    .filter(Boolean)
 }
 
 async function execToolCall(ctx, toolList, toolName, toolArgs) {
@@ -45,6 +52,9 @@ async function execToolCall(ctx, toolList, toolName, toolArgs) {
     }
   }
 
+  if (tool.actionType === 'cms_resource') {
+    return sendCmsResource(ctx, toolArgs)
+  }
   if (tool.actionType === 'n8n' && tool.n8nIntegrationId) {
     try {
       const r = await store.dispatchN8N(tool.n8nIntegrationId, {
@@ -63,51 +73,114 @@ async function execToolCall(ctx, toolList, toolName, toolArgs) {
   return results.length ? results.join(', ') : 'Ejecutado'
 }
 
-// ── Recursos del CMS: herramienta integrada "enviar_recurso" ───────────────────
-// Siempre disponible para el agente cuando la cuenta tiene recursos en su
-// biblioteca: el modelo decide enviarlos cuando ayudan (catálogo, lista de
-// precios, foto de producto, manual…). El binario se sirve desde la tabla media.
-const RESOURCE_TOOL_NAME = 'enviar_recurso'
+// ── Recursos del CMS: herramienta especial "enviar_recurso" ────────────────────
+// Es una Herramienta IA Especial: se ASIGNA al prompt en la lista de herramientas
+// (no está anclada al nodo). Cuando el prompt la tiene asignada, el modelo puede
+// enviar imágenes/documentos del CMS. Soporta carpetas "super unidad" (un producto
+// con varias fotos): sin detalle envía todas; con detalle busca la foto concreta.
 function resourceBaseUrl() {
   return (process.env.PUBLIC_URL || process.env.BASE_URL || 'https://platform.aviasistente.com').replace(/\/$/, '')
 }
+const normResourceName = s => String(s || '').trim().toLowerCase()
+function tokenize(s) {
+  return normResourceName(s).split(/[^a-z0-9áéíóúñü]+/i).filter(w => w.length > 1)
+}
+// Puntúa cuántos tokens de la consulta aparecen en el texto (palabras largas pesan más).
+function scoreText(queryTokens, text) {
+  const t = normResourceName(text)
+  let score = 0
+  for (const qt of queryTokens) { if (qt && t.includes(qt)) score += qt.length >= 4 ? 2 : 1 }
+  return score
+}
+function assetHaystack(a) { return `${a.name} ${a.description || ''} ${(a.tags || []).join(' ')} ${a.category || ''}` }
+function pickBest(list, queryTokens) {
+  let best = { asset: null, score: -1 }
+  for (const a of list) { const sc = scoreText(queryTokens, assetHaystack(a)); if (sc > best.score) best = { asset: a, score: sc } }
+  return best
+}
 function buildResourceToolDef(account) {
   const assets = account?.cmsAssets || []
+  const folders = account?.cmsFolders || []
   if (!assets.length) return null
-  const catalog = assets.slice(0, 60).map(a => {
-    const tags = (a.tags || []).join(', ')
-    return `- ${a.name}${a.description ? `: ${a.description}` : ''}${tags ? ` [etiquetas: ${tags}]` : ''} (${a.kind})`
-  }).join('\n')
+  const unitFolders = folders.filter(f => f.type === 'unit' && assets.some(a => a.folderId === f.id))
+  const lines = []
+  if (unitFolders.length) {
+    lines.push('PRODUCTOS / SERVICIOS (cada uno agrupa varias fotos — al pedirlo se envían todas, o una concreta si el usuario especifica):')
+    unitFolders.forEach(f => lines.push(`• ${f.name}${f.description ? ` — ${f.description}` : ''}`))
+  }
+  const loose = assets.filter(a => { const fol = folders.find(x => x.id === a.folderId); return !fol || fol.type !== 'unit' })
+  if (loose.length) {
+    lines.push('RECURSOS SUELTOS:')
+    loose.slice(0, 60).forEach(a => lines.push(`• ${a.name}${a.description ? `: ${a.description}` : ''}${(a.tags || []).length ? ` [${a.tags.join(', ')}]` : ''}${a.category ? ` (${a.category})` : ''}`))
+  }
   return {
     type: 'function',
     function: {
-      name: RESOURCE_TOOL_NAME,
-      description: `Envía al usuario un recurso (imagen o documento) de la biblioteca de la cuenta. Úsalo cuando el usuario lo pida o cuando un archivo ayude a responder (catálogo, lista de precios, folleto, foto de producto, manual, etc.). En "recurso" indica el NOMBRE de uno de estos recursos disponibles:\n${catalog}`,
+      name: 'enviar_recurso',
+      description: `Envía al usuario imágenes o documentos del CMS. Úsalo cuando el usuario los pida o cuando ayuden (catálogo, lista de precios, foto de un producto/servicio, folleto, manual…). En "recurso" indica el producto/servicio o recurso de esta lista. Si es un PRODUCTO/SERVICIO y el usuario solo quiere verlo, deja "detalle" vacío y se enviarán todas sus fotos; si pide algo concreto (p. ej. "el baño", "vista de noche"), ponlo en "detalle" y se enviará la foto que mejor coincida.\n${lines.join('\n')}`,
       parameters: {
         type: 'object',
         properties: {
-          recurso: { type: 'string', description: 'Nombre del recurso a enviar (exacto o el más parecido de la lista).' },
-          mensaje: { type: 'string', description: 'Texto opcional para acompañar el archivo (caption).' },
+          recurso: { type: 'string', description: 'Producto/servicio o recurso a enviar (lo más parecido de la lista).' },
+          detalle: { type: 'string', description: 'Opcional: aspecto/foto concreta que pide el usuario dentro de ese producto.' },
+          mensaje: { type: 'string', description: 'Texto opcional para acompañar el/los archivo(s).' },
         },
         required: ['recurso'],
       },
     },
   }
 }
-const normResourceName = s => String(s || '').trim().toLowerCase()
+async function sendOneAsset(ctx, a, caption) {
+  const url = `${resourceBaseUrl()}/api/media/${ctx.accId}/${a.mediaId}/raw`
+  const kind = ['image', 'video', 'audio'].includes(a.kind) ? a.kind : 'file'
+  await sendBotMsg(ctx, caption || '', { media: { kind, url, filename: a.filename }, mediaUrl: url, kind, filename: a.filename })
+}
 async function sendCmsResource(ctx, args) {
   const assets = ctx.account?.cmsAssets || []
-  if (!assets.length) return 'No hay recursos en la biblioteca.'
-  const q = normResourceName(args?.recurso)
-  let asset = assets.find(a => normResourceName(a.name) === q)
-  if (!asset && q) asset = assets.find(a => normResourceName(a.name).includes(q) || q.includes(normResourceName(a.name)))
-  if (!asset && q) asset = assets.find(a => (a.tags || []).some(t => normResourceName(t) === q) || normResourceName(a.description).includes(q))
-  if (!asset) return `No encontré un recurso llamado "${args?.recurso}". Recursos disponibles: ${assets.map(a => a.name).join(', ')}`
-  const url = `${resourceBaseUrl()}/api/media/${ctx.accId}/${asset.mediaId}/raw`
-  const kind = ['image', 'video', 'audio'].includes(asset.kind) ? asset.kind : 'file'
-  await sendBotMsg(ctx, args?.mensaje || '', { media: { kind, url, filename: asset.filename }, mediaUrl: url, kind, filename: asset.filename })
-  logDebug(ctx, 'tool_result', `📎 Recurso enviado: ${asset.name}`, { kind, recurso: asset.name })
-  return `Recurso "${asset.name}" enviado al usuario.`
+  const folders = ctx.account?.cmsFolders || []
+  if (!assets.length) return 'No hay recursos en la biblioteca del CMS.'
+  const recurso = args?.recurso || ''
+  const detalle = args?.detalle || ''
+  const caption = args?.mensaje || ''
+  const recTokens = tokenize(recurso)
+
+  // 1) ¿"recurso" coincide con una carpeta (producto/servicio)?
+  const folderScored = folders
+    .map(f => ({ f, score: scoreText(recTokens, f.name) + scoreText(recTokens, f.description || ''), items: assets.filter(a => a.folderId === f.id) }))
+    .filter(x => x.items.length)
+    .sort((a, b) => b.score - a.score)
+  const topFolder = folderScored[0]
+  if (topFolder && topFolder.score >= 2) {
+    const { f, items } = topFolder
+    if (f.type === 'unit' && !detalle.trim()) {
+      // Super unidad sin detalle → enviar todas las fotos del producto/servicio.
+      for (let i = 0; i < items.length; i++) await sendOneAsset(ctx, items[i], i === 0 ? caption : '')
+      logDebug(ctx, 'tool_result', `📎 Enviadas ${items.length} fotos de "${f.name}"`, {})
+      return `Te envié ${items.length} archivo(s) de "${f.name}".`
+    }
+    // Buscar dentro de la carpeta la foto concreta.
+    const q2 = tokenize(`${detalle} ${detalle ? '' : recurso}`)
+    const best = pickBest(items, q2.length ? q2 : recTokens)
+    if (best.asset && best.score >= 1) { await sendOneAsset(ctx, best.asset, caption); return `Envié "${best.asset.name}" de "${f.name}".` }
+    const approx = best.asset || items[0]
+    await sendOneAsset(ctx, approx, '')
+    return `No tengo exactamente lo que buscas dentro de "${f.name}". Te envío lo más aproximado: "${approx.name}".`
+  }
+
+  // 2) Buscar entre todos los recursos (nombre, descripción, etiquetas, categoría).
+  const queryTokens = [...recTokens, ...tokenize(detalle)]
+  const best = pickBest(assets, queryTokens)
+  if (best.asset && best.score >= 2) {
+    await sendOneAsset(ctx, best.asset, caption)
+    logDebug(ctx, 'tool_result', `📎 Recurso enviado: ${best.asset.name}`, { score: best.score })
+    return `Recurso "${best.asset.name}" enviado al usuario.`
+  }
+  // 3) Sin coincidencia clara → enviar lo más aproximado + aviso (condición pedida).
+  if (best.asset) {
+    await sendOneAsset(ctx, best.asset, '')
+    return `No encontré exactamente lo que buscas (o no lo entendí del todo). Te muestro lo más aproximado: "${best.asset.name}". Si no es lo que querías, descríbemelo de otra forma.`
+  }
+  return `No encontré ningún recurso parecido a "${recurso}".`
 }
 
 // Carga los turnos recientes para dar MEMORIA al agente. Descarta el/los turnos
@@ -239,18 +312,15 @@ const aiNodes = [
       }
 
       const history = await loadHistory(ctx)
-      const toolDefs = buildToolDefs(assignedTools)
-      // Herramienta integrada para enviar recursos del CMS (si la cuenta tiene).
-      const resourceTool = buildResourceToolDef(ctx.account)
-      const allToolDefs = resourceTool ? [...toolDefs, resourceTool] : toolDefs
+      const toolDefs = buildToolDefs(assignedTools, ctx.account)
 
       let resolved = null
       let toolsInvoked = false
       const reply = await callAI(ctx, {
         systemPrompt: sys,
         userPrompt: userMsg || '(sin contexto del usuario, responde con un saludo)',
-        model, provider, history, tools: allToolDefs,
-        onToolCall: (name, args) => (name === RESOURCE_TOOL_NAME ? sendCmsResource(ctx, args) : execToolCall(ctx, assignedTools, name, args)),
+        model, provider, history, tools: toolDefs,
+        onToolCall: (name, args) => execToolCall(ctx, assignedTools, name, args),
         onTools: info => { toolsInvoked = info.invoked },
         maxTokens: 800, temperature,
         onResolved: r => { resolved = r },

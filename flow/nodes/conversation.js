@@ -10,6 +10,16 @@ const { interpolate, sendBotMsg, logDebug } = require('../common')
 
 const cmsBaseUrl = () => (process.env.PUBLIC_URL || process.env.BASE_URL || 'https://platform.aviasistente.com').replace(/\/$/, '')
 
+// Resuelve la fuente de un medio: recurso del CMS (assetId) o URL directa.
+function resolveMedia(node, ctx) {
+  if (node.data?.assetId) {
+    const a = (ctx.account?.cmsAssets || []).find(x => x.id === node.data.assetId)
+    if (!a) throw new Error('Recurso del CMS no encontrado (elígelo de nuevo en el nodo).')
+    return { url: `${cmsBaseUrl()}/api/media/${ctx.accId}/${a.mediaId}/raw`, filename: a.filename }
+  }
+  return { url: interpolate(node.data?.url || '', ctx.variables), filename: interpolate(node.data?.filename || '', ctx.variables) }
+}
+
 const conversationNodes = [
   {
     type: 'send_message', category: 'conversation', label: 'Enviar mensaje',
@@ -67,10 +77,10 @@ const conversationNodes = [
   {
     type: 'send_image', category: 'conversation', label: 'Enviar imagen',
     async exec(node, ctx) {
-      const url     = interpolate(node.data?.url || '', ctx.variables)
+      const m = resolveMedia(node, ctx)
       const caption = interpolate(node.data?.caption || '', ctx.variables)
-      if (!url) throw new Error('URL de imagen vacía')
-      await sendBotMsg(ctx, caption, { media: { kind: 'image', url }, mediaUrl: url, kind: 'image' })
+      if (!m.url) throw new Error('Falta la imagen (URL, CMS o subida)')
+      await sendBotMsg(ctx, caption, { media: { kind: 'image', url: m.url, filename: m.filename }, mediaUrl: m.url, kind: 'image', filename: m.filename })
     },
   },
   {
@@ -93,10 +103,10 @@ const conversationNodes = [
   {
     type: 'send_document', category: 'conversation', label: 'Enviar documento',
     async exec(node, ctx) {
-      const url = interpolate(node.data?.url || '', ctx.variables)
-      const fn  = interpolate(node.data?.filename || '', ctx.variables)
-      if (!url) throw new Error('URL de documento vacía')
-      await sendBotMsg(ctx, fn || '', { media: { kind: 'file', url, filename: fn }, mediaUrl: url, kind: 'file', filename: fn })
+      const m = resolveMedia(node, ctx)
+      if (!m.url) throw new Error('Falta el documento (URL, CMS o subida)')
+      const fn = interpolate(node.data?.filename || '', ctx.variables) || m.filename || ''
+      await sendBotMsg(ctx, fn || '', { media: { kind: 'file', url: m.url, filename: fn }, mediaUrl: m.url, kind: 'file', filename: fn })
     },
   },
   {

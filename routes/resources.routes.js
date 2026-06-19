@@ -23,6 +23,14 @@ router.delete('/ai_tools/:accId/:toolId',               authMiddleware, ctrl.del
 router.post('/accounts/:accId/cms-assets',              authMiddleware, ctrl.createCmsAsset)
 router.put('/accounts/:accId/cms-assets/:assetId',      authMiddleware, ctrl.updateCmsAsset)
 router.delete('/accounts/:accId/cms-assets/:assetId',   authMiddleware, ctrl.deleteCmsAsset)
+// CMS: carpetas / etiquetas / categorías globales
+router.post('/accounts/:accId/cms-folders',             authMiddleware, ctrl.createCmsFolder)
+router.put('/accounts/:accId/cms-folders/:folderId',    authMiddleware, ctrl.updateCmsFolder)
+router.delete('/accounts/:accId/cms-folders/:folderId', authMiddleware, ctrl.deleteCmsFolder)
+router.post('/accounts/:accId/cms-tags',                authMiddleware, ctrl.createCmsTag)
+router.delete('/accounts/:accId/cms-tags/:tagId',       authMiddleware, ctrl.deleteCmsTag)
+router.post('/accounts/:accId/cms-categories',          authMiddleware, ctrl.createCmsCategory)
+router.delete('/accounts/:accId/cms-categories/:catId', authMiddleware, ctrl.deleteCmsCategory)
 
 // ── Flows ─────────────────────────────────────────────────────────────────────
 router.post('/accounts/:accId/flows',                   authMiddleware, ctrl.createFlow)
