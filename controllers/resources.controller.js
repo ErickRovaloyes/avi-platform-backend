@@ -86,6 +86,56 @@ const deleteAITool = async (req, res) => {
   } catch (err) { res.status(500).json({ error: 'Error interno' }) }
 }
 
+// ── CMS Assets (biblioteca de recursos del asistente) ───────────────────────────
+// El binario ya se subió vía POST /api/media/:accId/upload (devuelve mediaId);
+// aquí sólo se registra la ficha del recurso (nombre, descripción, etiquetas).
+
+const createCmsAsset = async (req, res) => {
+  const { accId } = req.params
+  const { id: gId, name, description = '', tags = [], kind = 'file', mediaId = null,
+          filename = '', mime = '', sizeBytes = 0, ragFileId = null, ragAgentId = null } = req.body
+  if (!name || !mediaId) return res.status(400).json({ error: 'Nombre y archivo son obligatorios' })
+  const id = gId || ('cms_' + uid())
+  try {
+    await pool.query(
+      'INSERT INTO cms_assets (id,account_id,name,description,tags,kind,media_id,filename,mime,size_bytes,rag_file_id,rag_agent_id,created_at) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)',
+      [id, accId, name, description, JSON.stringify(tags || []), kind, mediaId, filename, mime, sizeBytes, ragFileId, ragAgentId, Date.now()]
+    )
+    socket.emit(accId, 'account:updated', { accId })
+    res.json({ id })
+  } catch (err) { console.error('[createCmsAsset]', err); res.status(500).json({ error: 'Error interno' }) }
+}
+
+const updateCmsAsset = async (req, res) => {
+  const { accId, assetId } = req.params
+  const { name, description, tags, ragFileId, ragAgentId } = req.body
+  try {
+    const sets = []; const vals = []
+    if (name        !== undefined) { sets.push('name=?');         vals.push(name) }
+    if (description !== undefined) { sets.push('description=?');  vals.push(description) }
+    if (tags        !== undefined) { sets.push('tags=?');         vals.push(JSON.stringify(tags || [])) }
+    if (ragFileId   !== undefined) { sets.push('rag_file_id=?');  vals.push(ragFileId) }
+    if (ragAgentId  !== undefined) { sets.push('rag_agent_id=?'); vals.push(ragAgentId) }
+    if (!sets.length) return res.json({ ok: true })
+    vals.push(assetId, accId)
+    await pool.query(`UPDATE cms_assets SET ${sets.join(',')} WHERE id=? AND account_id=?`, vals)
+    socket.emit(accId, 'account:updated', { accId })
+    res.json({ ok: true })
+  } catch (err) { res.status(500).json({ error: 'Error interno' }) }
+}
+
+const deleteCmsAsset = async (req, res) => {
+  const { accId, assetId } = req.params
+  try {
+    const [[a]] = await pool.query('SELECT media_id FROM cms_assets WHERE id=? AND account_id=?', [assetId, accId])
+    await pool.query('DELETE FROM cms_assets WHERE id=? AND account_id=?', [assetId, accId])
+    // Limpia el binario asociado para no dejar huérfanos en la tabla media.
+    if (a?.media_id) { try { await pool.query('DELETE FROM media WHERE id=? AND account_id=?', [a.media_id, accId]) } catch {} }
+    socket.emit(accId, 'account:updated', { accId })
+    res.json({ ok: true })
+  } catch (err) { res.status(500).json({ error: 'Error interno' }) }
+}
+
 // ── Flows ─────────────────────────────────────────────────────────────────────
 
 const createFlow = async (req, res) => {
@@ -134,5 +184,6 @@ const deleteFlow = async (req, res) => {
 module.exports = {
   createVariable, updateVariable, deleteVariable,
   createAITool, updateAITool, deleteAITool,
+  createCmsAsset, updateCmsAsset, deleteCmsAsset,
   createFlow, updateFlow, deleteFlow,
 }

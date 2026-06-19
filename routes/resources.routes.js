@@ -19,6 +19,11 @@ router.post('/ai_tools/:accId',                         authMiddleware, ctrl.cre
 router.put('/ai_tools/:accId/:toolId',                  authMiddleware, ctrl.updateAITool)
 router.delete('/ai_tools/:accId/:toolId',               authMiddleware, ctrl.deleteAITool)
 
+// ── CMS Assets (biblioteca de recursos del asistente) ───────────────────────────
+router.post('/accounts/:accId/cms-assets',              authMiddleware, ctrl.createCmsAsset)
+router.put('/accounts/:accId/cms-assets/:assetId',      authMiddleware, ctrl.updateCmsAsset)
+router.delete('/accounts/:accId/cms-assets/:assetId',   authMiddleware, ctrl.deleteCmsAsset)
+
 // ── Flows ─────────────────────────────────────────────────────────────────────
 router.post('/accounts/:accId/flows',                   authMiddleware, ctrl.createFlow)
 router.put('/accounts/:accId/flows/:flowId',            authMiddleware, ctrl.updateFlow)

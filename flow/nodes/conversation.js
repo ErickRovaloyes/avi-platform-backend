@@ -8,6 +8,8 @@
 
 const { interpolate, sendBotMsg, logDebug } = require('../common')
 
+const cmsBaseUrl = () => (process.env.PUBLIC_URL || process.env.BASE_URL || 'https://platform.aviasistente.com').replace(/\/$/, '')
+
 const conversationNodes = [
   {
     type: 'send_message', category: 'conversation', label: 'Enviar mensaje',
@@ -95,6 +97,19 @@ const conversationNodes = [
       const fn  = interpolate(node.data?.filename || '', ctx.variables)
       if (!url) throw new Error('URL de documento vacía')
       await sendBotMsg(ctx, fn || '', { media: { kind: 'file', url, filename: fn }, mediaUrl: url, kind: 'file', filename: fn })
+    },
+  },
+  {
+    type: 'send_cms_resource', category: 'conversation', label: 'Enviar recurso (CMS)',
+    async exec(node, ctx) {
+      const assets = ctx.account?.cmsAssets || []
+      const asset = assets.find(a => a.id === node.data?.assetId)
+      if (!asset) throw new Error('Recurso del CMS no encontrado (¿fue eliminado?)')
+      const url = `${cmsBaseUrl()}/api/media/${ctx.accId}/${asset.mediaId}/raw`
+      const kind = ['image', 'video', 'audio'].includes(asset.kind) ? asset.kind : 'file'
+      const caption = interpolate(node.data?.caption || '', ctx.variables)
+      await sendBotMsg(ctx, caption, { media: { kind, url, filename: asset.filename }, mediaUrl: url, kind, filename: asset.filename })
+      logDebug(ctx, 'flow_run', `📎 Recurso del CMS enviado: ${asset.name}`, { kind })
     },
   },
   {

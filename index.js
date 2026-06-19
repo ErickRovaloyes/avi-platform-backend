@@ -607,6 +607,24 @@ app.use('/api',                webhookRoutes)
        created_at    BIGINT, updated_at BIGINT,
        INDEX idx_chan (account_id, calendar_id, provider)
      )`,
+    // CMS: biblioteca de recursos (imágenes/documentos) que el asistente IA puede
+    // enviar en conversaciones. media_id apunta a la tabla media (bytes reales).
+    `CREATE TABLE IF NOT EXISTS cms_assets (
+       id            VARCHAR(50) PRIMARY KEY,
+       account_id    VARCHAR(50) NOT NULL,
+       name          VARCHAR(180) NOT NULL,
+       description   TEXT,
+       tags          JSON,
+       kind          VARCHAR(20),    -- image|video|audio|file
+       media_id      VARCHAR(60),
+       filename      VARCHAR(255),
+       mime          VARCHAR(150),
+       size_bytes    BIGINT,
+       rag_file_id   VARCHAR(60),    -- si el documento se indexó en Conocimiento (RAG)
+       rag_agent_id  VARCHAR(60),
+       created_at    BIGINT,
+       INDEX idx_cms_acc (account_id)
+     )`,
   ]
   for (const sql of migrations) {
     try { await pool.query(sql) } catch (e) { /* column exists or unsupported */ }

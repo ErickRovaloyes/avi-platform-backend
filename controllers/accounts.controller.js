@@ -14,6 +14,15 @@ const mapAgent = a => ({
   links: parseJ(a.channels, []).filter(c => c.type === 'webchat').map(c => ({ id: c.id, label: c.name, createdAt: c.createdAt })),
 })
 
+// Recurso del CMS: archivo (imagen/documento) de la biblioteca de la cuenta que
+// el asistente puede enviar en las conversaciones. media_id apunta a la tabla media.
+const mapCmsAsset = c => ({
+  id: c.id, name: c.name, description: c.description || '', tags: parseJ(c.tags, []),
+  kind: c.kind, mediaId: c.media_id, filename: c.filename, mime: c.mime,
+  sizeBytes: c.size_bytes, ragFileId: c.rag_file_id || null, ragAgentId: c.rag_agent_id || null,
+  createdAt: c.created_at,
+})
+
 // Core: builds the public account object (agents, vars, tools, flows + effective
 // keys). Reusable by the HTTP handler and by the server-side flow engine.
 // Returns null when the account doesn't exist.
@@ -23,6 +32,7 @@ async function loadPublicAccount(accId) {
   const [agents]    = await pool.query('SELECT * FROM agents WHERE account_id=?', [accId])
   const [variables] = await pool.query('SELECT * FROM variables WHERE account_id=?', [accId])
   const [aiTools]   = await pool.query('SELECT * FROM ai_tools WHERE account_id=?', [accId])
+  const [cmsAssets] = await pool.query('SELECT * FROM cms_assets WHERE account_id=?', [accId])
   const [flows]     = await pool.query('SELECT * FROM flows WHERE account_id=?', [accId])
   // Resolve API keys with super-admin platform fallback
   const [[pf]] = await pool.query('SELECT openai_key, deepseek_key, anthropic_key FROM platform_settings WHERE id=1')
@@ -35,6 +45,7 @@ async function loadPublicAccount(accId) {
     agents: agents.map(mapAgent),
     variables: variables.map(v => ({ id: v.id, name: v.name, type: v.type, defaultValue: v.default_value, description: v.description, isSystem: !!v.is_system })),
     aiTools:   aiTools.map(t => ({ id: t.id, name: t.name, description: t.description, collectFields: parseJ(t.collect_fields, []), flowId: t.flow_id, actionType: t.action_type || 'variable', n8nIntegrationId: t.n8n_integration_id })),
+    cmsAssets: cmsAssets.map(mapCmsAsset),
     flows:     flows.map(f => ({ id: f.id, name: f.name, trigger: f.trigger, startNodeId: f.start_node_id, nodes: parseJ(f.nodes, []) })),
   }
 }
@@ -64,6 +75,7 @@ const getAccount = async (req, res) => {
     const [pipelines] = await pool.query('SELECT * FROM pipelines WHERE account_id=?', [accId])
     const [variables] = await pool.query('SELECT * FROM variables WHERE account_id=?', [accId])
     const [aiTools]   = await pool.query('SELECT * FROM ai_tools WHERE account_id=?', [accId])
+    const [cmsAssets] = await pool.query('SELECT * FROM cms_assets WHERE account_id=?', [accId])
     const [flows]     = await pool.query('SELECT * FROM flows WHERE account_id=?', [accId])
     const [contacts]  = await pool.query('SELECT * FROM contacts WHERE account_id=?', [accId])
     const [usageRows] = await pool.query('SELECT * FROM change_agent_usage WHERE account_id=?', [accId])
@@ -104,6 +116,7 @@ const getAccount = async (req, res) => {
       pipelines: pipelines.map(p => ({ id: p.id, name: p.name, stages: parseJ(p.stages, []), cards: parseJ(p.cards, []) })),
       variables: variables.map(v => ({ id: v.id, name: v.name, type: v.type, defaultValue: v.default_value, description: v.description, isSystem: !!v.is_system })),
       aiTools:   aiTools.map(t => ({ id: t.id, name: t.name, description: t.description, collectFields: parseJ(t.collect_fields, []), flowId: t.flow_id, actionType: t.action_type || 'variable', n8nIntegrationId: t.n8n_integration_id, createdAt: t.created_at })),
+      cmsAssets: cmsAssets.map(mapCmsAsset),
       flows:     flows.map(f => ({ id: f.id, name: f.name, trigger: f.trigger, startNodeId: f.start_node_id, nodes: parseJ(f.nodes, []), createdAt: f.created_at })),
       contacts:  contacts.map(c => ({ id: c.id, name: c.name, email: c.email, phone: c.phone, ...parseJ(c.extra, {}), createdAt: c.created_at })),
       calendars: calendars.map(c => ({

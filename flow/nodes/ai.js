@@ -63,6 +63,53 @@ async function execToolCall(ctx, toolList, toolName, toolArgs) {
   return results.length ? results.join(', ') : 'Ejecutado'
 }
 
+// ── Recursos del CMS: herramienta integrada "enviar_recurso" ───────────────────
+// Siempre disponible para el agente cuando la cuenta tiene recursos en su
+// biblioteca: el modelo decide enviarlos cuando ayudan (catálogo, lista de
+// precios, foto de producto, manual…). El binario se sirve desde la tabla media.
+const RESOURCE_TOOL_NAME = 'enviar_recurso'
+function resourceBaseUrl() {
+  return (process.env.PUBLIC_URL || process.env.BASE_URL || 'https://platform.aviasistente.com').replace(/\/$/, '')
+}
+function buildResourceToolDef(account) {
+  const assets = account?.cmsAssets || []
+  if (!assets.length) return null
+  const catalog = assets.slice(0, 60).map(a => {
+    const tags = (a.tags || []).join(', ')
+    return `- ${a.name}${a.description ? `: ${a.description}` : ''}${tags ? ` [etiquetas: ${tags}]` : ''} (${a.kind})`
+  }).join('\n')
+  return {
+    type: 'function',
+    function: {
+      name: RESOURCE_TOOL_NAME,
+      description: `Envía al usuario un recurso (imagen o documento) de la biblioteca de la cuenta. Úsalo cuando el usuario lo pida o cuando un archivo ayude a responder (catálogo, lista de precios, folleto, foto de producto, manual, etc.). En "recurso" indica el NOMBRE de uno de estos recursos disponibles:\n${catalog}`,
+      parameters: {
+        type: 'object',
+        properties: {
+          recurso: { type: 'string', description: 'Nombre del recurso a enviar (exacto o el más parecido de la lista).' },
+          mensaje: { type: 'string', description: 'Texto opcional para acompañar el archivo (caption).' },
+        },
+        required: ['recurso'],
+      },
+    },
+  }
+}
+const normResourceName = s => String(s || '').trim().toLowerCase()
+async function sendCmsResource(ctx, args) {
+  const assets = ctx.account?.cmsAssets || []
+  if (!assets.length) return 'No hay recursos en la biblioteca.'
+  const q = normResourceName(args?.recurso)
+  let asset = assets.find(a => normResourceName(a.name) === q)
+  if (!asset && q) asset = assets.find(a => normResourceName(a.name).includes(q) || q.includes(normResourceName(a.name)))
+  if (!asset && q) asset = assets.find(a => (a.tags || []).some(t => normResourceName(t) === q) || normResourceName(a.description).includes(q))
+  if (!asset) return `No encontré un recurso llamado "${args?.recurso}". Recursos disponibles: ${assets.map(a => a.name).join(', ')}`
+  const url = `${resourceBaseUrl()}/api/media/${ctx.accId}/${asset.mediaId}/raw`
+  const kind = ['image', 'video', 'audio'].includes(asset.kind) ? asset.kind : 'file'
+  await sendBotMsg(ctx, args?.mensaje || '', { media: { kind, url, filename: asset.filename }, mediaUrl: url, kind, filename: asset.filename })
+  logDebug(ctx, 'tool_result', `📎 Recurso enviado: ${asset.name}`, { kind, recurso: asset.name })
+  return `Recurso "${asset.name}" enviado al usuario.`
+}
+
 // Carga los turnos recientes para dar MEMORIA al agente. Descarta el/los turnos
 // finales del usuario porque el nodo aporta su propio "mensaje actual".
 async function loadHistory(ctx, limit = 16) {
@@ -193,14 +240,17 @@ const aiNodes = [
 
       const history = await loadHistory(ctx)
       const toolDefs = buildToolDefs(assignedTools)
+      // Herramienta integrada para enviar recursos del CMS (si la cuenta tiene).
+      const resourceTool = buildResourceToolDef(ctx.account)
+      const allToolDefs = resourceTool ? [...toolDefs, resourceTool] : toolDefs
 
       let resolved = null
       let toolsInvoked = false
       const reply = await callAI(ctx, {
         systemPrompt: sys,
         userPrompt: userMsg || '(sin contexto del usuario, responde con un saludo)',
-        model, provider, history, tools: toolDefs,
-        onToolCall: (name, args) => execToolCall(ctx, assignedTools, name, args),
+        model, provider, history, tools: allToolDefs,
+        onToolCall: (name, args) => (name === RESOURCE_TOOL_NAME ? sendCmsResource(ctx, args) : execToolCall(ctx, assignedTools, name, args)),
         onTools: info => { toolsInvoked = info.invoked },
         maxTokens: 800, temperature,
         onResolved: r => { resolved = r },
