@@ -11,13 +11,22 @@ const { interpolate, sendBotMsg, logDebug } = require('../common')
 const cmsBaseUrl = () => (process.env.PUBLIC_URL || process.env.BASE_URL || 'https://platform.aviasistente.com').replace(/\/$/, '')
 
 // Resuelve la fuente de un medio: recurso del CMS (assetId) o URL directa.
+// Para recursos del CMS devuelve también mediaId/kind/mime/sizeBytes para que la
+// UI lo renderice con <MediaMessage> (no solo el texto).
 function resolveMedia(node, ctx) {
   if (node.data?.assetId) {
     const a = (ctx.account?.cmsAssets || []).find(x => x.id === node.data.assetId)
     if (!a) throw new Error('Recurso del CMS no encontrado (elígelo de nuevo en el nodo).')
-    return { url: `${cmsBaseUrl()}/api/media/${ctx.accId}/${a.mediaId}/raw`, filename: a.filename }
+    return { url: `${cmsBaseUrl()}/api/media/${ctx.accId}/${a.mediaId}/raw`, filename: a.filename, mediaId: a.mediaId, kind: a.kind, mime: a.mime, sizeBytes: a.sizeBytes }
   }
   return { url: interpolate(node.data?.url || '', ctx.variables), filename: interpolate(node.data?.filename || '', ctx.variables) }
+}
+// Construye los metadatos de un mensaje con media (incluye mediaId si viene del CMS).
+function mediaMeta(m, fallbackKind, filename) {
+  const kind = (m.mediaId && ['image', 'video', 'audio', 'file'].includes(m.kind)) ? m.kind : fallbackKind
+  const meta = { media: { kind, url: m.url, filename }, mediaUrl: m.url, kind, filename }
+  if (m.mediaId) Object.assign(meta, { mediaId: m.mediaId, mime: m.mime, sizeBytes: m.sizeBytes })
+  return meta
 }
 
 const conversationNodes = [
@@ -80,7 +89,7 @@ const conversationNodes = [
       const m = resolveMedia(node, ctx)
       const caption = interpolate(node.data?.caption || '', ctx.variables)
       if (!m.url) throw new Error('Falta la imagen (URL, CMS o subida)')
-      await sendBotMsg(ctx, caption, { media: { kind: 'image', url: m.url, filename: m.filename }, mediaUrl: m.url, kind: 'image', filename: m.filename })
+      await sendBotMsg(ctx, caption, mediaMeta(m, 'image', m.filename))
     },
   },
   {
@@ -106,7 +115,7 @@ const conversationNodes = [
       const m = resolveMedia(node, ctx)
       if (!m.url) throw new Error('Falta el documento (URL, CMS o subida)')
       const fn = interpolate(node.data?.filename || '', ctx.variables) || m.filename || ''
-      await sendBotMsg(ctx, fn || '', { media: { kind: 'file', url: m.url, filename: fn }, mediaUrl: m.url, kind: 'file', filename: fn })
+      await sendBotMsg(ctx, fn || '', mediaMeta(m, 'file', fn))
     },
   },
   {
@@ -118,7 +127,10 @@ const conversationNodes = [
       const url = `${cmsBaseUrl()}/api/media/${ctx.accId}/${asset.mediaId}/raw`
       const kind = ['image', 'video', 'audio'].includes(asset.kind) ? asset.kind : 'file'
       const caption = interpolate(node.data?.caption || '', ctx.variables)
-      await sendBotMsg(ctx, caption, { media: { kind, url, filename: asset.filename }, mediaUrl: url, kind, filename: asset.filename })
+      await sendBotMsg(ctx, caption, {
+        mediaId: asset.mediaId, kind, mime: asset.mime, filename: asset.filename, sizeBytes: asset.sizeBytes,
+        media: { kind, url, filename: asset.filename }, mediaUrl: url,
+      })
       logDebug(ctx, 'flow_run', `📎 Recurso del CMS enviado: ${asset.name}`, { kind })
     },
   },
