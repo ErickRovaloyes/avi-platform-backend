@@ -41,7 +41,8 @@ async function buildSnapshot(accId, agId, { includeMessages = true } = {}) {
     const convIds = convs.map(c => c.id)
     let msgsByConv = {}
     if (convIds.length) {
-      const [msgs] = await pool.query('SELECT * FROM messages WHERE conversation_id IN (?) ORDER BY ts ASC', [convIds])
+      const [msgs] = await pool.query('SELECT * FROM messages WHERE conversation_id IN (?)', [convIds])
+      msgs.sort((a, b) => (a.ts || 0) - (b.ts || 0))
       for (const m of msgs) {
         if (!msgsByConv[m.conversation_id]) msgsByConv[m.conversation_id] = []
         msgsByConv[m.conversation_id].push({

@@ -38,10 +38,14 @@ async function loadAccount(accId) {
 
 // ── Conversations read ──────────────────────────────────────────────────────
 async function readConvos(accId, agId) {
-  const [rows] = await pool.query('SELECT * FROM conversations WHERE account_id=? AND agent_id=? ORDER BY updated_at DESC', [accId, agId])
+  // Sin ORDER BY en SQL: ordenar SELECT * con columnas JSON dispara un filesort de
+  // filas anchas que agota el sort_buffer en MySQL 8. Se ordena en JS.
+  const [rows] = await pool.query('SELECT * FROM conversations WHERE account_id=? AND agent_id=?', [accId, agId])
   if (rows.length === 0) return []
+  rows.sort((a, b) => (b.updated_at || 0) - (a.updated_at || 0))
   const convIds = rows.map(c => c.id)
-  const [msgs] = await pool.query('SELECT * FROM messages WHERE conversation_id IN (?) ORDER BY ts ASC', [convIds])
+  const [msgs] = await pool.query('SELECT * FROM messages WHERE conversation_id IN (?)', [convIds])
+  msgs.sort((a, b) => (a.ts || 0) - (b.ts || 0))
   const byConv = {}
   for (const m of msgs) {
     (byConv[m.conversation_id] ||= []).push({ id: m.id, sender: m.sender, content: m.content, ts: m.ts, ...parseJ(m.metadata, {}) })

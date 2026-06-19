@@ -67,10 +67,15 @@ const mapConvo = (c, messages = []) => ({
 const listConvos = async (req, res) => {
   const { accId, agId } = req.params
   try {
-    const [rows] = await pool.query('SELECT * FROM conversations WHERE account_id=? AND agent_id=? ORDER BY updated_at DESC', [accId, agId])
+    // Sin ORDER BY en SQL: ordenar con SELECT * sobre columnas JSON (debug_log,
+    // local_vars, metadata) provoca un filesort de filas anchas que revienta el
+    // sort_buffer ("Out of sort memory") en MySQL 8. Se ordena en JS (barato).
+    const [rows] = await pool.query('SELECT * FROM conversations WHERE account_id=? AND agent_id=?', [accId, agId])
     if (rows.length === 0) return res.json([])
+    rows.sort((a, b) => (b.updated_at || 0) - (a.updated_at || 0))
     const convIds = rows.map(c => c.id)
-    const [msgs]  = await pool.query('SELECT * FROM messages WHERE conversation_id IN (?) ORDER BY ts ASC', [convIds])
+    const [msgs]  = await pool.query('SELECT * FROM messages WHERE conversation_id IN (?)', [convIds])
+    msgs.sort((a, b) => (a.ts || 0) - (b.ts || 0))
     const msgsByConv = {}
     for (const m of msgs) {
       if (!msgsByConv[m.conversation_id]) msgsByConv[m.conversation_id] = []
@@ -88,7 +93,8 @@ const getConvo = async (req, res) => {
   try {
     const [[c]] = await pool.query('SELECT * FROM conversations WHERE id=? AND account_id=? AND agent_id=?', [convId, accId, agId])
     if (!c) return res.status(404).json({ error: 'Conversación no encontrada' })
-    const [msgs] = await pool.query('SELECT * FROM messages WHERE conversation_id=? ORDER BY ts ASC', [convId])
+    const [msgs] = await pool.query('SELECT * FROM messages WHERE conversation_id=?', [convId])
+    msgs.sort((a, b) => (a.ts || 0) - (b.ts || 0))
     res.json(mapConvo(c, msgs.map(m => ({ id: m.id, sender: m.sender, content: m.content, ts: m.ts, ...parseJ(m.metadata, {}) }))))
   } catch (err) {
     console.error('[GET CONVO]', err)
