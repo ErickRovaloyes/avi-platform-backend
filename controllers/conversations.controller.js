@@ -240,7 +240,7 @@ async function resolveChannelConfig(accId, agId, channelType, channelId) {
 // recibe por socket). Esto arregla que las respuestas manuales no llegaban.
 const sendManual = async (req, res) => {
   const { accId, agId, convId } = req.params
-  const { text, senderName } = req.body || {}
+  const { text, senderName, replyToId } = req.body || {}
   if (!text || !String(text).trim()) return res.status(400).json({ error: 'Texto vacío' })
   try {
     const [[conv]] = await pool.query(
@@ -249,6 +249,21 @@ const sendManual = async (req, res) => {
     )
     if (!conv) return res.status(404).json({ error: 'Conversación no encontrada' })
     const type = conv.channel_type
+
+    // ¿El asesor está respondiendo (citando) un mensaje? Resolvemos el mensaje
+    // citado: su wamid (para la cita nativa de WhatsApp) y su contenido (para
+    // mostrar la cita en la bandeja).
+    let replyTo = null, quotedWamid = null
+    if (replyToId) {
+      const [[qm]] = await pool.query('SELECT id, sender, content, metadata FROM messages WHERE id=? AND conversation_id=?', [replyToId, convId])
+      if (qm) {
+        const meta = parseJ(qm.metadata, {})
+        let content = qm.content || ''
+        if (!content && meta.kind) content = `[${meta.kind}${meta.filename ? ': ' + meta.filename : ''}]`
+        replyTo = { id: qm.id, content, sender: qm.sender, kind: meta.kind || null, filename: meta.filename || null }
+        quotedWamid = meta.waMessageId || null
+      }
+    }
 
     // Ventana de servicio de 24h de WhatsApp: se reinicia con cada mensaje
     // entrante del cliente. Fuera de ella la API de Meta rechaza el texto libre,
@@ -275,7 +290,7 @@ const sendManual = async (req, res) => {
         const ch = await resolveChannelConfig(accId, agId, 'whatsapp', conv.channel_id)
         const cfg = ch?.config || {}
         if (!cfg.phoneNumberId || !cfg.accessToken) return res.status(400).json({ error: 'Canal WhatsApp sin configurar' })
-        const r = await sendWhatsAppText({ phoneNumberId: cfg.phoneNumberId, accessToken: cfg.accessToken, to: conv.wa_from, text })
+        const r = await sendWhatsAppText({ phoneNumberId: cfg.phoneNumberId, accessToken: cfg.accessToken, to: conv.wa_from, text, contextMessageId: quotedWamid })
         providerMsgId = r?.messages?.[0]?.id || null; status = 'sent'
       } else if (type === 'messenger' && conv.messenger_from) {
         const ch = await resolveChannelConfig(accId, agId, 'messenger', conv.channel_id)
@@ -299,6 +314,7 @@ const sendManual = async (req, res) => {
       role: 'assistant', sender: 'human',
       senderName: senderName || req.user?.name || 'Asesor',
       content: String(text), channel: type, channelId: conv.channel_id,
+      ...(replyTo ? { replyTo } : {}),
       ...(providerMsgId ? { waMessageId: providerMsgId } : {}),
       ...(status ? { status } : {}),
     })

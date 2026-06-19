@@ -8,14 +8,17 @@ const GRAPH_VERSION = 'v19.0'
 const GRAPH_BASE = `https://graph.facebook.com/${GRAPH_VERSION}`
 
 // ─── WhatsApp ──────────────────────────────────────────────────────────────────
-async function sendWhatsAppText({ phoneNumberId, accessToken, to, text }) {
+async function sendWhatsAppText({ phoneNumberId, accessToken, to, text, contextMessageId }) {
+  const payload = {
+    messaging_product: 'whatsapp', recipient_type: 'individual',
+    to, type: 'text', text: { preview_url: false, body: text },
+  }
+  // Citar (responder a) un mensaje anterior → cita nativa de WhatsApp.
+  if (contextMessageId) payload.context = { message_id: contextMessageId }
   const res = await fetch(`${GRAPH_BASE}/${phoneNumberId}/messages`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${accessToken}` },
-    body: JSON.stringify({
-      messaging_product: 'whatsapp', recipient_type: 'individual',
-      to, type: 'text', text: { preview_url: false, body: text },
-    }),
+    body: JSON.stringify(payload),
   })
   if (!res.ok) {
     const err = await res.json().catch(() => ({}))
