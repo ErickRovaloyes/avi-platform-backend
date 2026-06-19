@@ -24,7 +24,9 @@ function resolveMedia(node, ctx) {
 // Construye los metadatos de un mensaje con media (incluye mediaId si viene del CMS).
 function mediaMeta(m, fallbackKind, filename) {
   const kind = (m.mediaId && ['image', 'video', 'audio', 'file'].includes(m.kind)) ? m.kind : fallbackKind
-  const meta = { media: { kind, url: m.url, filename }, mediaUrl: m.url, kind, filename }
+  const media = { kind, url: m.url, filename }
+  if (m.mediaId) media.mediaId = m.mediaId
+  const meta = { media, mediaUrl: m.url, kind, filename }
   if (m.mediaId) Object.assign(meta, { mediaId: m.mediaId, mime: m.mime, sizeBytes: m.sizeBytes })
   return meta
 }
@@ -129,7 +131,7 @@ const conversationNodes = [
       const caption = interpolate(node.data?.caption || '', ctx.variables)
       await sendBotMsg(ctx, caption, {
         mediaId: asset.mediaId, kind, mime: asset.mime, filename: asset.filename, sizeBytes: asset.sizeBytes,
-        media: { kind, url, filename: asset.filename }, mediaUrl: url,
+        media: { kind, url, filename: asset.filename, mediaId: asset.mediaId }, mediaUrl: url,
       })
       logDebug(ctx, 'flow_run', `📎 Recurso del CMS enviado: ${asset.name}`, { kind })
     },

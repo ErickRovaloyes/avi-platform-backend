@@ -16,6 +16,7 @@ const {
   parseMessengerWebhook, sendMessengerText, sendMessengerButtons,
   parseInstagramWebhook, sendInstagramText,
 } = require('../services/metaSend')
+const { uploadWhatsAppMedia, sendWhatsAppMediaMessage } = require('../services/metaMedia')
 
 // Transcribe la nota de voz del usuario (si la hay) y usa la transcripción como
 // texto del mensaje → así se persiste como contenido y queda en {{_lastUserMessage}}
@@ -124,6 +125,21 @@ async function processWhatsApp(accId, agentId, body) {
         }
       }
       if (meta?.media?.url) {
+        // Media NUESTRA (CMS / tabla media): subimos los bytes a WhatsApp y enviamos
+        // por id — mucho más fiable que el envío por link (Meta es quisquilloso al
+        // descargar enlaces). Para URLs externas seguimos enviando por link.
+        if (meta.media.mediaId) {
+          try {
+            const m = await store.getMediaBytes(accId, meta.media.mediaId)
+            if (m) {
+              const waId = await uploadWhatsAppMedia({ phoneNumberId: cfg.phoneNumberId, accessToken: cfg.accessToken, buffer: m.buffer, mime: m.mime, filename: meta.media.filename || m.filename })
+              return await sendWhatsAppMediaMessage({ phoneNumberId: cfg.phoneNumberId, accessToken: cfg.accessToken, to: msg.from, kind: meta.media.kind, mediaId: waId, caption: meta.caption, filename: meta.media.filename || m.filename })
+            }
+          } catch (e) {
+            console.warn('[WA media upload] fallback a link:', e.message)
+            await store.appendDebugEntry(accId, agentId, convId, { type: 'error', title: `WhatsApp: subida de media falló, intento por link — ${e.message}`, detail: { mediaId: meta.media.mediaId } }).catch(() => {})
+          }
+        }
         return await sendWhatsAppMedia({ phoneNumberId: cfg.phoneNumberId, accessToken: cfg.accessToken, to: msg.from, kind: meta.media.kind, link: meta.media.url, caption: meta.caption, filename: meta.media.filename })
       }
       if (text) return await sendWhatsAppText({ phoneNumberId: cfg.phoneNumberId, accessToken: cfg.accessToken, to: msg.from, text })

@@ -137,7 +137,7 @@ async function sendOneAsset(ctx, a, caption) {
   // media/mediaUrl → entrega al canal externo (WhatsApp/Messenger/IG).
   await sendBotMsg(ctx, caption || '', {
     mediaId: a.mediaId, kind, mime: a.mime, filename: a.filename, sizeBytes: a.sizeBytes,
-    media: { kind, url, filename: a.filename }, mediaUrl: url,
+    media: { kind, url, filename: a.filename, mediaId: a.mediaId }, mediaUrl: url,
   })
 }
 async function sendCmsResource(ctx, args) {

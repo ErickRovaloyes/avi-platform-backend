@@ -204,9 +204,17 @@ async function dispatchN8N(integrationId, payload, opts = {}) {
   return callN8N({ integrationId, accountId: payload?._meta?.accountId, payload, forceSync: !!opts.forceSync })
 }
 
+// Lee los bytes de un medio nuestro (tabla media) para subirlos a un canal.
+async function getMediaBytes(accId, mediaId) {
+  if (!mediaId) return null
+  const [[m]] = await pool.query('SELECT mime_type, filename, data_base64 FROM media WHERE id=? AND account_id=?', [mediaId, accId])
+  if (!m) return null
+  return { buffer: Buffer.from(m.data_base64, 'base64'), mime: m.mime_type || 'application/octet-stream', filename: m.filename || 'file' }
+}
+
 module.exports = {
   loadAccount, readConvos, appendMsg, updateConvo, setLocalVar, appendDebugEntry,
   createOrGetWhatsAppConvo, createOrGetMessengerConvo, createOrGetInstagramConvo,
   recordTokenUsage, dispatchN8N, messageExistsByProviderId, updateMessageStatus,
-  saveExecution,
+  saveExecution, getMediaBytes,
 }
