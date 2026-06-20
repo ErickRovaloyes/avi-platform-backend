@@ -105,4 +105,57 @@ const listConversations = async (req, res) => {
   }
 }
 
-module.exports = { list, getOne, create, update, remove, listConversations }
+// ── Exportar a CSV ──────────────────────────────────────────────────────────────
+const exportCsv = async (req, res) => {
+  const { accId } = req.params
+  try {
+    const [rows] = await pool.query('SELECT * FROM contacts WHERE account_id=? ORDER BY created_at DESC', [accId])
+    const contacts = rows.map(mapContact)
+    const base = ['name', 'email', 'phone']
+    const extraKeys = []
+    for (const c of contacts) for (const k of Object.keys(c)) {
+      if (k !== 'id' && k !== 'createdAt' && !base.includes(k) && !extraKeys.includes(k)) extraKeys.push(k)
+    }
+    const cols = [...base, ...extraKeys]
+    const esc = v => { const s = v == null ? '' : (typeof v === 'object' ? JSON.stringify(v) : String(v)); return /[",\n\r]/.test(s) ? `"${s.replace(/"/g, '""')}"` : s }
+    const lines = [cols.join(',')]
+    for (const c of contacts) lines.push(cols.map(k => esc(c[k])).join(','))
+    const csv = '﻿' + lines.join('\r\n') // BOM para que Excel respete UTF-8
+    res.setHeader('Content-Type', 'text/csv; charset=utf-8')
+    res.setHeader('Content-Disposition', 'attachment; filename="contactos.csv"')
+    res.send(csv)
+  } catch (err) { console.error('[EXPORT CONTACTS]', err); res.status(500).json({ error: 'Error interno' }) }
+}
+
+// ── Importar en bloque ──────────────────────────────────────────────────────────
+// body: { contacts: [{ name, email, phone, ...extra }], dedupeByPhone }
+const importContacts = async (req, res) => {
+  const { accId } = req.params
+  const { contacts = [], dedupeByPhone = true } = req.body || {}
+  if (!Array.isArray(contacts) || !contacts.length) return res.status(400).json({ error: 'No hay contactos para importar' })
+  try {
+    let existingPhones = new Set()
+    if (dedupeByPhone) {
+      const [rows] = await pool.query('SELECT phone FROM contacts WHERE account_id=?', [accId])
+      existingPhones = new Set(rows.map(r => String(r.phone || '').trim()).filter(Boolean))
+    }
+    let imported = 0, skipped = 0
+    const values = []
+    for (const raw of contacts) {
+      const { name = '', email = '', phone = '', ...extra } = raw || {}
+      const ph = String(phone || '').trim()
+      if (!String(name).trim() && !ph && !String(email).trim()) { skipped++; continue }
+      if (dedupeByPhone && ph && existingPhones.has(ph)) { skipped++; continue }
+      if (ph) existingPhones.add(ph)
+      values.push(['contact_' + uid(), accId, String(name || ''), String(email || ''), ph, JSON.stringify(extra || {}), Date.now()])
+      imported++
+    }
+    for (let i = 0; i < values.length; i += 500) {
+      const batch = values.slice(i, i + 500)
+      if (batch.length) await pool.query('INSERT INTO contacts (id,account_id,name,email,phone,extra,created_at) VALUES ?', [batch])
+    }
+    res.json({ ok: true, imported, skipped })
+  } catch (err) { console.error('[IMPORT CONTACTS]', err); res.status(500).json({ error: err.message || 'Error interno' }) }
+}
+
+module.exports = { list, getOne, create, update, remove, listConversations, exportCsv, importContacts }

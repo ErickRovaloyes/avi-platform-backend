@@ -63,7 +63,10 @@ const uploadMedia = async (req, res) => {
     }
     const mime     = req.file.mimetype || 'application/octet-stream'
     const filename = req.file.originalname || ('media_' + Date.now())
-    const kind     = detectKind(mime, filename)
+    // Sticker: WhatsApp exige .webp para el tipo nativo "sticker"; si no es webp,
+    // se envía como imagen normal.
+    let kind = detectKind(mime, filename)
+    if (req.body.kind === 'sticker') kind = /webp/i.test(mime) ? 'sticker' : 'image'
     const ts       = Date.now()
 
     // 1) store media

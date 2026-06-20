@@ -15,6 +15,7 @@ function waTypeForKind(kind) {
   if (kind === 'image') return 'image'
   if (kind === 'video') return 'video'
   if (kind === 'audio') return 'audio'
+  if (kind === 'sticker') return 'sticker'
   return 'document'
 }
 
