@@ -103,6 +103,7 @@ const contactsRoutes      = require('./routes/contacts.routes')
 const savedFiltersRoutes  = require('./routes/savedFilters.routes')
 const campaignsRoutes     = require('./routes/campaigns.routes')
 const subscriptionsRoutes = require('./routes/subscriptions.routes')
+const demoRoutes          = require('./routes/demo.routes')
 const apiKeysRoutes       = require('./routes/apiKeys.routes')
 const publicApiRoutes     = require('./routes/publicApi.routes')
 const analyticsRoutes     = require('./routes/analytics.routes')
@@ -140,6 +141,7 @@ app.use('/api',                quickRepliesRoutes)
 app.use('/api',                crmRoutes)
 app.use('/api',                contactsRoutes)
 app.use('/api',                subscriptionsRoutes)
+app.use('/api',                demoRoutes)
 app.use('/api',                apiKeysRoutes)
 app.use('/api',                publicApiRoutes)
 app.use('/api',                analyticsRoutes)
@@ -725,6 +727,32 @@ app.use('/api',                webhookRoutes)
        created_at                        BIGINT,
        updated_at                        BIGINT,
        UNIQUE KEY uniq_sub_acc (account_id)
+     )`,
+    // ── Antifraude Demo: registro/auditoría de intentos + excepciones del superadmin ──
+    `CREATE TABLE IF NOT EXISTS demo_registrations (
+       id          VARCHAR(50) PRIMARY KEY,
+       account_id  VARCHAR(50),
+       email       VARCHAR(150),
+       ip          VARCHAR(60),
+       fingerprint VARCHAR(120),
+       phone       VARCHAR(40),
+       result      VARCHAR(30),   -- created|created_override|blocked_email|blocked_ip|blocked_fingerprint|blocked_phone
+       reason      VARCHAR(200),
+       status      VARCHAR(20) DEFAULT 'active', -- active|expired|converted
+       created_at  BIGINT,
+       expires_at  BIGINT,
+       INDEX idx_dr_email (email), INDEX idx_dr_ip (ip),
+       INDEX idx_dr_fp (fingerprint), INDEX idx_dr_phone (phone), INDEX idx_dr_created (created_at)
+     )`,
+    `CREATE TABLE IF NOT EXISTS demo_overrides (
+       id         VARCHAR(50) PRIMARY KEY,
+       kind       VARCHAR(20),   -- email|ip|fingerprint|phone|global_ip_off
+       value      VARCHAR(150),
+       note       VARCHAR(200),
+       used       TINYINT(1) DEFAULT 0,
+       created_by VARCHAR(100),
+       created_at BIGINT,
+       INDEX idx_do_kind (kind, value)
      )`,
   ]
   for (const sql of migrations) {
