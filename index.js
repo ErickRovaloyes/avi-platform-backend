@@ -100,6 +100,7 @@ const mediaRoutes         = require('./routes/media.routes')
 const quickRepliesRoutes  = require('./routes/quickReplies.routes')
 const crmRoutes           = require('./routes/crm.routes')
 const contactsRoutes      = require('./routes/contacts.routes')
+const savedFiltersRoutes  = require('./routes/savedFilters.routes')
 const n8nRoutes           = require('./routes/n8nIntegrations.routes')
 const apiKeysRoutes       = require('./routes/apiKeys.routes')
 const publicApiRoutes     = require('./routes/publicApi.routes')
@@ -122,6 +123,7 @@ app.use('/api',               agentRoutes)
 app.use('/api',               memberRoutes)
 app.use('/api',               pipelineRoutes)
 app.use('/api',               resourceRoutes)
+app.use('/api',               savedFiltersRoutes)
 app.use('/api/conversations',  conversationRoutes)
 app.use('/api/teamchat',       teamchatRoutes)
 app.use('/api/support',        supportRoutes)
@@ -662,6 +664,18 @@ app.use('/api',                webhookRoutes)
        name        VARCHAR(120),
        created_at  BIGINT,
        INDEX idx_sticker_acc (account_id)
+     )`,
+    // Filtros guardados del inbox: globales (toda la cuenta, sólo el owner) o
+    // personales (por miembro). payload guarda la definición del filtro.
+    `CREATE TABLE IF NOT EXISTS saved_filters (
+       id          VARCHAR(50) PRIMARY KEY,
+       account_id  VARCHAR(50) NOT NULL,
+       owner_id    VARCHAR(50),
+       scope       VARCHAR(10) DEFAULT 'personal',  -- global | personal
+       name        VARCHAR(120) NOT NULL,
+       payload     JSON,
+       created_at  BIGINT,
+       INDEX idx_sf_acc (account_id)
      )`,
   ]
   for (const sql of migrations) {
