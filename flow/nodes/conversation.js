@@ -137,6 +137,37 @@ const conversationNodes = [
     },
   },
   {
+    type: 'send_whatsapp_template', category: 'conversation', label: 'Enviar plantilla WhatsApp',
+    async exec(node, ctx) {
+      const pool = require('../../db')
+      const { parseJ } = require('../../utils')
+      const { sendWhatsAppTemplate } = require('../../services/metaSend')
+      const store = require('../store')
+      const tplName = (node.data?.template || '').trim()
+      if (!tplName) throw new Error('Falta el nombre de la plantilla')
+      const [[conv]] = await pool.query('SELECT channel_type, channel_id, wa_from FROM conversations WHERE id=? AND account_id=?', [ctx.convId, ctx.accId])
+      if (!conv || conv.channel_type !== 'whatsapp' || !conv.wa_from) throw new Error('La conversación no es de WhatsApp')
+      const [[ag]] = await pool.query('SELECT channels FROM agents WHERE id=? AND account_id=?', [ctx.agId, ctx.accId])
+      const channels = parseJ(ag?.channels, [])
+      const cfg = (channels.find(c => c.id === conv.channel_id) || channels.find(c => c.type === 'whatsapp'))?.config || {}
+      if (!cfg.phoneNumberId || !cfg.accessToken) throw new Error('Canal WhatsApp sin configurar')
+      const params = String(node.data?.params || '').split('\n').map(p => p.trim()).filter(Boolean)
+        .map(tok => ({ type: 'text', text: interpolate(tok, ctx.variables) }))
+      const components = params.length ? [{ type: 'body', parameters: params }] : []
+      const r = await sendWhatsAppTemplate({
+        phoneNumberId: cfg.phoneNumberId, accessToken: cfg.accessToken,
+        to: conv.wa_from, templateName: tplName, languageCode: node.data?.language || 'es', components,
+      })
+      const wamid = r?.messages?.[0]?.id || null
+      await store.appendMsg(ctx.accId, ctx.agId, ctx.convId, {
+        role: 'assistant', sender: 'ai', content: `📋 Plantilla: ${tplName}`, ts: Date.now(),
+        fromFlow: true, fromTemplate: true, templateName: tplName,
+        ...(wamid ? { waMessageId: wamid, status: 'sent' } : {}),
+      })
+      logDebug(ctx, 'flow_run', `📋 Plantilla WhatsApp enviada: ${tplName}`, { to: conv.wa_from })
+    },
+  },
+  {
     type: 'confirmation', category: 'conversation', label: 'Confirmación',
     async exec(node, ctx) {
       const text = interpolate(node.data?.pregunta || '¿Confirmas?', ctx.variables)

@@ -101,6 +101,7 @@ const quickRepliesRoutes  = require('./routes/quickReplies.routes')
 const crmRoutes           = require('./routes/crm.routes')
 const contactsRoutes      = require('./routes/contacts.routes')
 const savedFiltersRoutes  = require('./routes/savedFilters.routes')
+const campaignsRoutes     = require('./routes/campaigns.routes')
 const n8nRoutes           = require('./routes/n8nIntegrations.routes')
 const apiKeysRoutes       = require('./routes/apiKeys.routes')
 const publicApiRoutes     = require('./routes/publicApi.routes')
@@ -124,6 +125,7 @@ app.use('/api',               memberRoutes)
 app.use('/api',               pipelineRoutes)
 app.use('/api',               resourceRoutes)
 app.use('/api',               savedFiltersRoutes)
+app.use('/api',               campaignsRoutes)
 app.use('/api/conversations',  conversationRoutes)
 app.use('/api/teamchat',       teamchatRoutes)
 app.use('/api/support',        supportRoutes)
@@ -677,6 +679,23 @@ app.use('/api',                webhookRoutes)
        created_at  BIGINT,
        INDEX idx_sf_acc (account_id)
      )`,
+    // Mensajes masivos: una campaña ejecuta un FLUJO (que lleva la plantilla) sobre
+    // una audiencia filtrada, opcionalmente programada para una fecha.
+    `CREATE TABLE IF NOT EXISTS campaigns (
+       id           VARCHAR(50) PRIMARY KEY,
+       account_id   VARCHAR(50) NOT NULL,
+       agent_id     VARCHAR(50),
+       name         VARCHAR(150),
+       channel      VARCHAR(20) DEFAULT 'whatsapp',
+       flow_id      VARCHAR(50),
+       audience     JSON,
+       scheduled_at BIGINT,
+       status       VARCHAR(20) DEFAULT 'draft',  -- draft|scheduled|sending|done|cancelled
+       stats        JSON,
+       sent_at      BIGINT,
+       created_at   BIGINT,
+       INDEX idx_camp_acc (account_id)
+     )`,
   ]
   for (const sql of migrations) {
     try { await pool.query(sql) } catch (e) { /* column exists or unsupported */ }
@@ -690,6 +709,8 @@ app.use('/api',                webhookRoutes)
   } catch {}
   // Bucle de recordatorios de citas por WhatsApp
   try { require('./services/calendarReminders').start() } catch (e) { console.warn('[reminders] no iniciado:', e.message) }
+  // Worker de mensajes masivos: procesa campañas programadas vencidas.
+  try { require('./services/campaigns').startWorker() } catch (e) { console.warn('[campaigns] worker no iniciado:', e.message) }
   // Procesador del outbox de eventos de dominio (Core Booking Engine, Fase 0)
   try { require('./core/events').startProcessor() } catch (e) { console.warn('[events] no iniciado:', e.message) }
   // Worker que libera los holds (bloqueos de asiento) vencidos — Cine (Fase 3)
