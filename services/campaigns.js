@@ -56,7 +56,7 @@ async function runCampaign(campaignId) {
             message: '', _campaign: c.name || '',
             cliente_nombre: ct.name || '', cliente_telefono: ct.phone, contact_id: ct.id,
           }
-          await engine.executeFlow({ flowId, accId, agId, convId, triggerContext, triggeredBy: { type: 'campaign' }, outbound })
+          await engine.executeFlow({ flowId, accId, agId, convId, triggerContext, triggeredBy: { type: 'campaign', campaignId: c.id }, outbound })
           sent++
         } catch (e) { failed++; console.warn('[campaign]', ct.phone, e.message) }
         await new Promise(r => setTimeout(r, 350)) // respiro anti rate-limit de Meta
@@ -66,7 +66,9 @@ async function runCampaign(campaignId) {
     console.error('[runCampaign]', e.message)
   }
   await pool.query('UPDATE campaigns SET status=?, stats=?, sent_at=? WHERE id=?',
-    ['done', JSON.stringify({ total, sent, failed }), Date.now(), campaignId])
+    ['done', JSON.stringify({ total, sent, failed, delivered: 0, read: 0, responded: 0 }), Date.now(), campaignId])
+  // Primer recálculo (los webhooks de estado irán actualizando entregados/leídos).
+  try { await store.recountCampaignStats(campaignId) } catch {}
   return { total, sent, failed }
 }
 

@@ -54,6 +54,50 @@ const sendNow = async (req, res) => {
   } catch (err) { res.status(500).json({ error: 'Error interno' }) }
 }
 
+// Editar una campaña que aún NO se ha enviado (borrador o programada).
+const update = async (req, res) => {
+  const { accId, id } = req.params
+  const { name, flowId, audience, scheduledAt } = req.body || {}
+  try {
+    const [[c]] = await pool.query('SELECT status FROM campaigns WHERE id=? AND account_id=?', [id, accId])
+    if (!c) return res.status(404).json({ error: 'Campaña no encontrada' })
+    if (!['draft', 'scheduled'].includes(c.status)) {
+      return res.status(409).json({ error: 'Solo se pueden editar campañas en borrador o programadas' })
+    }
+    const sets = [], vals = []
+    if (name !== undefined)     { sets.push('name=?');         vals.push(name) }
+    if (flowId !== undefined)   { sets.push('flow_id=?');      vals.push(flowId) }
+    if (audience !== undefined) { sets.push('audience=?');     vals.push(JSON.stringify(audience || {})) }
+    if (scheduledAt !== undefined) {
+      sets.push('scheduled_at=?'); vals.push(scheduledAt || null)
+      sets.push('status=?');       vals.push(scheduledAt ? 'scheduled' : 'draft')
+    }
+    if (!sets.length) return res.json({ ok: true })
+    vals.push(id, accId)
+    await pool.query(`UPDATE campaigns SET ${sets.join(',')} WHERE id=? AND account_id=?`, vals)
+    socket.emit(accId, 'account:updated', { accId })
+    res.json({ ok: true })
+  } catch (err) { console.error('[campaigns update]', err); res.status(500).json({ error: 'Error interno' }) }
+}
+
+// Reenviar: clona la campaña como una nueva y la envía de inmediato (conserva el historial).
+const resend = async (req, res) => {
+  const { accId, id } = req.params
+  try {
+    const [[c]] = await pool.query('SELECT * FROM campaigns WHERE id=? AND account_id=?', [id, accId])
+    if (!c) return res.status(404).json({ error: 'Campaña no encontrada' })
+    const newId = 'camp_' + uid()
+    const newName = /\(reenv/i.test(c.name || '') ? c.name : `${c.name} (reenvío)`
+    await pool.query(
+      'INSERT INTO campaigns (id,account_id,agent_id,name,channel,flow_id,audience,scheduled_at,status,created_at) VALUES (?,?,?,?,?,?,?,?,?,?)',
+      [newId, accId, c.agent_id, newName, c.channel, c.flow_id, c.audience, null, 'sending', Date.now()]
+    )
+    campaigns.runCampaign(newId).then(() => socket.emit(accId, 'account:updated', { accId })).catch(e => console.warn('[resend]', e.message))
+    socket.emit(accId, 'account:updated', { accId })
+    res.json({ ok: true, id: newId, started: true })
+  } catch (err) { console.error('[campaigns resend]', err); res.status(500).json({ error: 'Error interno' }) }
+}
+
 const cancel = async (req, res) => {
   const { accId, id } = req.params
   try {
@@ -72,4 +116,4 @@ const remove = async (req, res) => {
   } catch (err) { res.status(500).json({ error: 'Error interno' }) }
 }
 
-module.exports = { list, preview, create, sendNow, cancel, remove }
+module.exports = { list, preview, create, sendNow, update, resend, cancel, remove }

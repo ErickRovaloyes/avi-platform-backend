@@ -54,6 +54,7 @@ async function sendBotMsg(ctx, content, metadata = {}) {
     ...(providerMsgId ? { waMessageId: providerMsgId } : {}),
     ...(status ? { status } : {}),
     ...(sendError ? { sendError } : {}),
+    ...(ctx?._campaignId ? { campaignId: ctx._campaignId } : {}),
     ...metadata,
   })
   // Traza para el modo debug: qué mensaje se envió (texto o tipo de media)

@@ -36,6 +36,9 @@ async function executeFlow({ flowId, accId, agId, convId, triggerContext = {}, t
       visited: new Set(),
       _trace: trace,
       _outbound: outbound,
+      // Si el flujo lo dispara una campaña, marcamos los mensajes salientes con
+      // su id para poder medir entregados/leídos/respondidos por campaña.
+      _campaignId: triggeredBy?.campaignId || null,
     }
     logDebug(accId, agId, convId, 'flow_start', flow.name || 'Flujo', { trigger: flow.trigger, flowId })
     await runNode(flow.startNodeId, ctx)

@@ -120,6 +120,43 @@ async function updateMessageStatus(wamid, status) {
     socket.emit(c.account_id, 'message:status', { accId: c.account_id, agId: c.agent_id, convId: m.conversation_id, messageId: m.id, status })
     socket.emitToConv(m.conversation_id, 'message:status', { convId: m.conversation_id, messageId: m.id, status })
   }
+  // Si el mensaje pertenece a una campaña, recalculamos sus métricas (entregados/leídos).
+  if (meta.campaignId) { recountCampaignStats(meta.campaignId).catch(() => {}) }
+}
+
+// Recalcula las métricas de una campaña a partir del estado de sus mensajes
+// salientes (sent/delivered/read/failed) y cuántos destinatarios respondieron.
+async function recountCampaignStats(campaignId) {
+  const [[camp]] = await pool.query('SELECT account_id, stats, sent_at FROM campaigns WHERE id=?', [campaignId])
+  if (!camp) return
+  const [msgs] = await pool.query(
+    "SELECT conversation_id, ts, JSON_UNQUOTE(JSON_EXTRACT(metadata,'$.status')) AS st " +
+    "FROM messages WHERE JSON_UNQUOTE(JSON_EXTRACT(metadata,'$.campaignId'))=?",
+    [String(campaignId)]
+  )
+  let delivered = 0, read = 0, sentOk = 0, failed = 0
+  const convs = new Map() // convId → ts del envío de campaña
+  for (const m of msgs) {
+    if (!convs.has(m.conversation_id)) convs.set(m.conversation_id, m.ts)
+    if (m.st === 'read') { read++; delivered++; sentOk++ }
+    else if (m.st === 'delivered') { delivered++; sentOk++ }
+    else if (m.st === 'failed') { failed++ }
+    else { sentOk++ } // 'sent' o sin estado aún
+  }
+  // Respondieron: conversaciones de la campaña con un mensaje entrante posterior al envío.
+  let responded = 0
+  for (const [convId, baseTs] of convs) {
+    const [[r]] = await pool.query(
+      "SELECT COUNT(*) AS n FROM messages WHERE conversation_id=? AND sender='user' AND ts>?",
+      [convId, baseTs || camp.sent_at || 0]
+    )
+    if (r && r.n > 0) responded++
+  }
+  let prev = {}
+  try { prev = JSON.parse(camp.stats || '{}') || {} } catch {}
+  const stats = { ...prev, sent: prev.sent ?? sentOk, delivered, read, responded, failed: prev.failed ?? failed }
+  await pool.query('UPDATE campaigns SET stats=? WHERE id=?', [JSON.stringify(stats), campaignId])
+  socket.emit(camp.account_id, 'account:updated', { accId: camp.account_id })
 }
 
 // ── Update conversation (labels, ai toggle, flowRunning, assignedTo, etc) ───
@@ -233,5 +270,5 @@ module.exports = {
   loadAccount, readConvos, appendMsg, updateConvo, setLocalVar, appendDebugEntry,
   createOrGetWhatsAppConvo, createOrGetMessengerConvo, createOrGetInstagramConvo,
   recordTokenUsage, messageExistsByProviderId, updateMessageStatus,
-  saveExecution, getMediaBytes, getMessageByProviderId,
+  saveExecution, getMediaBytes, getMessageByProviderId, recountCampaignStats,
 }
