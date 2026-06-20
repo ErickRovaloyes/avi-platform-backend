@@ -82,6 +82,16 @@ const createChannel = async (req, res) => {
     if (!ag) return res.status(404).json({ error: 'Agente no encontrado' })
     const channels = parseJ(ag.channels, [])
     const newCh = { id: 'ch_' + uid(), createdAt: Date.now(), ...req.body }
+    // Límite de canales por tipo de cuenta (cuenta entre TODOS los agentes).
+    try {
+      const type = newCh.type
+      if (type) {
+        const [agents] = await pool.query('SELECT channels FROM agents WHERE account_id=?', [accId])
+        const used = agents.reduce((n, a) => n + parseJ(a.channels, []).filter(c => c.type === type).length, 0)
+        const gate = await require('../services/subscriptions').channelGate(accId, type, used)
+        if (!gate.allowed) return res.status(403).json({ error: gate.message })
+      }
+    } catch (e) { /* sin suscripción → sin límite */ }
     channels.push(newCh)
     await pool.query('UPDATE agents SET channels=? WHERE id=?', [JSON.stringify(channels), agId])
     socket.emit(accId, 'account:updated', { accId })

@@ -357,6 +357,26 @@ const aiNodes = [
   {
     type: 'ai_agent', category: 'ai', label: 'Agente IA',
     async exec(node, ctx) {
+      // Enforcement de suscripción: límites Demo (7d/100/30), mensuales, gracia,
+      // suspensión. Si la cuenta está bloqueada, enviamos el mensaje del límite y
+      // detenemos el flujo (no se genera respuesta de IA ni se consume).
+      try {
+        const subs = require('../../services/subscriptions')
+        const gate = await subs.assistantGate(ctx.accId, ctx.convId)
+        if (!gate.allowed) {
+          // El mensaje de límite se envía UNA sola vez por conversación (evita spam).
+          const already = ctx.variables?._limitNotified
+          if (!already) {
+            await sendBotMsg(ctx, gate.message)
+            await setVarBoth(ctx, '_limitNotified', '1')
+          }
+          if (gate.closeConv) await subs.closeConversation(ctx.accId, ctx.convId)
+          logDebug(ctx, 'flow_run', '🚫 Límite de suscripción alcanzado', { message: gate.message })
+          ctx._suppressDefaultNext = true
+          return
+        }
+      } catch (e) { logDebug(ctx, 'error', `enforcement no disponible: ${e.message}`, {}) }
+
       const mode = node.data?.promptMode || 'inline'
       let systemPrompt = ''
       let model = node.data?.modelo || 'gpt-4o-mini'

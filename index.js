@@ -102,6 +102,7 @@ const crmRoutes           = require('./routes/crm.routes')
 const contactsRoutes      = require('./routes/contacts.routes')
 const savedFiltersRoutes  = require('./routes/savedFilters.routes')
 const campaignsRoutes     = require('./routes/campaigns.routes')
+const subscriptionsRoutes = require('./routes/subscriptions.routes')
 const apiKeysRoutes       = require('./routes/apiKeys.routes')
 const publicApiRoutes     = require('./routes/publicApi.routes')
 const analyticsRoutes     = require('./routes/analytics.routes')
@@ -138,6 +139,7 @@ app.use('/api',                mediaRoutes)
 app.use('/api',                quickRepliesRoutes)
 app.use('/api',                crmRoutes)
 app.use('/api',                contactsRoutes)
+app.use('/api',                subscriptionsRoutes)
 app.use('/api',                apiKeysRoutes)
 app.use('/api',                publicApiRoutes)
 app.use('/api',                analyticsRoutes)
@@ -679,6 +681,51 @@ app.use('/api',                webhookRoutes)
        created_at   BIGINT,
        INDEX idx_camp_acc (account_id)
      )`,
+    // ── Suscripciones: tipos de cuenta, planes mensuales y suscripción por cuenta ──
+    `CREATE TABLE IF NOT EXISTS account_types (
+       id                                    VARCHAR(50) PRIMARY KEY,
+       name                                  VARCHAR(80) NOT NULL,
+       max_webchat_channels                  INT DEFAULT 1,
+       max_whatsapp_channels                 INT DEFAULT 1,
+       max_test_channels                     INT DEFAULT 1,
+       max_messenger_channels                INT DEFAULT 0,
+       max_instagram_channels                INT DEFAULT 0,
+       is_demo                               TINYINT(1) DEFAULT 0,
+       demo_days_duration                    INT DEFAULT 7,
+       demo_max_conversations                INT DEFAULT 100,
+       demo_max_ai_responses_per_conversation INT DEFAULT 30,
+       sort_order                            INT DEFAULT 0,
+       created_at                            BIGINT,
+       updated_at                            BIGINT
+     )`,
+    `CREATE TABLE IF NOT EXISTS subscription_plans (
+       id                         VARCHAR(50) PRIMARY KEY,
+       name                       VARCHAR(80) NOT NULL,
+       monthly_conversation_limit INT DEFAULT 0,
+       is_custom_limit            TINYINT(1) DEFAULT 0,
+       grace_period_days          INT DEFAULT 5,
+       sort_order                 INT DEFAULT 0,
+       created_at                 BIGINT,
+       updated_at                 BIGINT
+     )`,
+    `CREATE TABLE IF NOT EXISTS account_subscriptions (
+       id                                VARCHAR(50) PRIMARY KEY,
+       account_id                        VARCHAR(50) NOT NULL,
+       account_type_id                   VARCHAR(50),
+       subscription_plan_id              VARCHAR(50),
+       custom_monthly_limit              INT DEFAULT NULL,   -- Enterprise: límite definido por cuenta
+       conversation_count_current_period INT DEFAULT 0,
+       current_period_start              BIGINT,
+       current_period_end                BIGINT,
+       grace_until                       BIGINT DEFAULT NULL,
+       demo_started_at                   BIGINT DEFAULT NULL,
+       demo_expires_at                   BIGINT DEFAULT NULL,
+       last_alert_threshold              INT DEFAULT 0,      -- 0|80|90|100 (anti-duplicado de alertas)
+       status                            VARCHAR(20) DEFAULT 'active', -- active|grace|suspended|expired
+       created_at                        BIGINT,
+       updated_at                        BIGINT,
+       UNIQUE KEY uniq_sub_acc (account_id)
+     )`,
   ]
   for (const sql of migrations) {
     try { await pool.query(sql) } catch (e) { /* column exists or unsupported */ }
@@ -690,6 +737,13 @@ app.use('/api',                webhookRoutes)
       [JSON.stringify({ basic: 50000, medium: 30000, complex: 15000 })]
     )
   } catch {}
+  // Suscripciones: siembra tipos de cuenta y planes por defecto + arranca el worker
+  // (vencimiento de demos, reinicio mensual, periodos de gracia, suspensiones, alertas).
+  try {
+    const subs = require('./services/subscriptions')
+    await subs.seedDefaults()
+    subs.startWorker()
+  } catch (e) { console.warn('[subscriptions] no iniciado:', e.message) }
   // Bucle de recordatorios de citas por WhatsApp
   try { require('./services/calendarReminders').start() } catch (e) { console.warn('[reminders] no iniciado:', e.message) }
   // Worker de mensajes masivos: procesa campañas programadas vencidas.

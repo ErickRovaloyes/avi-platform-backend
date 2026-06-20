@@ -122,6 +122,7 @@ const createConvo = async (req, res) => {
        waFrom || null, messengerFrom || null, igFrom || null,
        initials, '', 0, 1, '[]', '[]', JSON.stringify(localVars), '[]', ts, ts]
     )
+    try { require('../services/subscriptions').incrementConversation(accId) } catch {}
     socket.emit(accId, 'convos:updated', { accId, agId })
     res.json({ id })
   } catch (err) {
@@ -414,6 +415,8 @@ async function createOrGetSocialConvo(accId, agId, lookupCol, lookupVal, guestNa
   cols[lookupCol] = lookupVal
   const keys = Object.keys(cols); const vals = Object.values(cols)
   await pool.query(`INSERT INTO conversations (${keys.join(',')}) VALUES (${keys.map(() => '?').join(',')})`, vals)
+  // Suma 1 al consumo de conversaciones de la suscripción (límites demo/mensuales).
+  try { require('../services/subscriptions').incrementConversation(accId) } catch {}
   return id
 }
 
