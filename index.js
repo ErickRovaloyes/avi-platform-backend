@@ -102,7 +102,6 @@ const crmRoutes           = require('./routes/crm.routes')
 const contactsRoutes      = require('./routes/contacts.routes')
 const savedFiltersRoutes  = require('./routes/savedFilters.routes')
 const campaignsRoutes     = require('./routes/campaigns.routes')
-const n8nRoutes           = require('./routes/n8nIntegrations.routes')
 const apiKeysRoutes       = require('./routes/apiKeys.routes')
 const publicApiRoutes     = require('./routes/publicApi.routes')
 const analyticsRoutes     = require('./routes/analytics.routes')
@@ -139,7 +138,6 @@ app.use('/api',                mediaRoutes)
 app.use('/api',                quickRepliesRoutes)
 app.use('/api',                crmRoutes)
 app.use('/api',                contactsRoutes)
-app.use('/api',                n8nRoutes)
 app.use('/api',                apiKeysRoutes)
 app.use('/api',                publicApiRoutes)
 app.use('/api',                analyticsRoutes)
@@ -168,20 +166,6 @@ app.use('/api',                webhookRoutes)
     "ALTER TABLE accounts          ADD COLUMN anthropic_key TEXT",
     "ALTER TABLE platform_settings ADD COLUMN media_max_size_mb INT DEFAULT 30",
     "ALTER TABLE platform_settings ADD COLUMN prompt_generator_max_file_mb INT DEFAULT 30",
-    `CREATE TABLE IF NOT EXISTS n8n_integrations (
-       id          VARCHAR(50) PRIMARY KEY,
-       scope       VARCHAR(20),
-       account_id  VARCHAR(50),
-       name        VARCHAR(100),
-       webhook_url TEXT,
-       auth_type   VARCHAR(20) DEFAULT 'none',
-       auth_value  TEXT,
-       sync_mode   VARCHAR(20) DEFAULT 'fire_forget',
-       timeout_ms  INT DEFAULT 15000,
-       created_by  VARCHAR(100),
-       created_at  BIGINT,
-       INDEX idx_scope (scope, account_id)
-     )`,
     `CREATE TABLE IF NOT EXISTS api_keys (
        id          VARCHAR(50) PRIMARY KEY,
        account_id  VARCHAR(50) NOT NULL,
@@ -243,7 +227,6 @@ app.use('/api',                webhookRoutes)
        INDEX idx_gsheets_acc (account_id)
      )`,
     "ALTER TABLE ai_tools ADD COLUMN action_type VARCHAR(20) DEFAULT 'variable'",
-    "ALTER TABLE ai_tools ADD COLUMN n8n_integration_id VARCHAR(50)",
     "ALTER TABLE conversations     ADD COLUMN assigned_to JSON",
     `CREATE TABLE IF NOT EXISTS crm_notes (
        id          VARCHAR(50) PRIMARY KEY,

@@ -99,7 +99,7 @@ const dataNodes = [
   {
     // Código JS — corre EN EL SERVIDOR. Se ocultan globals peligrosas (process,
     // require, etc.) como mitigación; aun así solo debe usarse con flujos de
-    // confianza. Para lógica externa preferir HTTP request / Webhook N8N.
+    // confianza. Para lógica externa preferir un nodo HTTP request.
     type: 'custom_code', category: 'data', label: 'Código JS', timeoutMs: 5000,
     async exec(node, ctx) {
       const code = String(node.data?.codigo || '')

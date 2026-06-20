@@ -33,8 +33,11 @@ const PROVIDERS = {
   deepseek: {
     id: 'deepseek', name: 'DeepSeek', baseUrl: 'https://api.deepseek.com/v1',
     models: [
-      { id: 'deepseek-v4-pro',   name: 'DeepSeek V4 Pro',       supportsTools: true, supportsStream: true,  contextWindow: 128000 },
-      { id: 'deepseek-v4-flash', name: 'DeepSeek V4 Flash',     supportsTools: true, supportsStream: true,  contextWindow: 128000 },
+      // V4 son etiquetas de la plataforma; la API de DeepSeek solo acepta
+      // 'deepseek-chat'/'deepseek-reasoner', así que apiModel resuelve al
+      // endpoint real (deepseek-chat soporta function-calling de forma fiable).
+      { id: 'deepseek-v4-pro',   name: 'DeepSeek V4 Pro',       apiModel: 'deepseek-chat', supportsTools: true, supportsStream: true,  contextWindow: 128000 },
+      { id: 'deepseek-v4-flash', name: 'DeepSeek V4 Flash',     apiModel: 'deepseek-chat', supportsTools: true, supportsStream: true,  contextWindow: 128000 },
       { id: 'deepseek-chat',     name: 'DeepSeek V3.2 (Chat)',   supportsTools: true, supportsStream: true,  contextWindow: 128000 },
       { id: 'deepseek-reasoner', name: 'DeepSeek R1 (Reasoner)', supportsTools: true, supportsStream: true, isReasoning: true, contextWindow: 128000 },
     ],
@@ -135,6 +138,8 @@ async function chat({ provider = 'openai', model, apiKey, messages, tools = [], 
 
   const providerConfig = getProvider(provider)
   const modelConfig    = getModel(provider, model)
+  // Algunos ids son etiquetas de la plataforma; resolvemos al modelo real de la API.
+  const apiModel       = modelConfig.apiModel || model
   if (!apiKey) throw new Error(`NO_KEY:${provider}`)
 
   const useTools = tools.length > 0 && modelConfig.supportsTools
@@ -143,7 +148,7 @@ async function chat({ provider = 'openai', model, apiKey, messages, tools = [], 
   if (provider === 'anthropic') {
     const systemPrompt = messages.find(m => m.role === 'system')?.content || ''
     const history = messages.filter(m => m.role !== 'system')
-    const body = buildAnthropicBody({ model, systemPrompt, history, tools: useTools ? tools : [], advanced: adv })
+    const body = buildAnthropicBody({ model: apiModel, systemPrompt, history, tools: useTools ? tools : [], advanced: adv })
     const res = await fetch(`${providerConfig.baseUrl}/messages`, {
       method: 'POST',
       headers: {
@@ -173,7 +178,7 @@ async function chat({ provider = 'openai', model, apiKey, messages, tools = [], 
   }
 
   // ── OpenAI / DeepSeek branch ───────────────────────────────────────────
-  const body = buildOpenAIBody({ model, messages, tools: useTools ? tools : [], modelConfig, advanced: adv, provider })
+  const body = buildOpenAIBody({ model: apiModel, messages, tools: useTools ? tools : [], modelConfig, advanced: adv, provider })
   const res = await fetch(`${providerConfig.baseUrl}/chat/completions`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${apiKey}` },

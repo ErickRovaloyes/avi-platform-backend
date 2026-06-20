@@ -57,7 +57,7 @@ alias('openai',  'ai_chat',      node => ({ ...node, data: { ...node.data, promp
 alias('condition', 'if',         node => ({ ...node, data: { campo: `{{${node.data?.variableId || node.data?.variableName || ''}}}`, operador: '==', valor: node.data?.equals || '' } }))
 
 // ── Stubs benignos para nodos aún no implementados (calendario) ──────────────
-// El calendario requiere conectar Google/Outlook o un Webhook N8N; por ahora
+// El calendario requiere conectar Google/Outlook o un HTTP request; por ahora
 // estos nodos no rompen el flujo (se omiten). El resto de categorías ya está
 // migrado (conversation, ai, control, knowledge, human, integrations, data,
 // memory, crm, analytics).

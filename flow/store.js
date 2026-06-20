@@ -14,7 +14,6 @@ const { uid, parseJ } = require('../utils')
 const { loadPublicAccount } = require('../controllers/accounts.controller')
 const { createOrGetSocialConvo } = require('../controllers/conversations.controller')
 const { recordUsageInternal } = require('../controllers/analytics.controller')
-const { callN8N } = require('../services/n8n')
 
 const mapConvo = (c, messages = []) => ({
   id: c.id, guestName: c.guest_name, guestId: c.guest_id,
@@ -199,11 +198,6 @@ function recordTokenUsage(accId, { agentId, conversationId, provider, model, pro
   return recordUsageInternal({ accId, agentId, conversationId, provider, model, promptTokens, completionTokens, source }).catch(() => {})
 }
 
-// ── N8N dispatch ────────────────────────────────────────────────────────────
-async function dispatchN8N(integrationId, payload, opts = {}) {
-  return callN8N({ integrationId, accountId: payload?._meta?.accountId, payload, forceSync: !!opts.forceSync })
-}
-
 // Resuelve un mensaje por su id de proveedor (wamid / providerMsgId) → contenido
 // legible. Lo usa la función de "responder/citar": cuando el cliente cita un
 // mensaje anterior, recuperamos su texto para dárselo de contexto al asistente.
@@ -238,6 +232,6 @@ async function getMediaBytes(accId, mediaId) {
 module.exports = {
   loadAccount, readConvos, appendMsg, updateConvo, setLocalVar, appendDebugEntry,
   createOrGetWhatsAppConvo, createOrGetMessengerConvo, createOrGetInstagramConvo,
-  recordTokenUsage, dispatchN8N, messageExistsByProviderId, updateMessageStatus,
+  recordTokenUsage, messageExistsByProviderId, updateMessageStatus,
   saveExecution, getMediaBytes, getMessageByProviderId,
 }

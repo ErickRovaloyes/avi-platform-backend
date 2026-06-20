@@ -1,7 +1,7 @@
 'use strict'
 /**
- * Public API v1 — endpoints exposed to external systems (N8N, Zapier, etc.)
- * via the X-AVI-Key authentication scheme.
+ * Public API v1 — endpoints exposed to external systems (Zapier, Make, custom
+ * integrations, etc.) via the X-AVI-Key authentication scheme.
  *
  * Every handler in here trusts req.user.accountId from the API key auth and
  * delegates to existing internal controllers — no duplicated business logic.
@@ -117,7 +117,7 @@ const assignConversation = async (req, res) => {
 }
 
 // ── GET /api/v1/conversations ───────────────────────────────────────────────
-// Lightweight listing — useful for n8n to look up which conversation to message.
+// Lightweight listing — useful for external systems to look up which conversation to message.
 const listConversations = async (req, res) => {
   const accId = req.user.accountId
   const { limit = 50, channel, search } = req.query

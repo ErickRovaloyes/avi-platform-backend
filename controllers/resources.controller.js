@@ -46,12 +46,12 @@ const deleteVariable = async (req, res) => {
 
 const createAITool = async (req, res) => {
   const { accId } = req.params
-  const { id: gId, name, description, collectFields = [], flowId = null, actionType = 'variable', n8nIntegrationId = null } = req.body
+  const { id: gId, name, description, collectFields = [], flowId = null, actionType = 'variable' } = req.body
   const id = gId || ('tool_' + uid())
   try {
     await pool.query(
-      'INSERT INTO ai_tools (id,account_id,name,description,collect_fields,flow_id,action_type,n8n_integration_id) VALUES (?,?,?,?,?,?,?,?)',
-      [id, accId, name, description, JSON.stringify(collectFields), flowId, actionType, n8nIntegrationId]
+      'INSERT INTO ai_tools (id,account_id,name,description,collect_fields,flow_id,action_type) VALUES (?,?,?,?,?,?,?)',
+      [id, accId, name, description, JSON.stringify(collectFields), flowId, actionType]
     )
     socket.emit(accId, 'account:updated', { accId })
     res.json({ id })
@@ -60,7 +60,7 @@ const createAITool = async (req, res) => {
 
 const updateAITool = async (req, res) => {
   const { accId, toolId } = req.params
-  const { name, description, collectFields, flowId, actionType, n8nIntegrationId } = req.body
+  const { name, description, collectFields, flowId, actionType } = req.body
   try {
     const sets = []; const vals = []
     if (name             !== undefined) { sets.push('name=?');               vals.push(name) }
@@ -68,7 +68,6 @@ const updateAITool = async (req, res) => {
     if (collectFields    !== undefined) { sets.push('collect_fields=?');     vals.push(JSON.stringify(collectFields)) }
     if (flowId           !== undefined) { sets.push('flow_id=?');            vals.push(flowId) }
     if (actionType       !== undefined) { sets.push('action_type=?');        vals.push(actionType) }
-    if (n8nIntegrationId !== undefined) { sets.push('n8n_integration_id=?'); vals.push(n8nIntegrationId) }
     if (!sets.length) return res.json({ ok: true })
     vals.push(toolId, accId)
     await pool.query(`UPDATE ai_tools SET ${sets.join(',')} WHERE id=? AND account_id=?`, vals)
