@@ -341,13 +341,28 @@ const aiNodes = [
           (u ? `Mensaje del usuario: ${u}` : 'El usuario no escribió texto; responde basándote en el mensaje citado.')
       }
 
+      // Auto-RAG: si el agente tiene base de conocimiento activa, recupera el
+      // contexto relevante y lo añade al system prompt. Los embeddings usan la key
+      // EFECTIVA de OpenAI (cuenta o plataforma), así que funciona con cualquier
+      // proveedor de chat — incluido DeepSeek, que no tiene embeddings propios.
+      let sysWithRag = sys
+      try {
+        const ag = ctx.account?.agents?.find(a => a.id === ctx.agId)
+        if (ag?.rag?.enabled && ag.rag.files?.length && ctx.account?.openaiKey) {
+          const { buildRagContext } = require('../../services/rag')
+          const ragQuery = String(ctx.variables?._lastUserMessage || ctx.variables?.message || userMsg || '').slice(0, 1000)
+          const ragBlock = await buildRagContext(ragQuery, ctx.accId, ctx.agId, ctx.account.openaiKey)
+          if (ragBlock) { sysWithRag = `${sys}\n${ragBlock}`; logDebug(ctx, 'flow_run', '📚 Conocimiento (RAG) inyectado en el prompt', {}) }
+        }
+      } catch (e) { logDebug(ctx, 'error', `RAG no disponible: ${e.message}`, {}) }
+
       const history = await loadHistory(ctx)
       const toolDefs = buildToolDefs(assignedTools, ctx.account)
 
       let resolved = null
       let toolsInvoked = false
       const reply = await callAI(ctx, {
-        systemPrompt: sys,
+        systemPrompt: sysWithRag,
         userPrompt: userMsg || '(sin contexto del usuario, responde con un saludo)',
         model, provider, history, tools: toolDefs,
         onToolCall: (name, args) => execToolCall(ctx, assignedTools, name, args),
