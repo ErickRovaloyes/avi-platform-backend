@@ -250,7 +250,9 @@ async function callAI(ctx, { systemPrompt, userPrompt, model, provider, maxToken
     const canThread = prov !== 'anthropic'
     const convo = messages.slice()
     const executed = []
-    const MAX_ROUNDS = 4
+    // Headroom para varios triggers consecutivos (cada uno consume una ronda)
+    // + la respuesta final del modelo.
+    const MAX_ROUNDS = 6
     for (let round = 0; round < MAX_ROUNDS; round++) {
       const result = await chat({ provider: prov, model: finalModel, apiKey, messages: convo, tools, maxTokens, temperature, onUsage })
       if (typeof result === 'string') {
@@ -494,4 +496,4 @@ Responde SOLO JSON: {"intent":"<una de la lista>","confidence":0.0-1.0}`
   },
 ]
 
-module.exports = { aiNodes }
+module.exports = { aiNodes, callAI, execToolCall, buildToolDefs }
