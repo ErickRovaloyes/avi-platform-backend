@@ -136,10 +136,78 @@ const action = async (req, res) => {
   } catch (err) { console.error('[sub action]', err); res.status(500).json({ error: 'Error interno' }) }
 }
 
+// ── Dashboard de supervisión (superadmin) ─────────────────────────────────────
+const getOverview = async (req, res) => {
+  if (!requireSA(req, res)) return
+  const now = Date.now()
+  const DAY = 86400000
+  try {
+    const [accounts] = await pool.query('SELECT id,name,email,status,created_at FROM accounts')
+    const [subsRows] = await pool.query('SELECT * FROM account_subscriptions')
+    const types = await subs.listTypes()
+    const plans = await subs.listPlans()
+    const typeById = Object.fromEntries(types.map(t => [t.id, t]))
+    const planById = Object.fromEntries(plans.map(p => [p.id, p]))
+    const subByAcc = Object.fromEntries(subsRows.map(s => [s.account_id, s]))
+
+    const list = accounts.map(a => {
+      const s = subByAcc[a.id]
+      const type = s ? typeById[s.account_type_id] : null
+      const plan = s ? planById[s.subscription_plan_id] : null
+      const isDemo = !!type?.isDemo
+      const used = s?.conversation_count_current_period || 0
+      let limit = null
+      if (plan) limit = plan.isCustomLimit ? (s?.custom_monthly_limit ?? null) : (plan.monthlyConversationLimit || 0)
+      const pct = (limit && limit > 0) ? Math.round((used / limit) * 100) : null
+      return {
+        accId: a.id, name: a.name, email: a.email, createdAt: a.created_at, accountStatus: a.status,
+        hasSub: !!s, typeId: s?.account_type_id || null, typeName: type?.name || (s ? '—' : 'Sin asignar'), isDemo,
+        planId: s?.subscription_plan_id || null, planName: plan?.name || (isDemo ? 'Demo' : (s ? '—' : '')),
+        status: s?.status || (s ? 'active' : 'none'), used, limit, pct,
+        currentPeriodEnd: s?.current_period_end || null,
+        cycleDaysLeft: s?.current_period_end ? Math.max(0, Math.ceil((s.current_period_end - now) / DAY)) : null,
+        graceUntil: s?.grace_until || null,
+        graceDaysLeft: s?.grace_until ? Math.max(0, Math.ceil((s.grace_until - now) / DAY)) : null,
+        demoExpiresAt: s?.demo_expires_at || null,
+        demoDaysLeft: s?.demo_expires_at ? Math.max(0, Math.ceil((s.demo_expires_at - now) / DAY)) : null,
+        customMonthlyLimit: s?.custom_monthly_limit ?? null,
+      }
+    })
+    const isSuspended = x => x.status === 'suspended' || x.status === 'expired' || x.accountStatus === 'suspended'
+    const kpis = {
+      total: list.length,
+      active: list.filter(x => !isSuspended(x)).length,
+      suspended: list.filter(isSuspended).length,
+      demo: list.filter(x => x.isDemo).length,
+      paid: list.filter(x => x.hasSub && !x.isDemo).length,
+      noSub: list.filter(x => !x.hasSub).length,
+    }
+    const byType = {}, byPlan = {}
+    for (const x of list) if (x.hasSub) {
+      byType[x.typeName] = (byType[x.typeName] || 0) + 1
+      if (!x.isDemo && x.planName && x.planName !== '—') byPlan[x.planName] = (byPlan[x.planName] || 0) + 1
+    }
+    const statusBuckets = {
+      alDia: list.filter(x => x.status === 'active').length,
+      porVencer: list.filter(x => x.status === 'active' && !x.isDemo && x.cycleDaysLeft != null && x.cycleDaysLeft <= 7).length,
+      enGracia: list.filter(x => x.status === 'grace').length,
+      suspendidas: list.filter(x => x.status === 'suspended' || x.status === 'expired').length,
+      demoPorExpirar: list.filter(x => x.isDemo && x.status !== 'expired' && x.demoDaysLeft != null && x.demoDaysLeft <= 3).length,
+    }
+    const consumption = {
+      normal: list.filter(x => x.pct != null && x.pct < 80).length,
+      amarilla: list.filter(x => x.pct != null && x.pct >= 80 && x.pct < 90).length,
+      naranja: list.filter(x => x.pct != null && x.pct >= 90 && x.pct < 100).length,
+      roja: list.filter(x => x.pct != null && x.pct >= 100).length,
+    }
+    res.json({ kpis, byType, byPlan, statusBuckets, consumption, accounts: list, types, plans, generatedAt: now })
+  } catch (err) { console.error('[overview]', err); res.status(500).json({ error: 'Error interno' }) }
+}
+
 function n(v, d) { return v === undefined || v === null || v === '' ? d : Number(v) }
 
 module.exports = {
   listTypes, createType, updateType, deleteType,
   listPlans, createPlan, updatePlan, deletePlan,
-  getAccountSubscription, assign, action,
+  getAccountSubscription, assign, action, getOverview,
 }
