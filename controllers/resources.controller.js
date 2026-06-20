@@ -199,6 +199,28 @@ const deleteCmsCategory = async (req, res) => {
   } catch (err) { res.status(500).json({ error: 'Error interno' }) }
 }
 
+// ── Stickers (biblioteca para enviar en los chats) ──────────────────────────────
+// El binario se sube vía /api/media/:accId/upload; aquí se registra la referencia.
+const createSticker = async (req, res) => {
+  const { accId } = req.params
+  const { id: gId, mediaId, mime = 'image/webp', name = '' } = req.body
+  if (!mediaId) return res.status(400).json({ error: 'mediaId requerido' })
+  const id = gId || ('stk_' + uid())
+  try {
+    await pool.query('INSERT INTO stickers (id,account_id,media_id,mime,name,created_at) VALUES (?,?,?,?,?,?)', [id, accId, mediaId, mime, name, Date.now()])
+    socket.emit(accId, 'account:updated', { accId }); res.json({ id })
+  } catch (err) { console.error('[createSticker]', err); res.status(500).json({ error: 'Error interno' }) }
+}
+const deleteSticker = async (req, res) => {
+  const { accId, stickerId } = req.params
+  try {
+    const [[s]] = await pool.query('SELECT media_id FROM stickers WHERE id=? AND account_id=?', [stickerId, accId])
+    await pool.query('DELETE FROM stickers WHERE id=? AND account_id=?', [stickerId, accId])
+    if (s?.media_id) { try { await pool.query('DELETE FROM media WHERE id=? AND account_id=?', [s.media_id, accId]) } catch {} }
+    socket.emit(accId, 'account:updated', { accId }); res.json({ ok: true })
+  } catch (err) { res.status(500).json({ error: 'Error interno' }) }
+}
+
 const deleteCmsAsset = async (req, res) => {
   const { accId, assetId } = req.params
   try {
@@ -263,5 +285,6 @@ module.exports = {
   createCmsFolder, updateCmsFolder, deleteCmsFolder,
   createCmsTag, deleteCmsTag,
   createCmsCategory, deleteCmsCategory,
+  createSticker, deleteSticker,
   createFlow, updateFlow, deleteFlow,
 }

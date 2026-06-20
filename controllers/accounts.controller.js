@@ -37,6 +37,7 @@ const mapCmsAsset = c => ({
 })
 const mapCmsFolder = f => ({ id: f.id, name: f.name, type: f.type || 'simple', description: f.description || '', createdAt: f.created_at })
 const mapNamed = r => ({ id: r.id, name: r.name })
+const mapSticker = s => ({ id: s.id, mediaId: s.media_id, mime: s.mime || 'image/webp', name: s.name || '', createdAt: s.created_at })
 
 // Core: builds the public account object (agents, vars, tools, flows + effective
 // keys). Reusable by the HTTP handler and by the server-side flow engine.
@@ -48,10 +49,11 @@ async function loadPublicAccount(accId) {
   const [variables] = await pool.query('SELECT * FROM variables WHERE account_id=?', [accId])
   const [aiTools]   = await pool.query('SELECT * FROM ai_tools WHERE account_id=?', [accId])
   const [cmsAssets] = await pool.query('SELECT * FROM cms_assets WHERE account_id=?', [accId])
-  let cmsFolders = [], cmsTags = [], cmsCategories = []
+  let cmsFolders = [], cmsTags = [], cmsCategories = [], stickers = []
   try { [cmsFolders]    = await pool.query('SELECT * FROM cms_folders WHERE account_id=?', [accId]) } catch { cmsFolders = [] }
   try { [cmsTags]       = await pool.query('SELECT * FROM cms_tags WHERE account_id=?', [accId]) } catch { cmsTags = [] }
   try { [cmsCategories] = await pool.query('SELECT * FROM cms_categories WHERE account_id=?', [accId]) } catch { cmsCategories = [] }
+  try { [stickers]      = await pool.query('SELECT * FROM stickers WHERE account_id=? ORDER BY created_at DESC', [accId]) } catch { stickers = [] }
   const [flows]     = await pool.query('SELECT * FROM flows WHERE account_id=?', [accId])
   // Resolve API keys with super-admin platform fallback
   const [[pf]] = await pool.query('SELECT openai_key, deepseek_key, anthropic_key FROM platform_settings WHERE id=1')
@@ -68,6 +70,7 @@ async function loadPublicAccount(accId) {
     cmsFolders: cmsFolders.map(mapCmsFolder),
     cmsTags: cmsTags.map(mapNamed),
     cmsCategories: cmsCategories.map(mapNamed),
+    stickers: stickers.map(mapSticker),
     flows:     flows.map(f => ({ id: f.id, name: f.name, trigger: f.trigger, startNodeId: f.start_node_id, nodes: parseJ(f.nodes, []) })),
   }
 }
@@ -98,10 +101,11 @@ const getAccount = async (req, res) => {
     const [variables] = await pool.query('SELECT * FROM variables WHERE account_id=?', [accId])
     const [aiTools]   = await pool.query('SELECT * FROM ai_tools WHERE account_id=?', [accId])
     const [cmsAssets] = await pool.query('SELECT * FROM cms_assets WHERE account_id=?', [accId])
-    let cmsFolders = [], cmsTags = [], cmsCategories = []
+    let cmsFolders = [], cmsTags = [], cmsCategories = [], stickers = []
     try { [cmsFolders]    = await pool.query('SELECT * FROM cms_folders WHERE account_id=? ORDER BY created_at', [accId]) } catch { cmsFolders = [] }
     try { [cmsTags]       = await pool.query('SELECT * FROM cms_tags WHERE account_id=? ORDER BY name', [accId]) } catch { cmsTags = [] }
     try { [cmsCategories] = await pool.query('SELECT * FROM cms_categories WHERE account_id=? ORDER BY name', [accId]) } catch { cmsCategories = [] }
+    try { [stickers]      = await pool.query('SELECT * FROM stickers WHERE account_id=? ORDER BY created_at DESC', [accId]) } catch { stickers = [] }
     const [flows]     = await pool.query('SELECT * FROM flows WHERE account_id=?', [accId])
     const [contacts]  = await pool.query('SELECT * FROM contacts WHERE account_id=?', [accId])
     const [usageRows] = await pool.query('SELECT * FROM change_agent_usage WHERE account_id=?', [accId])
@@ -146,6 +150,7 @@ const getAccount = async (req, res) => {
       cmsFolders: cmsFolders.map(mapCmsFolder),
       cmsTags: cmsTags.map(mapNamed),
       cmsCategories: cmsCategories.map(mapNamed),
+      stickers: stickers.map(mapSticker),
       flows:     flows.map(f => ({ id: f.id, name: f.name, trigger: f.trigger, startNodeId: f.start_node_id, nodes: parseJ(f.nodes, []), createdAt: f.created_at })),
       contacts:  contacts.map(c => ({ id: c.id, name: c.name, email: c.email, phone: c.phone, ...parseJ(c.extra, {}), createdAt: c.created_at })),
       calendars: calendars.map(c => ({

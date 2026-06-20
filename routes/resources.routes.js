@@ -31,6 +31,9 @@ router.post('/accounts/:accId/cms-tags',                authMiddleware, ctrl.cre
 router.delete('/accounts/:accId/cms-tags/:tagId',       authMiddleware, ctrl.deleteCmsTag)
 router.post('/accounts/:accId/cms-categories',          authMiddleware, ctrl.createCmsCategory)
 router.delete('/accounts/:accId/cms-categories/:catId', authMiddleware, ctrl.deleteCmsCategory)
+// ── Stickers ────────────────────────────────────────────────────────────────────
+router.post('/accounts/:accId/stickers',                authMiddleware, ctrl.createSticker)
+router.delete('/accounts/:accId/stickers/:stickerId',   authMiddleware, ctrl.deleteSticker)
 
 // ── Flows ─────────────────────────────────────────────────────────────────────
 router.post('/accounts/:accId/flows',                   authMiddleware, ctrl.createFlow)

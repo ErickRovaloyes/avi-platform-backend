@@ -652,6 +652,17 @@ app.use('/api',                webhookRoutes)
        created_at  BIGINT,
        INDEX idx_cmscat_acc (account_id)
      )`,
+    // Biblioteca de stickers (imágenes) para enviar rápido en los chats. media_id
+    // apunta a la tabla media.
+    `CREATE TABLE IF NOT EXISTS stickers (
+       id          VARCHAR(50) PRIMARY KEY,
+       account_id  VARCHAR(50) NOT NULL,
+       media_id    VARCHAR(60),
+       mime        VARCHAR(120),
+       name        VARCHAR(120),
+       created_at  BIGINT,
+       INDEX idx_sticker_acc (account_id)
+     )`,
   ]
   for (const sql of migrations) {
     try { await pool.query(sql) } catch (e) { /* column exists or unsupported */ }
