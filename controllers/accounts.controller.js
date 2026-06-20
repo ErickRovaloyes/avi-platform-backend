@@ -118,7 +118,7 @@ const getAccount = async (req, res) => {
     const effDeepseek  = (acc.deepseek_key  && acc.deepseek_key.trim())  || pf?.deepseek_key  || ''
     const effAnthropic = (acc.anthropic_key && acc.anthropic_key.trim()) || pf?.anthropic_key || ''
     res.json({
-      id: acc.id, name: acc.name, email: acc.email, plan: acc.plan, status: acc.status,
+      id: acc.id, name: acc.name, email: acc.email, plan: acc.plan, status: acc.status, createdAt: acc.created_at,
       // Own keys (user-settable in Settings); read-only effective ones below
       openaiKeyOwn:    acc.openai_key    || '',
       deepseekKeyOwn:  acc.deepseek_key  || '',

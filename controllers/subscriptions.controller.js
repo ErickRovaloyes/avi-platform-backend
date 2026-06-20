@@ -99,7 +99,16 @@ const getAccountSubscription = async (req, res) => {
   try {
     const sub = await subs.getSubscription(accId)
     const limit = sub ? subs.effectiveMonthlyLimit(sub) : null
-    res.json({ subscription: sub, effectiveMonthlyLimit: limit })
+    // Uso de canales (cuenta entre todos los agentes) para la pestaña Cuenta.
+    const channelUsage = { webchat: 0, whatsapp: 0, test: 0, messenger: 0, instagram: 0 }
+    try {
+      const [agents] = await pool.query('SELECT channels FROM agents WHERE account_id=?', [accId])
+      for (const a of agents) {
+        let chs = []; try { chs = JSON.parse(a.channels || '[]') } catch {}
+        for (const c of chs) if (channelUsage[c.type] != null) channelUsage[c.type]++
+      }
+    } catch {}
+    res.json({ subscription: sub, effectiveMonthlyLimit: limit, channelUsage })
   } catch (err) { console.error('[getAccountSubscription]', err); res.status(500).json({ error: 'Error interno' }) }
 }
 const assign = async (req, res) => {
