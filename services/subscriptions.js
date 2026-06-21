@@ -147,6 +147,12 @@ async function assignSubscription(accId, { accountTypeId, subscriptionPlanId, cu
       }
     }
   } catch { /* no crítico */ }
+  // Al pasar a un tipo de PAGO se DESBLOQUEA la IA en los chats que la Demo había
+  // desactivado por el límite de respuestas (se limpia el motivo). El asesor ya
+  // puede reactivar la IA en esos chats.
+  if (!isDemo) {
+    try { await pool.query("UPDATE conversations SET ai_disabled_reason=NULL WHERE account_id=? AND ai_disabled_reason='ai_per_conv_limit'", [accId]) } catch { /* no crítico */ }
+  }
   socket.emit(accId, 'account:updated', { accId })
   return getSubscription(accId)
 }

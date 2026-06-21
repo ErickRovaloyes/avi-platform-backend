@@ -155,10 +155,19 @@ const updateConvo = async (req, res) => {
         vals.push(typeof v === 'object' ? JSON.stringify(v) : v)
       }
     }
-    // Si un administrador reactiva la IA, se limpia el motivo de desactivación
-    // (p. ej. el límite de respuestas IA por chat) para que desaparezca la franja.
-    if (req.body.aiEnabled) { sets.push('ai_disabled_reason=NULL') }
-    if (sets.length === 0) return res.json({ ok: true })
+    // La IA NO se puede reactivar en un chat que la Demo desactivó por el límite
+    // de respuestas: solo se permite tras adquirir un plan de pago (la conversión
+    // limpia el motivo). Mientras el motivo siga puesto, se ignora la reactivación.
+    let aiLimitBlocked = false
+    if (req.body.aiEnabled) {
+      const [[cur]] = await pool.query('SELECT ai_disabled_reason FROM conversations WHERE id=? AND account_id=?', [convId, accId])
+      if (cur?.ai_disabled_reason === 'ai_per_conv_limit') {
+        aiLimitBlocked = true
+        const i = sets.indexOf('ai_enabled=?')
+        if (i !== -1) { sets.splice(i, 1); vals.splice(i, 1) } // no reactivar
+      }
+    }
+    if (sets.length === 0) return res.json({ ok: true, aiLimitBlocked })
     vals.push(convId, accId)
     await pool.query(`UPDATE conversations SET ${sets.join(',')} WHERE id=? AND account_id=?`, vals)
     socket.emit(accId, 'convos:updated', { accId, agId })
@@ -176,7 +185,7 @@ const updateConvo = async (req, res) => {
       })
     }
 
-    res.json({ ok: true })
+    res.json({ ok: true, aiLimitBlocked })
   } catch (err) {
     console.error('[PUT CONVO]', err)
     res.status(500).json({ error: 'Error interno' })
