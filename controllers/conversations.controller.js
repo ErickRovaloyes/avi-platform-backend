@@ -55,6 +55,8 @@ const mapConvo = (c, messages = []) => ({
   waFrom: c.wa_from, messengerFrom: c.messenger_from, igFrom: c.ig_from,
   initials: c.initials, preview: c.preview,
   unread: !!c.unread, aiEnabled: !!c.ai_enabled,
+  aiDisabledReason: c.ai_disabled_reason || null,
+  origin:        parseJ(c.origin, null),
   labels:        parseJ(c.labels, []),
   pipelineCards: parseJ(c.pipeline_cards, []),
   localVars:     parseJ(c.local_vars, {}),
@@ -104,7 +106,7 @@ const getConvo = async (req, res) => {
 
 const createConvo = async (req, res) => {
   const { accId, agId } = req.params
-  const { guestName, guestId, channelId, channelType = 'webchat', waFrom, messengerFrom, igFrom } = req.body
+  const { guestName, guestId, channelId, channelType = 'webchat', waFrom, messengerFrom, igFrom, origin } = req.body
   const id       = `conv_${Date.now()}_${guestId || uid()}`
   const initials = (guestName || '').slice(0, 2).toUpperCase()
   const ts       = Date.now()
@@ -114,13 +116,18 @@ const createConvo = async (req, res) => {
   if (contactId) localVars.contact_id = contactId
 
   try {
+    // Origen del lead: usa el que envía el cliente (webchat ya clasificado) o lo
+    // deriva del link (channelId = id del Webchat Link) → tipo "link", si no "directo".
+    const originObj = (origin && typeof origin === 'object')
+      ? origin
+      : { type: channelId ? 'link' : 'direct', linkId: channelId || null }
     await pool.query(
       `INSERT INTO conversations
-       (id,account_id,agent_id,channel_id,channel_type,guest_name,guest_id,wa_from,messenger_from,ig_from,initials,preview,unread,ai_enabled,labels,pipeline_cards,local_vars,debug_log,created_at,updated_at)
-       VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`,
+       (id,account_id,agent_id,channel_id,channel_type,guest_name,guest_id,wa_from,messenger_from,ig_from,initials,preview,unread,ai_enabled,labels,pipeline_cards,local_vars,debug_log,origin,created_at,updated_at)
+       VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`,
       [id, accId, agId, channelId, channelType, guestName, guestId,
        waFrom || null, messengerFrom || null, igFrom || null,
-       initials, '', 0, 1, '[]', '[]', JSON.stringify(localVars), '[]', ts, ts]
+       initials, '', 0, 1, '[]', '[]', JSON.stringify(localVars), '[]', JSON.stringify(originObj), ts, ts]
     )
     try { require('../services/subscriptions').incrementConversation(accId) } catch {}
     socket.emit(accId, 'convos:updated', { accId, agId })
@@ -138,7 +145,7 @@ const createConvo = async (req, res) => {
 const updateConvo = async (req, res) => {
   const { accId, agId, convId } = req.params
   try {
-    const map = { guestName:'guest_name', preview:'preview', unread:'unread', aiEnabled:'ai_enabled', labels:'labels', pipelineCards:'pipeline_cards', localVars:'local_vars', debugLog:'debug_log', assignedTo:'assigned_to' }
+    const map = { guestName:'guest_name', preview:'preview', unread:'unread', aiEnabled:'ai_enabled', labels:'labels', pipelineCards:'pipeline_cards', localVars:'local_vars', debugLog:'debug_log', assignedTo:'assigned_to', origin:'origin' }
     const sets = []
     const vals = []
     for (const [key, col] of Object.entries(map)) {
@@ -148,6 +155,9 @@ const updateConvo = async (req, res) => {
         vals.push(typeof v === 'object' ? JSON.stringify(v) : v)
       }
     }
+    // Si un administrador reactiva la IA, se limpia el motivo de desactivación
+    // (p. ej. el límite de respuestas IA por chat) para que desaparezca la franja.
+    if (req.body.aiEnabled) { sets.push('ai_disabled_reason=NULL') }
     if (sets.length === 0) return res.json({ ok: true })
     vals.push(convId, accId)
     await pool.query(`UPDATE conversations SET ${sets.join(',')} WHERE id=? AND account_id=?`, vals)
@@ -382,7 +392,7 @@ const getGuest = async (req, res) => {
 
 // ── Social create-or-get ──────────────────────────────────────────────────────
 
-async function createOrGetSocialConvo(accId, agId, lookupCol, lookupVal, guestName, channelType, channelId) {
+async function createOrGetSocialConvo(accId, agId, lookupCol, lookupVal, guestName, channelType, channelId, origin = null) {
   const [[existing]] = await pool.query(
     `SELECT id FROM conversations WHERE account_id=? AND agent_id=? AND ${lookupCol}=?`,
     [accId, agId, lookupVal]
@@ -410,7 +420,9 @@ async function createOrGetSocialConvo(accId, agId, lookupCol, lookupVal, guestNa
     preview: '', unread: 1, ai_enabled: 1,
     labels: '[]', pipeline_cards: '[]',
     local_vars: JSON.stringify(localVars),
-    debug_log: '[]', created_at: ts, updated_at: ts,
+    debug_log: '[]',
+    origin: JSON.stringify(origin || { type: channelId ? 'link' : 'direct', linkId: channelId || null }),
+    created_at: ts, updated_at: ts,
   }
   cols[lookupCol] = lookupVal
   const keys = Object.keys(cols); const vals = Object.values(cols)

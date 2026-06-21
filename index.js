@@ -232,6 +232,11 @@ app.use('/api',                webhookRoutes)
      )`,
     "ALTER TABLE ai_tools ADD COLUMN action_type VARCHAR(20) DEFAULT 'variable'",
     "ALTER TABLE conversations     ADD COLUMN assigned_to JSON",
+    // Motivo por el que la IA quedó desactivada en un chat (p. ej. límite de
+    // respuestas IA por conversación en Demo). Solo lo ven los administradores.
+    "ALTER TABLE conversations     ADD COLUMN ai_disabled_reason VARCHAR(40)",
+    // Origen del lead (anuncio/link/directo + plataforma + id de anuncio + UTM).
+    "ALTER TABLE conversations     ADD COLUMN origin JSON",
     `CREATE TABLE IF NOT EXISTS crm_notes (
        id          VARCHAR(50) PRIMARY KEY,
        account_id  VARCHAR(50) NOT NULL,

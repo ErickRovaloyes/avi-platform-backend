@@ -212,11 +212,19 @@ async function assistantGate(accId, convId) {
     if (sub.demoExpiresAt && now > sub.demoExpiresAt) {
       return { allowed: false, message: MSG.demoExpired, suspend: true }
     }
-    // 30 respuestas de IA por conversación
+    // 30 respuestas de IA por conversación: NO se avisa al contacto. Se desactiva
+    // la IA en ese chat y se guarda el motivo para mostrarlo SOLO a los
+    // administradores (franja dentro del chat). El asesor humano puede continuar.
     const maxAi = sub.type.demoMaxAiResponsesPerConversation || 0
     if (maxAi > 0 && convId) {
       const [[{ n }]] = await pool.query("SELECT COUNT(*) AS n FROM messages WHERE conversation_id=? AND sender='ai'", [convId])
-      if (n >= maxAi) return { allowed: false, message: MSG.convAi, closeConv: true }
+      if (n >= maxAi) {
+        try {
+          await pool.query("UPDATE conversations SET ai_enabled=0, ai_disabled_reason='ai_per_conv_limit' WHERE id=?", [convId])
+          socket.emit(accId, 'convos:updated', { accId })
+        } catch { /* no bloquear por el side-effect */ }
+        return { allowed: false, disableAi: true, reason: 'ai_per_conv_limit', max: maxAi }
+      }
     }
     // 100 conversaciones totales
     const maxConv = sub.type.demoMaxConversations || 0

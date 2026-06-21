@@ -220,8 +220,8 @@ async function saveExecution({ accId, agId, convId, flowId, flowName, trigger, s
 }
 
 // ── Social create-or-get (delegates to controller core) ─────────────────────
-async function createOrGetWhatsAppConvo(accId, agentId, from, name, channelId) {
-  return createOrGetSocialConvo(accId, agentId, 'wa_from', from, name || `WA #${(from || '').slice(-4)}`, 'whatsapp', channelId)
+async function createOrGetWhatsAppConvo(accId, agentId, from, name, channelId, origin) {
+  return createOrGetSocialConvo(accId, agentId, 'wa_from', from, name || `WA #${(from || '').slice(-4)}`, 'whatsapp', channelId, origin)
 }
 async function createOrGetMessengerConvo(accId, agentId, from, name, channelId) {
   return createOrGetSocialConvo(accId, agentId, 'messenger_from', from, name || `FB #${(from || '').slice(-4)}`, 'messenger', channelId)

@@ -79,7 +79,17 @@ async function processWhatsApp(accId, agentId, body) {
       ch => ch.type === 'whatsapp' && ch.status === 'connected' && ch.config?.phoneNumberId === msg.phoneNumberId
     ) || { id: 'whatsapp', name: 'WhatsApp', config: agent.whatsapp || {} }
 
-    const convId = await store.createOrGetWhatsAppConvo(accId, agentId, msg.from, msg.fromName, channel?.id)
+    // Origen del lead: anuncio Click-to-WhatsApp de Meta (si el chat se inició así).
+    const waOrigin = msg.referral ? {
+      type: 'ad', platform: 'meta',
+      adId: msg.referral.source_id || null,
+      campaign: msg.referral.headline || null,
+      source: msg.referral.source_type || 'ad',
+      clickId: msg.referral.ctwa_clid || null,
+      sourceUrl: msg.referral.source_url || null,
+      headline: msg.referral.headline || null,
+    } : null
+    const convId = await store.createOrGetWhatsAppConvo(accId, agentId, msg.from, msg.fromName, channel?.id, waOrigin)
 
     // Idempotencia persistente: si este waMessageId ya se guardó, no reprocesar.
     if (await store.messageExistsByProviderId(convId, msg.messageId)) {

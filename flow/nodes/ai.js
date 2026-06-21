@@ -364,9 +364,17 @@ const aiNodes = [
         const subs = require('../../services/subscriptions')
         const gate = await subs.assistantGate(ctx.accId, ctx.convId)
         if (!gate.allowed) {
-          // El mensaje de límite se envía UNA sola vez por conversación (evita spam).
+          // Límite de respuestas IA por chat (Demo): NO se envía nada al contacto;
+          // el gate ya desactivó la IA en la conversación. Solo se registra.
+          if (gate.disableAi) {
+            logDebug(ctx, 'flow_run', `🚫 IA desactivada en este chat: alcanzó el límite de ${gate.max} respuestas IA`, { reason: gate.reason })
+            ctx._suppressDefaultNext = true
+            return
+          }
+          // Otros límites (suspensión, demo vencida, 100 conversaciones, plan):
+          // el mensaje se envía UNA sola vez por conversación (evita spam).
           const already = ctx.variables?._limitNotified
-          if (!already) {
+          if (!already && gate.message) {
             await sendBotMsg(ctx, gate.message)
             await setVarBoth(ctx, '_limitNotified', '1')
           }

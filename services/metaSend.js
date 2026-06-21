@@ -159,6 +159,9 @@ function parseWhatsAppWebhook(body) {
           // Si el usuario respondió/citó un mensaje anterior, Meta envía context.id
           // (el wamid del mensaje citado). Lo resolveremos contra nuestra BD.
           quotedId: msg.context?.id || null,
+          // Anuncio Click-to-WhatsApp (Meta): cuando el chat se inicia desde un
+          // anuncio, Meta adjunta `referral` con el id del anuncio, titular, etc.
+          referral: msg.referral || null,
         })
       }
     }
