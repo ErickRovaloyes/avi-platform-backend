@@ -13,8 +13,26 @@
 const pool = require('../db')
 const { uid } = require('../utils')
 const { chat } = require('./aiClient')
+const { generateAccountPrompt } = require('../controllers/promptGenerator.controller')
+const { buildResponseFlowNodes } = require('./accountProvision')
 
 const clean = s => String(s || '').trim()
+
+// Datos del onboarding (estructurados) → bloque de texto con los HECHOS del
+// negocio, para que el generador de prompts (estructura + condiciones de la
+// plataforma) los incorpore como si fueran un documento de descubrimiento.
+function buildBusinessFacts(d) {
+  const F = [
+    ['Empresa', d.company], ['Sector', d.industry], ['Tipo de negocio', d.businessType],
+    ['Objetivo de la IA', d.objective], ['País', d.country], ['Ciudad', d.city], ['Sitio web', d.website],
+    ['Qué hace la empresa', d.whatCompanyDoes], ['Productos', d.products], ['Servicios', d.services],
+    ['Diferenciador', d.differentiator], ['Cliente ideal', d.idealClient], ['Preguntas frecuentes', d.faqs],
+    ['Objeciones comunes', d.objections], ['Proceso de venta', d.salesProcess],
+    ['Información antes de cerrar', d.infoBeforeBuying], ['Horarios', d.hours],
+    ['Cobertura', d.coverage], ['Canales de contacto', d.contactChannels],
+  ]
+  return F.filter(([, v]) => clean(v)).map(([k, v]) => `${k}: ${clean(v)}`).join('\n')
+}
 
 // Recorta el texto de la plantilla para no inflar el prompt (≈ 16k chars).
 const DISCOVERY_MAX = 16000
@@ -90,35 +108,54 @@ async function generateMasterPrompt(d, discoveryText = '') {
   } catch { return fallback }
 }
 
-// Crea agente + flujo de respuesta + canal Webchat activo. Devuelve ids.
+// Crea agente + flujo de respuesta + variable {{respuesta_ia}} + canal Webchat
+// activo. Devuelve ids. Mismo aprovisionamiento que las cuentas creadas por el
+// super admin: prompt con el GENERADOR de la plataforma (estructura + condiciones)
+// usando los datos del onboarding y el documento de descubrimiento, flujo
+// "Generar respuesta con asistente IA" y modelo DeepSeek V4 Flash.
 async function provisionDemoAgent(accId, d, discoveryText = '') {
   const iaName = clean(d.iaName) || 'Asistente'
-  const masterPrompt = await generateMasterPrompt(d, discoveryText)
 
-  // 1) Flujo de respuesta: Agente IA usando el prompt activo del agente.
-  const flowId = 'flow_' + uid()
-  const startNode = 'n_ai_' + uid()
-  const nodes = [{
-    id: startNode, type: 'ai_agent', x: 140, y: 100,
-    data: { promptMode: 'active', mensajeUsuario: '{{_lastUserMessage}}', sendToUser: true },
-    connections: [],
-  }]
+  // 1) Prompt: generador de la plataforma (estructura+condiciones) con los datos
+  //    del negocio + el documento de descubrimiento; fallback determinista.
+  const businessFacts = buildBusinessFacts(d)
+  const combinedDoc = [businessFacts, clean(discoveryText)].filter(Boolean).join('\n\n')
+  let masterPrompt = null
+  try {
+    masterPrompt = await generateAccountPrompt({
+      accountId: accId, agentName: iaName, companyName: clean(d.company),
+      observations: clean(d.objective), docText: combinedDoc,
+    })
+  } catch { masterPrompt = null }
+  if (!masterPrompt) masterPrompt = buildMasterPrompt(d, discoveryText)
+
+  // 2) Variable {{respuesta_ia}} (nombre canónico que usa el flujo).
+  const varId = 'var_' + uid()
   await pool.query(
-    'INSERT INTO flows (id,account_id,name,`trigger`,start_node_id,nodes,created_at) VALUES (?,?,?,?,?,?,?)',
-    [flowId, accId, 'Respuesta IA', 'conversation_start', startNode, JSON.stringify(nodes), Date.now()]
+    'INSERT INTO variables (id,account_id,name,type,default_value,description,is_system) VALUES (?,?,?,?,?,?,?)',
+    [varId, accId, 'respuesta_ia', 'local', '', 'Respuesta generada por el asistente IA', 0]
   )
 
-  // 2) Agente con el prompt maestro activo + canal Webchat activo.
+  // 3) Flujo "Generar respuesta con asistente IA" (mismo que el super admin).
+  const flowId = 'flow_' + uid()
+  const startNode = 'n_ai_' + uid()
+  const nodes = buildResponseFlowNodes(varId, startNode)
+  await pool.query(
+    'INSERT INTO flows (id,account_id,name,`trigger`,start_node_id,nodes,created_at) VALUES (?,?,?,?,?,?,?)',
+    [flowId, accId, 'Generar respuesta con asistente IA', 'manual', startNode, JSON.stringify(nodes), Date.now()]
+  )
+
+  // 4) Agente con el prompt activo en DeepSeek V4 Flash + canal Webchat activo.
   const agentId = 'ag_' + uid()
   const webchatId = 'lnk_' + uid()
   const prompts = [{
     id: 'pr_' + uid(), name: `Prompt Maestro · ${iaName}`,
-    content: masterPrompt, isActive: true, provider: 'openai', model: 'gpt-4o-mini',
+    content: masterPrompt, isActive: true, provider: 'deepseek', model: 'deepseek-v4-flash',
   }]
   const channels = [{ id: webchatId, type: 'webchat', name: 'Webchat', status: 'active', config: {}, createdAt: Date.now() }]
   await pool.query(
     'INSERT INTO agents (id,account_id,name,status,system_prompt,model,welcome_message,prompts,channels,rag,ai_tool_ids,fallback_flow_id) VALUES (?,?,?,?,?,?,?,?,?,?,?,?)',
-    [agentId, accId, iaName, 'active', '', 'gpt-4o-mini',
+    [agentId, accId, iaName, 'active', masterPrompt, 'deepseek-v4-flash',
      `¡Hola! Soy ${iaName}. ¿En qué puedo ayudarte?`,
      JSON.stringify(prompts), JSON.stringify(channels), JSON.stringify({ enabled: false, files: [] }), '[]', flowId]
   )

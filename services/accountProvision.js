@@ -111,4 +111,4 @@ async function provisionDefaultAgent(accId, opts = {}) {
   return { agentId, flowId, varId }
 }
 
-module.exports = { provisionDefaultAgent, buildFallbackPrompt }
+module.exports = { provisionDefaultAgent, buildFallbackPrompt, buildResponseFlowNodes }
