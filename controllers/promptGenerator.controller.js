@@ -525,4 +525,109 @@ Responde SOLO con JSON: { "category": "basic|medium|complex", "reason": "breve e
   }
 }
 
-module.exports = { generateFromDoc, classifyChange }
+// ── Reusable: extract text from an uploaded file (docx/pdf/txt/md) ───────────
+// Tolerant: returns '' on any failure so callers can fall back gracefully.
+async function extractFileText(file) {
+  if (!file || !file.buffer) return ''
+  const ext = (file.originalname || '').split('.').pop().toLowerCase()
+  try {
+    if (ext === 'docx' || ext === 'doc') return await extractDocxText(file.buffer)
+    if (ext === 'pdf')                    return extractPdfText(file.buffer)
+    if (ext === 'txt' || ext === 'md')    return file.buffer.toString('utf-8')
+  } catch { return '' }
+  return ''
+}
+
+// ── Reusable: generate a default agent prompt for a NEW account ──────────────
+// Uses the SAME generator parameters configured in Super Admin → Plataforma
+// (estructura + condiciones de calidad), plus the account-creation form info
+// (company/agent name, observations) and the optional uploaded document.
+// Returns the prompt string, or null if there's no API key / the model fails
+// (the caller then falls back to a deterministic prompt).
+async function generateAccountPrompt({ accountId, agentName = 'Asistente', companyName = '', observations = '', docText = '' }) {
+  const [[settings]] = await pool.query('SELECT * FROM platform_settings WHERE id=1')
+  const model       = settings?.prompt_generator_model || 'gpt-4o'
+  const structure   = settings?.prompt_generator_structure || ''
+  const conditions  = settings?.prompt_generator_conditions || ''
+  const maxTokens   = parseInt(settings?.prompt_generator_max_tokens) || 8000
+  const temperature = settings?.prompt_generator_temperature != null ? Number(settings.prompt_generator_temperature) : 0.55
+  const maxDocChars = parseInt(settings?.prompt_generator_max_doc_chars) || 200000
+
+  const provider = detectProvider(model)
+  const { apiKey } = await pickAccountForProvider(accountId, provider)
+  if (!apiKey) return null
+
+  const doc = (docText || '').slice(0, maxDocChars)
+
+  const sysPrompt = `Eres un PROMPT ENGINEER SENIOR especializado en construir agentes de IA conversacionales empresariales de alto desempeño.
+
+Tu misión es generar un SYSTEM PROMPT EXTREMADAMENTE DETALLADO y PROFESIONAL en español para un agente IA llamado "${agentName}"${companyName ? ` de la empresa "${companyName}"` : ''}.
+
+═══════════════════════════════════════════════════════════════════
+CONDICIONES Y ESTÁNDARES DE CALIDAD (configuradas por el administrador)
+═══════════════════════════════════════════════════════════════════
+
+${conditions || '[Usa tu mejor criterio profesional]'}
+
+═══════════════════════════════════════════════════════════════════
+ESTRUCTURA BASE QUE DEBE SEGUIR EL PROMPT
+═══════════════════════════════════════════════════════════════════
+
+"""
+${structure || '[Usa tu mejor criterio profesional]'}
+"""
+
+${observations ? `═══════════════════════════════════════════════════════════════════
+OBSERVACIONES ESPECÍFICAS (MÁXIMA PRIORIDAD)
+═══════════════════════════════════════════════════════════════════
+
+"""
+${observations}
+"""
+
+` : ''}${doc
+  ? 'Usa el DOCUMENTO de referencia para incorporar TODA la información relevante del negocio (productos, servicios, precios, políticas, FAQs, contacto, horarios). No digas "ver documento": incluye los datos.'
+  : 'No se adjuntó documento. Genera un system prompt profesional, completo y listo para personalizar, siguiendo la estructura y las condiciones, adecuado para un asistente de atención/ventas de esta empresa.'}
+
+Responde ÚNICAMENTE con un objeto JSON válido (sin texto antes ni después, sin markdown):
+{ "prompt": "el system prompt completo y extenso, en una sola cadena con saltos de línea \\n" }`
+
+  const userMsg = doc
+    ? `Empresa: ${companyName || '—'} · Agente: "${agentName}"
+
+═══ INICIO DEL DOCUMENTO ═══
+${doc}
+═══ FIN DEL DOCUMENTO ═══
+
+Genera ahora el system prompt completo, exhaustivo y fiel al documento, siguiendo la estructura, las condiciones y las observaciones.`
+    : `Empresa: ${companyName || '—'} · Agente: "${agentName}"
+
+Genera ahora el system prompt completo siguiendo la estructura base, las condiciones de calidad y las observaciones específicas.`
+
+  try {
+    const aiResult = await callAI({
+      provider, model, apiKey,
+      systemPrompt: sysPrompt, userPrompt: userMsg,
+      maxTokens, temperature, jsonMode: provider !== 'anthropic',
+    })
+    recordUsageInternal({
+      accId: accountId, agentId: null, conversationId: null,
+      provider, model,
+      promptTokens: aiResult.usage?.promptTokens || 0,
+      completionTokens: aiResult.usage?.completionTokens || 0,
+      source: 'account-default-prompt',
+    })
+    const parsed = extractJson(aiResult.text || '')
+    let prompt = parsed?.prompt || ''
+    // Si el modelo no devolvió JSON pero sí texto largo, úsalo tal cual.
+    if (!prompt && !parsed && typeof aiResult.text === 'string' && aiResult.text.trim().length > 120) {
+      prompt = aiResult.text.trim()
+    }
+    return prompt && prompt.length > 80 ? prompt : null
+  } catch (e) {
+    console.warn('[generateAccountPrompt]', e.message)
+    return null
+  }
+}
+
+module.exports = { generateFromDoc, classifyChange, extractFileText, generateAccountPrompt }

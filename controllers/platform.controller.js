@@ -1,6 +1,8 @@
 'use strict'
 const pool = require('../db')
 const { uid, parseJ } = require('../utils')
+const { provisionDefaultAgent } = require('../services/accountProvision')
+const { extractFileText } = require('./promptGenerator.controller')
 
 // ── Platform settings ─────────────────────────────────────────────────────────
 
@@ -274,7 +276,8 @@ const listAccounts = async (req, res) => {
 
 const createAccount = async (req, res) => {
   if (req.user.type !== 'superadmin') return res.status(403).json({ error: 'Solo super admin' })
-  const { name, email, plan = 'free' } = req.body
+  // Acepta JSON o multipart (cuando se sube un documento para generar el prompt).
+  const { name, email, plan = 'free', agentName = '', observations = '' } = req.body
   const id = 'acc_' + uid()
   try {
     await pool.query(
@@ -290,6 +293,16 @@ const createAccount = async (req, res) => {
       'INSERT INTO roles (id,account_id,name,is_system,permissions) VALUES (?,?,?,0,?)',
       ['role_agent_' + uid(), id, 'Agente', '{"inbox":true,"agents":false,"channels":false,"crm":true,"pipeline":true,"config":false,"admins":false,"flows":false,"variables":false,"tools":false,"knowledge":false}']
     )
+
+    // Deja la cuenta lista: agente + prompt (generador) + flujo de respuesta +
+    // variable {{respuesta_ia}}. Best-effort: si falla, la cuenta igual se crea.
+    try {
+      const docText = req.file ? await extractFileText(req.file) : ''
+      await provisionDefaultAgent(id, { agentName, companyName: name, observations, docText })
+    } catch (provErr) {
+      console.error('[POST ACCOUNT SA] provisión por defecto falló (cuenta creada igual):', provErr.message)
+    }
+
     res.json({ id })
   } catch (err) {
     console.error('[POST ACCOUNT SA]', err)
