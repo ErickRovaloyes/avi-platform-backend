@@ -91,6 +91,17 @@ const deletePlan = async (req, res) => {
   catch { res.status(500).json({ error: 'Error interno' }) }
 }
 
+// Gate PÚBLICO (sin auth): lo usa el motor de flujos del navegador (webchat/test)
+// para aplicar los mismos límites de suscripción que el motor del servidor.
+const publicGate = async (req, res) => {
+  try {
+    const { accId, convId } = req.params
+    const g = await subs.assistantGate(accId, convId)
+    if (g && g.closeConv) { try { await subs.closeConversation(accId, convId) } catch {} }
+    res.json(g || { allowed: true })
+  } catch { res.json({ allowed: true }) }
+}
+
 // ── Account subscription (asignación + estado) ────────────────────────────────
 // Lectura: superadmin de cualquiera; owner solo de su propia cuenta.
 const getAccountSubscription = async (req, res) => {
@@ -268,5 +279,5 @@ function n(v, d) { return v === undefined || v === null || v === '' ? d : Number
 module.exports = {
   listTypes, createType, updateType, deleteType,
   listPlans, createPlan, updatePlan, deletePlan,
-  getAccountSubscription, assign, action, getOverview, getCommercial,
+  getAccountSubscription, assign, action, getOverview, getCommercial, publicGate,
 }

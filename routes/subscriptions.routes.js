@@ -15,6 +15,9 @@ router.post('/subscription-plans',       authMiddleware, ctrl.createPlan)
 router.put('/subscription-plans/:id',    authMiddleware, ctrl.updatePlan)
 router.delete('/subscription-plans/:id', authMiddleware, ctrl.deletePlan)
 
+// Gate público para el motor de flujos del navegador (webchat/test) — sin auth.
+router.get('/public/assistant-gate/:accId/:convId', ctrl.publicGate)
+
 // Dashboard de supervisión (superadmin)
 router.get('/admin/subscriptions/overview',   authMiddleware, ctrl.getOverview)
 router.get('/admin/subscriptions/commercial', authMiddleware, ctrl.getCommercial)
