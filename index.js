@@ -16,7 +16,7 @@ const io     = new Server(server, { cors: { origin: '*' } })
 socket.init(io)
 
 app.use(cors({ origin: '*' }))
-app.use(express.json({ limit: '10mb' }))
+app.use(express.json({ limit: '25mb' }))  // headroom para la base de conocimiento (RAG) y otros JSON grandes
 
 // ── Socket.io: auth + room management ────────────────────────────────────────
 

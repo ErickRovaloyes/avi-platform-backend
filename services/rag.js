@@ -10,6 +10,9 @@ const { parseJ } = require('../utils')
 
 const TOP_K = 3
 const EMBED_MODEL = 'text-embedding-3-small'
+// Debe coincidir con EMBED_DIMS del frontend (los vectores de chunk y de consulta
+// tienen que tener la misma dimensión para el coseno).
+const EMBED_DIMS = 512
 
 async function readRagChunks(accId, agId) {
   const [rows] = await pool.query('SELECT * FROM rag_chunks WHERE account_id=? AND agent_id=?', [accId, agId])
@@ -23,7 +26,7 @@ async function getEmbedding(text, apiKey) {
   const res = await fetch('https://api.openai.com/v1/embeddings', {
     method: 'POST',
     headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${apiKey}` },
-    body: JSON.stringify({ model: EMBED_MODEL, input: text }),
+    body: JSON.stringify({ model: EMBED_MODEL, input: text, dimensions: EMBED_DIMS }),
   })
   if (!res.ok) {
     const err = await res.json().catch(() => ({}))

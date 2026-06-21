@@ -250,19 +250,29 @@ const listTemplates = async (req, res) => {
 }
 const uploadTemplate = async (req, res) => {
   if (!requireSA(req, res)) return
-  if (!req.file) return res.status(400).json({ error: 'Falta el archivo' })
-  const ext = (req.file.originalname || '').split('.').pop().toLowerCase()
-  if (!['pdf', 'docx', 'doc'].includes(ext)) return res.status(400).json({ error: 'Formato no soportado. Usa PDF o DOCX.' })
+  if (!req.file) return res.status(400).json({ error: 'No llegó el archivo. Vuelve a seleccionarlo.' })
+  const fname = String(req.file.originalname || 'plantilla')
+  const ext = fname.split('.').pop().toLowerCase()
+  const mime = String(req.file.mimetype || '')
+  const okByExt = ['pdf', 'docx', 'doc'].includes(ext)
+  const okByMime = /pdf|word|officedocument/.test(mime)
+  if (!okByExt && !okByMime) return res.status(400).json({ error: `Formato no soportado (.${ext}). Usa PDF o DOCX.` })
   try {
     const id = 'dtpl_' + uid()
+    // Recortamos a los límites de las columnas para evitar errores de truncado.
+    const name = String(req.body?.name || fname).slice(0, 150)
     await pool.query('UPDATE demo_templates SET active=0') // solo una activa
     await pool.query(
       'INSERT INTO demo_templates (id,name,filename,mime,ext,size_bytes,data_base64,active,created_by,created_at) VALUES (?,?,?,?,?,?,?,1,?,?)',
-      [id, req.body?.name || req.file.originalname, req.file.originalname, req.file.mimetype, ext, req.file.size,
-       req.file.buffer.toString('base64'), req.user?.email || 'superadmin', Date.now()]
+      [id, name, fname.slice(0, 200), mime.slice(0, 120), (okByExt ? ext : (mime.includes('pdf') ? 'pdf' : 'docx')).slice(0, 10),
+       req.file.size, req.file.buffer.toString('base64'), String(req.user?.email || 'superadmin').slice(0, 120), Date.now()]
     )
     res.json({ id })
-  } catch (err) { console.error('[uploadTemplate]', err); res.status(500).json({ error: 'Error interno' }) }
+  } catch (err) {
+    console.error('[uploadTemplate]', err)
+    // Mensaje real (solo superadmin) para poder diagnosticar.
+    res.status(500).json({ error: 'No se pudo guardar la plantilla: ' + (err.sqlMessage || err.message || 'error interno') })
+  }
 }
 const activateTemplate = async (req, res) => {
   if (!requireSA(req, res)) return

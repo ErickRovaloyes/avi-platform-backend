@@ -4,12 +4,19 @@ const multer = require('multer')
 const { authMiddleware } = require('../auth')
 const ctrl = require('../controllers/demo.controller')
 
-const upload = multer({ storage: multer.memoryStorage(), limits: { fileSize: 30 * 1024 * 1024 } })
+const upload = multer({ storage: multer.memoryStorage(), limits: { fileSize: 50 * 1024 * 1024 } })
+
+// Envuelve un middleware de multer para devolver errores claros en JSON
+// (p. ej. archivo demasiado grande) en vez de un 500 genérico.
+const withUpload = (mw) => (req, res, next) => mw(req, res, (err) => {
+  if (err) return res.status(400).json({ error: err.code === 'LIMIT_FILE_SIZE' ? 'El archivo supera el límite de 50 MB.' : ('No se pudo procesar el archivo: ' + (err.message || err.code)) })
+  next()
+})
 
 // Público: estado del registro + descarga de la plantilla activa + alta de Demo.
 router.get('/public/demo-status',     ctrl.publicStatus)
 router.get('/public/demo-template',   ctrl.downloadActiveTemplate)
-router.post('/public/demo-signup',    upload.single('document'), ctrl.signup)
+router.post('/public/demo-signup',    withUpload(upload.single('document')), ctrl.signup)
 
 // Superadmin: dashboard de Demos.
 router.get('/admin/demo/dashboard',          authMiddleware, ctrl.getDashboard)
@@ -27,7 +34,7 @@ router.post('/admin/demo/registration',      authMiddleware, ctrl.setRegistratio
 
 // Superadmin: plantilla de descubrimiento empresarial.
 router.get('/admin/demo/templates',                 authMiddleware, ctrl.listTemplates)
-router.post('/admin/demo/templates',                authMiddleware, upload.single('file'), ctrl.uploadTemplate)
+router.post('/admin/demo/templates',                authMiddleware, withUpload(upload.single('file')), ctrl.uploadTemplate)
 router.post('/admin/demo/templates/:id/activate',   authMiddleware, ctrl.activateTemplate)
 router.delete('/admin/demo/templates/:id',          authMiddleware, ctrl.deleteTemplate)
 router.get('/admin/demo/templates/:id/download',    authMiddleware, ctrl.downloadTemplate)
