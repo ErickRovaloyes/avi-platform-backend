@@ -762,6 +762,21 @@ app.use('/api',                webhookRoutes)
     "ALTER TABLE demo_registrations ADD COLUMN industry VARCHAR(80)",
     "ALTER TABLE demo_registrations ADD COLUMN ia_name VARCHAR(80)",
     "ALTER TABLE demo_registrations ADD COLUMN onboarding JSON",
+    // Interruptor global del registro Demo (SuperAdmin).
+    "ALTER TABLE platform_settings ADD COLUMN demo_registration_enabled TINYINT(1) DEFAULT 1",
+    // Plantilla de Descubrimiento Empresarial (una activa a la vez).
+    `CREATE TABLE IF NOT EXISTS demo_templates (
+       id          VARCHAR(50) PRIMARY KEY,
+       name        VARCHAR(150),
+       filename    VARCHAR(200),
+       mime        VARCHAR(120),
+       ext         VARCHAR(10),
+       size_bytes  INT,
+       data_base64 LONGTEXT,
+       active      TINYINT(1) DEFAULT 0,
+       created_by  VARCHAR(120),
+       created_at  BIGINT
+     )`,
   ]
   for (const sql of migrations) {
     try { await pool.query(sql) } catch (e) { /* column exists or unsupported */ }

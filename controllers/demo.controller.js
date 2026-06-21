@@ -15,11 +15,18 @@ const clientIp = req => String(req.headers['x-forwarded-for'] || '').split(',')[
 const OWNER_PERMS = '{"inbox":true,"agents":true,"channels":true,"crm":true,"pipeline":true,"config":true,"admins":true,"flows":true,"variables":true,"tools":true,"knowledge":true}'
 const AGENT_PERMS = '{"inbox":true,"agents":false,"channels":false,"crm":true,"pipeline":true,"config":false,"admins":false,"flows":false,"variables":false,"tools":false,"knowledge":false}'
 
+// ¿Está habilitado el registro Demo? (interruptor global del SuperAdmin)
+async function registrationEnabled() {
+  try { const [[r]] = await pool.query('SELECT demo_registration_enabled FROM platform_settings WHERE id=1'); return r ? r.demo_registration_enabled !== 0 : true }
+  catch { return true }
+}
+
 // ── Registro público de cuenta Demo (onboarding inteligente) ───────────────────
 const signup = async (req, res) => {
   const b = req.body || {}
   const { name, email, password, phone, fingerprint, company, country, industry, iaName } = b
   const ip = clientIp(req)
+  if (!await registrationEnabled()) return res.status(403).json({ error: 'El registro de cuentas Demo está deshabilitado temporalmente.' })
   if (!name || !email || !password) return res.status(400).json({ error: 'Nombre, correo y contraseña son obligatorios' })
   // Datos del onboarding (todo lo del diagnóstico) para generar la IA y métricas.
   const onboarding = {
@@ -123,4 +130,87 @@ const setIpRestriction = async (req, res) => {
   catch { res.status(500).json({ error: 'Error interno' }) }
 }
 
-module.exports = { signup, listRegistrations, listOverrides, allow, removeOverride, setIpRestriction }
+// ── Estado público del registro Demo (lo consulta el asistente) ────────────────
+const publicStatus = async (req, res) => {
+  try {
+    const enabled = await registrationEnabled()
+    const [[t]] = await pool.query('SELECT id, name FROM demo_templates WHERE active=1 LIMIT 1')
+    res.json({ enabled, hasTemplate: !!t, templateName: t?.name || null })
+  } catch { res.json({ enabled: true, hasTemplate: false }) }
+}
+
+// Descarga PÚBLICA de la plantilla activa (la usa el asistente de onboarding).
+const downloadActiveTemplate = async (req, res) => {
+  try {
+    const [[t]] = await pool.query('SELECT * FROM demo_templates WHERE active=1 LIMIT 1')
+    if (!t) return res.status(404).json({ error: 'No hay plantilla activa' })
+    sendTemplate(res, t)
+  } catch { res.status(500).json({ error: 'Error interno' }) }
+}
+
+function sendTemplate(res, t) {
+  const buf = Buffer.from(t.data_base64, 'base64')
+  res.setHeader('Content-Type', t.mime || 'application/octet-stream')
+  res.setHeader('Content-Disposition', `attachment; filename="${(t.filename || 'plantilla').replace(/"/g, '')}"`)
+  res.send(buf)
+}
+
+// ── Gestión de plantillas (superadmin) ─────────────────────────────────────────
+const listTemplates = async (req, res) => {
+  if (!requireSA(req, res)) return
+  try {
+    const [rows] = await pool.query('SELECT id,name,filename,mime,ext,size_bytes,active,created_by,created_at FROM demo_templates ORDER BY created_at DESC')
+    res.json(rows)
+  } catch { res.status(500).json({ error: 'Error interno' }) }
+}
+const uploadTemplate = async (req, res) => {
+  if (!requireSA(req, res)) return
+  if (!req.file) return res.status(400).json({ error: 'Falta el archivo' })
+  const ext = (req.file.originalname || '').split('.').pop().toLowerCase()
+  if (!['pdf', 'docx', 'doc'].includes(ext)) return res.status(400).json({ error: 'Formato no soportado. Usa PDF o DOCX.' })
+  try {
+    const id = 'dtpl_' + uid()
+    await pool.query('UPDATE demo_templates SET active=0') // solo una activa
+    await pool.query(
+      'INSERT INTO demo_templates (id,name,filename,mime,ext,size_bytes,data_base64,active,created_by,created_at) VALUES (?,?,?,?,?,?,?,1,?,?)',
+      [id, req.body?.name || req.file.originalname, req.file.originalname, req.file.mimetype, ext, req.file.size,
+       req.file.buffer.toString('base64'), req.user?.email || 'superadmin', Date.now()]
+    )
+    res.json({ id })
+  } catch (err) { console.error('[uploadTemplate]', err); res.status(500).json({ error: 'Error interno' }) }
+}
+const activateTemplate = async (req, res) => {
+  if (!requireSA(req, res)) return
+  try { await pool.query('UPDATE demo_templates SET active=0'); await pool.query('UPDATE demo_templates SET active=1 WHERE id=?', [req.params.id]); res.json({ ok: true }) }
+  catch { res.status(500).json({ error: 'Error interno' }) }
+}
+const deleteTemplate = async (req, res) => {
+  if (!requireSA(req, res)) return
+  try { await pool.query('DELETE FROM demo_templates WHERE id=?', [req.params.id]); res.json({ ok: true }) }
+  catch { res.status(500).json({ error: 'Error interno' }) }
+}
+const downloadTemplate = async (req, res) => {
+  if (!requireSA(req, res)) return
+  try {
+    const [[t]] = await pool.query('SELECT * FROM demo_templates WHERE id=?', [req.params.id])
+    if (!t) return res.status(404).json({ error: 'No encontrada' })
+    sendTemplate(res, t)
+  } catch { res.status(500).json({ error: 'Error interno' }) }
+}
+
+// ── Interruptor del registro Demo (superadmin) ─────────────────────────────────
+const getRegistration = async (req, res) => {
+  if (!requireSA(req, res)) return
+  res.json({ enabled: await registrationEnabled() })
+}
+const setRegistration = async (req, res) => {
+  if (!requireSA(req, res)) return
+  try { await pool.query('UPDATE platform_settings SET demo_registration_enabled=? WHERE id=1', [req.body?.enabled ? 1 : 0]); res.json({ ok: true, enabled: !!req.body?.enabled }) }
+  catch { res.status(500).json({ error: 'Error interno' }) }
+}
+
+module.exports = {
+  signup, listRegistrations, listOverrides, allow, removeOverride, setIpRestriction,
+  publicStatus, downloadActiveTemplate, listTemplates, uploadTemplate, activateTemplate, deleteTemplate, downloadTemplate,
+  getRegistration, setRegistration,
+}
