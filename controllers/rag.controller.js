@@ -20,11 +20,12 @@ async function resolveOpenaiKey(accId) {
 const getContext = async (req, res) => {
   const { accId, agId } = req.params
   const query = String(req.body?.query || '').slice(0, 2000)
+  const fileIds = Array.isArray(req.body?.fileIds) ? req.body.fileIds : null
   if (!query) return res.json({ context: '' })
   try {
     const apiKey = await resolveOpenaiKey(accId)
     if (!apiKey) return res.json({ context: '' })
-    const context = await ragSvc.buildRagContext(query, accId, agId, apiKey)
+    const context = await ragSvc.buildRagContext(query, accId, agId, apiKey, fileIds)
     res.json({ context: context || '' })
   } catch (err) { console.warn('[rag context]', err.message); res.json({ context: '' }) }
 }

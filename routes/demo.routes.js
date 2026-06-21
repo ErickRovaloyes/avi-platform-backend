@@ -4,12 +4,12 @@ const multer = require('multer')
 const { authMiddleware } = require('../auth')
 const ctrl = require('../controllers/demo.controller')
 
-const upload = multer({ storage: multer.memoryStorage(), limits: { fileSize: 50 * 1024 * 1024 } })
+const upload = multer({ storage: multer.memoryStorage(), limits: { fileSize: 100 * 1024 * 1024 } })
 
 // Envuelve un middleware de multer para devolver errores claros en JSON
 // (p. ej. archivo demasiado grande) en vez de un 500 genérico.
 const withUpload = (mw) => (req, res, next) => mw(req, res, (err) => {
-  if (err) return res.status(400).json({ error: err.code === 'LIMIT_FILE_SIZE' ? 'El archivo supera el límite de 50 MB.' : ('No se pudo procesar el archivo: ' + (err.message || err.code)) })
+  if (err) return res.status(400).json({ error: err.code === 'LIMIT_FILE_SIZE' ? 'El archivo supera el límite de 100 MB.' : ('No se pudo procesar el archivo: ' + (err.message || err.code)) })
   next()
 })
 

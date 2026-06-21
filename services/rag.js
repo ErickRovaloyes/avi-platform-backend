@@ -14,8 +14,15 @@ const EMBED_MODEL = 'text-embedding-3-small'
 // tienen que tener la misma dimensión para el coseno).
 const EMBED_DIMS = 512
 
-async function readRagChunks(accId, agId) {
-  const [rows] = await pool.query('SELECT * FROM rag_chunks WHERE account_id=? AND agent_id=?', [accId, agId])
+async function readRagChunks(accId, agId, fileIds = null) {
+  let sql = 'SELECT * FROM rag_chunks WHERE account_id=? AND agent_id=?'
+  const params = [accId, agId]
+  // Filtra por los archivos asignados al prompt (si se indican).
+  if (Array.isArray(fileIds) && fileIds.length) {
+    sql += ` AND file_id IN (${fileIds.map(() => '?').join(',')})`
+    params.push(...fileIds)
+  }
+  const [rows] = await pool.query(sql, params)
   return rows.map(r => ({
     id: r.id, fileId: r.file_id, fileName: r.file_name,
     content: r.content, embedding: parseJ(r.embedding, null),
@@ -44,8 +51,8 @@ function cosineSimilarity(a, b) {
   return denom ? dot / denom : 0
 }
 
-async function searchRelevantChunks(query, accId, agId, apiKey) {
-  const rawChunks = await readRagChunks(accId, agId)
+async function searchRelevantChunks(query, accId, agId, apiKey, fileIds = null) {
+  const rawChunks = await readRagChunks(accId, agId, fileIds)
   if (!rawChunks?.length) return []
   const chunks = rawChunks.map(c => ({ ...c, text: c.content || c.text }))
   const queryEmbedding = await getEmbedding(query, apiKey)
@@ -56,9 +63,9 @@ async function searchRelevantChunks(query, accId, agId, apiKey) {
   return scored.slice(0, TOP_K)
 }
 
-async function buildRagContext(query, accId, agId, apiKey) {
+async function buildRagContext(query, accId, agId, apiKey, fileIds = null) {
   try {
-    const relevant = await searchRelevantChunks(query, accId, agId, apiKey)
+    const relevant = await searchRelevantChunks(query, accId, agId, apiKey, fileIds)
     if (!relevant.length) return ''
     const contextText = relevant
       .filter(c => c.score > 0.25)

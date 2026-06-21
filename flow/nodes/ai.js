@@ -384,6 +384,7 @@ const aiNodes = [
       let temperature = Number(node.data?.temperatura ?? 0.5)
       let promptLabel = 'inline'
       let assignedTools = []
+      let ragFileIds = null   // archivos de conocimiento asignados al prompt (null = sin asignación explícita)
 
       if (mode === 'active' || mode === 'from_list') {
         const allPrompts = ctx.account?.agents?.flatMap(a => a.prompts || []) || []
@@ -405,6 +406,7 @@ const aiNodes = [
         promptLabel = chosen.name || '(sin nombre)'
         const toolIds = chosen.toolIds || []
         assignedTools = (ctx.account?.aiTools || []).filter(t => toolIds.includes(t.id))
+        if (Array.isArray(chosen.ragFileIds)) ragFileIds = chosen.ragFileIds
       } else {
         systemPrompt = interpolate(node.data?.prompt || '', ctx.variables)
       }
@@ -432,14 +434,21 @@ const aiNodes = [
       // contexto relevante y lo añade al system prompt. Los embeddings usan la key
       // EFECTIVA de OpenAI (cuenta o plataforma), así que funciona con cualquier
       // proveedor de chat — incluido DeepSeek, que no tiene embeddings propios.
+      // Conocimiento (RAG): se usa SOLO los archivos asignados al prompt activo
+      // (como las Herramientas IA). Si el prompt no define asignación (campo
+      // ausente, prompts antiguos) y RAG global está activo, usa todos (compat).
       let sysWithRag = sys
       try {
         const ag = ctx.account?.agents?.find(a => a.id === ctx.agId)
-        if (ag?.rag?.enabled && ag.rag.files?.length && ctx.account?.openaiKey) {
+        const allFiles = (ag?.rag?.files || []).map(f => f.id)
+        let useFileIds = null
+        if (Array.isArray(ragFileIds)) useFileIds = ragFileIds.filter(id => allFiles.includes(id))
+        else if (ag?.rag?.enabled && allFiles.length) useFileIds = allFiles
+        if (useFileIds && useFileIds.length && ctx.account?.openaiKey) {
           const { buildRagContext } = require('../../services/rag')
           const ragQuery = String(ctx.variables?._lastUserMessage || ctx.variables?.message || userMsg || '').slice(0, 1000)
-          const ragBlock = await buildRagContext(ragQuery, ctx.accId, ctx.agId, ctx.account.openaiKey)
-          if (ragBlock) { sysWithRag = `${sys}\n${ragBlock}`; logDebug(ctx, 'flow_run', '📚 Conocimiento (RAG) inyectado en el prompt', {}) }
+          const ragBlock = await buildRagContext(ragQuery, ctx.accId, ctx.agId, ctx.account.openaiKey, useFileIds)
+          if (ragBlock) { sysWithRag = `${sys}\n${ragBlock}`; logDebug(ctx, 'flow_run', '📚 Conocimiento (RAG) inyectado en el prompt', { files: useFileIds.length }) }
         }
       } catch (e) { logDebug(ctx, 'error', `RAG no disponible: ${e.message}`, {}) }
 
