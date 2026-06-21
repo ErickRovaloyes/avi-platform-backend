@@ -28,6 +28,21 @@ const SPECIAL_CMS_TOOL = {
   special: true,
 }
 
+// Herramienta IA Especial de la TIENDA WooCommerce. Solo se ofrece cuando la
+// cuenta tiene la conexión configurada (accounts.woocommerce.enabled). Al
+// asignarla a un prompt, el asistente puede buscar productos, enviarlos con
+// fotos, crear pedidos con link de pago y confirmar el pago.
+const SPECIAL_WOO_TOOL = {
+  id: 'woo_store',
+  name: 'tienda_woocommerce',
+  description: 'Tienda WooCommerce conectada: busca productos y responde sobre precios/características, envía productos con sus fotos, crea pedidos y envía el link de pago (el pago se confirma solo). Asígnala a un prompt para habilitarla.',
+  collectFields: [],
+  actionType: 'woocommerce',
+  special: true,
+}
+const woo = require('../services/woocommerce')
+const wooTools = (acc) => (woo.isEnabled(parseJ(acc.woocommerce, null)) ? [SPECIAL_WOO_TOOL] : [])
+
 const mapCmsAsset = c => ({
   id: c.id, name: c.name, description: c.description || '', tags: parseJ(c.tags, []),
   kind: c.kind, mediaId: c.media_id, filename: c.filename, mime: c.mime,
@@ -65,7 +80,8 @@ async function loadPublicAccount(accId) {
     openaiKey: effOpenai, deepseekKey: effDeepseek, anthropicKey: effAnthropic,
     agents: agents.map(mapAgent),
     variables: variables.map(v => ({ id: v.id, name: v.name, type: v.type, defaultValue: v.default_value, description: v.description, isSystem: !!v.is_system })),
-    aiTools:   [SPECIAL_CMS_TOOL, ...aiTools.map(t => ({ id: t.id, name: t.name, description: t.description, collectFields: parseJ(t.collect_fields, []), flowId: t.flow_id, actionType: t.action_type || 'variable' }))],
+    aiTools:   [SPECIAL_CMS_TOOL, ...wooTools(acc), ...aiTools.map(t => ({ id: t.id, name: t.name, description: t.description, collectFields: parseJ(t.collect_fields, []), flowId: t.flow_id, actionType: t.action_type || 'variable' }))],
+    woocommerce: woo.publicConfig(parseJ(acc.woocommerce, null)),
     cmsAssets: cmsAssets.map(mapCmsAsset),
     cmsFolders: cmsFolders.map(mapCmsFolder),
     cmsTags: cmsTags.map(mapNamed),
@@ -145,7 +161,8 @@ const getAccount = async (req, res) => {
       labels:    labels.map(l => ({ id: l.id, name: l.name, color: l.color })),
       pipelines: pipelines.map(p => ({ id: p.id, name: p.name, stages: parseJ(p.stages, []), cards: parseJ(p.cards, []) })),
       variables: variables.map(v => ({ id: v.id, name: v.name, type: v.type, defaultValue: v.default_value, description: v.description, isSystem: !!v.is_system })),
-      aiTools:   [SPECIAL_CMS_TOOL, ...aiTools.map(t => ({ id: t.id, name: t.name, description: t.description, collectFields: parseJ(t.collect_fields, []), flowId: t.flow_id, actionType: t.action_type || 'variable', createdAt: t.created_at }))],
+      aiTools:   [SPECIAL_CMS_TOOL, ...wooTools(acc), ...aiTools.map(t => ({ id: t.id, name: t.name, description: t.description, collectFields: parseJ(t.collect_fields, []), flowId: t.flow_id, actionType: t.action_type || 'variable', createdAt: t.created_at }))],
+      woocommerce: woo.publicConfig(parseJ(acc.woocommerce, null)),
       cmsAssets: cmsAssets.map(mapCmsAsset),
       cmsFolders: cmsFolders.map(mapCmsFolder),
       cmsTags: cmsTags.map(mapNamed),

@@ -16,7 +16,8 @@ const io     = new Server(server, { cors: { origin: '*' } })
 socket.init(io)
 
 app.use(cors({ origin: '*' }))
-app.use(express.json({ limit: '25mb' }))  // headroom para la base de conocimiento (RAG) y otros JSON grandes
+// Guarda el body crudo (req.rawBody) para verificar firmas de webhooks (WooCommerce).
+app.use(express.json({ limit: '25mb', verify: (req, _res, buf) => { req.rawBody = buf } }))  // headroom para la base de conocimiento (RAG) y otros JSON grandes
 
 // ── Socket.io: auth + room management ────────────────────────────────────────
 
@@ -113,6 +114,7 @@ const googleRoutes        = require('./routes/google.routes')
 const flowLogsRoutes      = require('./routes/flowLogs.routes')
 const aiMediaRoutes       = require('./routes/aiMedia.routes')
 const calendarRoutes      = require('./routes/calendars.routes')
+const woocommerceRoutes   = require('./routes/woocommerce.routes')
 
 // Guest counter alias (used by storage.js generateGuest)
 const guestRouter = require('express').Router()
@@ -151,6 +153,7 @@ app.use('/api',                googleRoutes)
 app.use('/api',                flowLogsRoutes)
 app.use('/api',                aiMediaRoutes)
 app.use('/api',                calendarRoutes)
+app.use('/api',                woocommerceRoutes)
 app.use('/api',                webhookRoutes)
 
 // ── Auto-migrate DB columns added after initial schema ────────────────────────
@@ -237,6 +240,26 @@ app.use('/api',                webhookRoutes)
     "ALTER TABLE conversations     ADD COLUMN ai_disabled_reason VARCHAR(40)",
     // Origen del lead (anuncio/link/directo + plataforma + id de anuncio + UTM).
     "ALTER TABLE conversations     ADD COLUMN origin JSON",
+    // Conexión WooCommerce por cuenta (URL tienda, llaves, pasarela, webhook).
+    "ALTER TABLE accounts          ADD COLUMN woocommerce JSON",
+    // Pedidos creados por el asistente → mapeo pedido↔conversación para confirmar el pago.
+    `CREATE TABLE IF NOT EXISTS woo_orders (
+       id          VARCHAR(60)  PRIMARY KEY,
+       account_id  VARCHAR(50)  NOT NULL,
+       agent_id    VARCHAR(50),
+       conv_id     VARCHAR(80),
+       order_id    VARCHAR(40)  NOT NULL,
+       order_key   VARCHAR(80),
+       status      VARCHAR(30)  DEFAULT 'pending',
+       total       VARCHAR(30),
+       currency    VARCHAR(10),
+       pay_url     TEXT,
+       paid_notified TINYINT(1) DEFAULT 0,
+       created_at  BIGINT,
+       updated_at  BIGINT,
+       INDEX idx_woo_order (account_id, order_id),
+       INDEX idx_woo_conv (account_id, conv_id)
+     )`,
     `CREATE TABLE IF NOT EXISTS crm_notes (
        id          VARCHAR(50) PRIMARY KEY,
        account_id  VARCHAR(50) NOT NULL,
