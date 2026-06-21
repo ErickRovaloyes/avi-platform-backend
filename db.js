@@ -8,7 +8,12 @@ const pool = mysql.createPool({
   password:         process.env.DB_PASS || '',
   database:         process.env.DB_NAME || 'avi_platform',
   waitForConnections: true,
-  connectionLimit:  10,
+  // El test de estrés mostró que con 10 conexiones el pool se saturaba a ~120-160
+  // peticiones concurrentes (la latencia p99 se disparaba por encolado). Subimos a
+  // 25 (configurable) para elevar el "codo" de capacidad. MySQL admite 151 por
+  // defecto, así que con una sola instancia esto es seguro.
+  connectionLimit:  parseInt(process.env.DB_POOL_LIMIT || '25'),
+  queueLimit:       0,
   timezone:         '+00:00',
 })
 
