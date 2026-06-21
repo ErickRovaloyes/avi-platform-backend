@@ -65,9 +65,9 @@ const createPlan = async (req, res) => {
   const b = req.body || {}; const now = Date.now(); const id = 'plan_' + uid()
   try {
     await pool.query(
-      `INSERT INTO subscription_plans (id,name,monthly_conversation_limit,is_custom_limit,grace_period_days,sort_order,created_at,updated_at)
-       VALUES (?,?,?,?,?,?,?,?)`,
-      [id, b.name || 'Nuevo plan', n(b.monthlyConversationLimit, 0), b.isCustomLimit ? 1 : 0, n(b.gracePeriodDays, 5), n(b.sortOrder, 0), now, now]
+      `INSERT INTO subscription_plans (id,name,monthly_conversation_limit,is_custom_limit,grace_period_days,monthly_price,sort_order,created_at,updated_at)
+       VALUES (?,?,?,?,?,?,?,?,?)`,
+      [id, b.name || 'Nuevo plan', n(b.monthlyConversationLimit, 0), b.isCustomLimit ? 1 : 0, n(b.gracePeriodDays, 5), n(b.monthlyPrice, 0), n(b.sortOrder, 0), now, now]
     )
     res.json({ id })
   } catch (err) { console.error('[createPlan]', err); res.status(500).json({ error: 'Error interno' }) }
@@ -75,7 +75,7 @@ const createPlan = async (req, res) => {
 const updatePlan = async (req, res) => {
   if (!requireSA(req, res)) return
   const { id } = req.params; const b = req.body || {}
-  const map = { name: 'name', monthlyConversationLimit: 'monthly_conversation_limit', isCustomLimit: 'is_custom_limit', gracePeriodDays: 'grace_period_days', sortOrder: 'sort_order' }
+  const map = { name: 'name', monthlyConversationLimit: 'monthly_conversation_limit', isCustomLimit: 'is_custom_limit', gracePeriodDays: 'grace_period_days', monthlyPrice: 'monthly_price', sortOrder: 'sort_order' }
   const sets = [], vals = []
   for (const [k, col] of Object.entries(map)) {
     if (b[k] !== undefined) { sets.push(`${col}=?`); vals.push(k === 'isCustomLimit' ? (b[k] ? 1 : 0) : b[k]) }
@@ -149,6 +149,16 @@ const getOverview = async (req, res) => {
     const typeById = Object.fromEntries(types.map(t => [t.id, t]))
     const planById = Object.fromEntries(plans.map(p => [p.id, p]))
     const subByAcc = Object.fromEntries(subsRows.map(s => [s.account_id, s]))
+    // Uso de canales por cuenta (entre todos los agentes) para el reporte de canales.
+    const chUsage = {}
+    try {
+      const [agents] = await pool.query('SELECT account_id, channels FROM agents')
+      for (const a of agents) {
+        const m = chUsage[a.account_id] || (chUsage[a.account_id] = { webchat: 0, whatsapp: 0, test: 0, messenger: 0, instagram: 0 })
+        let chs = []; try { chs = JSON.parse(a.channels || '[]') } catch {}
+        for (const c of chs) if (m[c.type] != null) m[c.type]++
+      }
+    } catch {}
 
     const list = accounts.map(a => {
       const s = subByAcc[a.id]
@@ -164,6 +174,7 @@ const getOverview = async (req, res) => {
         hasSub: !!s, typeId: s?.account_type_id || null, typeName: type?.name || (s ? '—' : 'Sin asignar'), isDemo,
         planId: s?.subscription_plan_id || null, planName: plan?.name || (isDemo ? 'Demo' : (s ? '—' : '')),
         status: s?.status || (s ? 'active' : 'none'), used, limit, pct,
+        channelUsage: chUsage[a.id] || { webchat: 0, whatsapp: 0, test: 0, messenger: 0, instagram: 0 },
         currentPeriodEnd: s?.current_period_end || null,
         cycleDaysLeft: s?.current_period_end ? Math.max(0, Math.ceil((s.current_period_end - now) / DAY)) : null,
         graceUntil: s?.grace_until || null,
@@ -204,10 +215,58 @@ const getOverview = async (req, res) => {
   } catch (err) { console.error('[overview]', err); res.status(500).json({ error: 'Error interno' }) }
 }
 
+// ── Dashboard comercial (MRR, conversiones Demo→Pago, etc.) ────────────────────
+const getCommercial = async (req, res) => {
+  if (!requireSA(req, res)) return
+  const now = Date.now()
+  const monthStart = new Date(); monthStart.setDate(1); monthStart.setHours(0, 0, 0, 0)
+  const ms = monthStart.getTime()
+  try {
+    const [accounts] = await pool.query('SELECT id,status,created_at FROM accounts')
+    const [subsRows] = await pool.query('SELECT * FROM account_subscriptions')
+    const plans = await subs.listPlans()
+    const types = await subs.listTypes()
+    const planById = Object.fromEntries(plans.map(p => [p.id, p]))
+    const typeById = Object.fromEntries(types.map(t => [t.id, t]))
+
+    let mrr = 0
+    const revenueByPlan = {}
+    let totalConversationsCycle = 0
+    let activeDemos = 0
+    for (const s of subsRows) {
+      const type = typeById[s.account_type_id]
+      const plan = planById[s.subscription_plan_id]
+      totalConversationsCycle += s.conversation_count_current_period || 0
+      const blocked = s.status === 'suspended' || s.status === 'expired'
+      if (type?.isDemo) { if (!blocked) activeDemos++; continue }
+      if (plan && !blocked) {
+        const price = plan.isCustomLimit ? (plan.monthlyPrice || 0) : (plan.monthlyPrice || 0)
+        mrr += price
+        revenueByPlan[plan.name] = (revenueByPlan[plan.name] || 0) + price
+      }
+    }
+    // Conversiones Demo → Pago (registros marcados 'converted')
+    const [[{ conv }]] = await pool.query("SELECT COUNT(*) AS conv FROM demo_registrations WHERE status='converted'")
+    const [[{ demosCreated }]] = await pool.query("SELECT COUNT(*) AS demosCreated FROM demo_registrations WHERE result IN ('created','created_override')")
+    const [[{ convMonth }]] = await pool.query("SELECT COUNT(*) AS convMonth FROM demo_registrations WHERE status='converted' AND created_at>=?", [ms])
+    const conversionRate = demosCreated ? Math.round((conv / demosCreated) * 100) : 0
+
+    const newThisMonth = accounts.filter(a => (a.created_at || 0) >= ms).length
+    const suspended = subsRows.filter(s => s.status === 'suspended' || s.status === 'expired').length
+
+    res.json({
+      mrr, revenueByPlan, currency: 'USD',
+      activeDemos, conversions: conv, conversionsThisMonth: convMonth, demosCreated, conversionRate,
+      newAccountsThisMonth: newThisMonth, suspendedAccounts: suspended,
+      totalConversationsCycle, totalAccounts: accounts.length, generatedAt: now,
+    })
+  } catch (err) { console.error('[commercial]', err); res.status(500).json({ error: 'Error interno' }) }
+}
+
 function n(v, d) { return v === undefined || v === null || v === '' ? d : Number(v) }
 
 module.exports = {
   listTypes, createType, updateType, deleteType,
   listPlans, createPlan, updatePlan, deletePlan,
-  getAccountSubscription, assign, action, getOverview,
+  getAccountSubscription, assign, action, getOverview, getCommercial,
 }

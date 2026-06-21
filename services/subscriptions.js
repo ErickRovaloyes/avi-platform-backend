@@ -85,6 +85,7 @@ const mapType = t => ({
 const mapPlan = p => ({
   id: p.id, name: p.name, monthlyConversationLimit: p.monthly_conversation_limit,
   isCustomLimit: !!p.is_custom_limit, gracePeriodDays: p.grace_period_days, sortOrder: p.sort_order,
+  monthlyPrice: p.monthly_price != null ? Number(p.monthly_price) : 0,
 })
 
 // Devuelve la suscripción de una cuenta con su tipo y plan resueltos (o null).
@@ -136,6 +137,16 @@ async function assignSubscription(accId, { accountTypeId, subscriptionPlanId, cu
        periodStart, periodEnd, demoStart, demoExpires, 'active', now, now]
     )
   }
+  // Conversión Demo → Pago: si la cuenta venía de un tipo Demo y ahora pasa a un
+  // tipo de pago, marcamos su registro Demo como 'converted' (para el comercial).
+  try {
+    if (existing?.account_type_id && !isDemo) {
+      const [[prevType]] = await pool.query('SELECT is_demo FROM account_types WHERE id=?', [existing.account_type_id])
+      if (prevType?.is_demo) {
+        await pool.query("UPDATE demo_registrations SET status='converted' WHERE account_id=? AND result IN ('created','created_override')", [accId])
+      }
+    }
+  } catch { /* no crítico */ }
   socket.emit(accId, 'account:updated', { accId })
   return getSubscription(accId)
 }

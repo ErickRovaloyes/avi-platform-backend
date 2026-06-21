@@ -16,7 +16,8 @@ router.put('/subscription-plans/:id',    authMiddleware, ctrl.updatePlan)
 router.delete('/subscription-plans/:id', authMiddleware, ctrl.deletePlan)
 
 // Dashboard de supervisión (superadmin)
-router.get('/admin/subscriptions/overview', authMiddleware, ctrl.getOverview)
+router.get('/admin/subscriptions/overview',   authMiddleware, ctrl.getOverview)
+router.get('/admin/subscriptions/commercial', authMiddleware, ctrl.getCommercial)
 
 // Suscripción por cuenta
 router.get('/accounts/:accId/subscription',         authMiddleware, ctrl.getAccountSubscription)

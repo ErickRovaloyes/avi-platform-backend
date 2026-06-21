@@ -754,6 +754,8 @@ app.use('/api',                webhookRoutes)
        created_at BIGINT,
        INDEX idx_do_kind (kind, value)
      )`,
+    // Precio mensual del plan (para MRR / ingresos por plan en el dashboard comercial).
+    "ALTER TABLE subscription_plans ADD COLUMN monthly_price DECIMAL(10,2) DEFAULT 0",
   ]
   for (const sql of migrations) {
     try { await pool.query(sql) } catch (e) { /* column exists or unsupported */ }
