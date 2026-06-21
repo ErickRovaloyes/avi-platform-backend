@@ -1,6 +1,33 @@
 'use strict'
 const pool = require('../db')
 const { uid } = require('../utils')
+const ragSvc = require('../services/rag')
+
+// Resuelve la key de OpenAI efectiva (cuenta → plataforma) para los embeddings.
+async function resolveOpenaiKey(accId) {
+  try {
+    const [[acc]] = await pool.query('SELECT openai_key FROM accounts WHERE id=?', [accId])
+    if (acc?.openai_key && acc.openai_key.trim()) return acc.openai_key
+    const [[pf]] = await pool.query('SELECT openai_key FROM platform_settings WHERE id=1')
+    return pf?.openai_key || ''
+  } catch { return '' }
+}
+
+// Recuperación SERVER-SIDE: hace el embedding de la consulta + búsqueda por coseno
+// y devuelve SOLO el contexto top-K (pequeño). Evita que el navegador descargue
+// TODOS los chunks con sus embeddings en cada mensaje (lo que rompía la plataforma).
+// Público: lo usa el motor del navegador (webchat) sin sesión.
+const getContext = async (req, res) => {
+  const { accId, agId } = req.params
+  const query = String(req.body?.query || '').slice(0, 2000)
+  if (!query) return res.json({ context: '' })
+  try {
+    const apiKey = await resolveOpenaiKey(accId)
+    if (!apiKey) return res.json({ context: '' })
+    const context = await ragSvc.buildRagContext(query, accId, agId, apiKey)
+    res.json({ context: context || '' })
+  } catch (err) { console.warn('[rag context]', err.message); res.json({ context: '' }) }
+}
 
 const getRag = async (req, res) => {
   const { accId, agId } = req.params
@@ -31,4 +58,4 @@ const deleteRagFile = async (req, res) => {
   } catch (err) { res.status(500).json({ error: 'Error interno' }) }
 }
 
-module.exports = { getRag, putRag, deleteRagFile }
+module.exports = { getRag, putRag, deleteRagFile, getContext }
