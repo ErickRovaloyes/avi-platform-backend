@@ -59,12 +59,15 @@ async function validate({ email, ip, fingerprint, phone }) {
   return { ok: true, overrideIds, ipOff }
 }
 
-async function recordAttempt({ accountId = null, email, ip, fingerprint, phone, result, reason = null, expiresAt = null }) {
+async function recordAttempt({ accountId = null, email, ip, fingerprint, phone, result, reason = null, expiresAt = null,
+                               company = null, country = null, industry = null, iaName = null, onboarding = null }) {
   await pool.query(
-    `INSERT INTO demo_registrations (id,account_id,email,ip,fingerprint,phone,result,reason,status,created_at,expires_at)
-     VALUES (?,?,?,?,?,?,?,?,?,?,?)`,
+    `INSERT INTO demo_registrations (id,account_id,email,ip,fingerprint,phone,result,reason,status,created_at,expires_at,
+       company,country,industry,ia_name,onboarding)
+     VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`,
     ['dreg_' + uid(), accountId, normEmail(email), ip || null, fingerprint || null, digits(phone) || null,
-     result, reason, result.startsWith('created') ? 'active' : 'blocked', Date.now(), expiresAt]
+     result, reason, result.startsWith('created') ? 'active' : 'blocked', Date.now(), expiresAt,
+     company || null, country || null, industry || null, iaName || null, onboarding ? JSON.stringify(onboarding) : null]
   )
 }
 

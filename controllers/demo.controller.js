@@ -4,6 +4,7 @@ const { uid, parseJ } = require('../utils')
 const { sign } = require('../auth')
 const guard = require('../services/demoGuard')
 const subs = require('../services/subscriptions')
+const provision = require('../services/demoProvision')
 
 const requireSA = (req, res) => {
   if (req.user?.type !== 'superadmin') { res.status(403).json({ error: 'Solo superadmin' }); return false }
@@ -14,11 +15,21 @@ const clientIp = req => String(req.headers['x-forwarded-for'] || '').split(',')[
 const OWNER_PERMS = '{"inbox":true,"agents":true,"channels":true,"crm":true,"pipeline":true,"config":true,"admins":true,"flows":true,"variables":true,"tools":true,"knowledge":true}'
 const AGENT_PERMS = '{"inbox":true,"agents":false,"channels":false,"crm":true,"pipeline":true,"config":false,"admins":false,"flows":false,"variables":false,"tools":false,"knowledge":false}'
 
-// ── Registro público de cuenta Demo ────────────────────────────────────────────
+// ── Registro público de cuenta Demo (onboarding inteligente) ───────────────────
 const signup = async (req, res) => {
-  const { name, email, password, phone, fingerprint } = req.body || {}
+  const b = req.body || {}
+  const { name, email, password, phone, fingerprint, company, country, industry, iaName } = b
   const ip = clientIp(req)
   if (!name || !email || !password) return res.status(400).json({ error: 'Nombre, correo y contraseña son obligatorios' })
+  // Datos del onboarding (todo lo del diagnóstico) para generar la IA y métricas.
+  const onboarding = {
+    iaName, industry, businessType: b.businessType, objective: b.objective,
+    company, country, city: b.city, website: b.website,
+    whatCompanyDoes: b.whatCompanyDoes, products: b.products, services: b.services, differentiator: b.differentiator,
+    idealClient: b.idealClient, faqs: b.faqs, objections: b.objections,
+    salesProcess: b.salesProcess, infoBeforeBuying: b.infoBeforeBuying,
+    hours: b.hours, coverage: b.coverage, contactChannels: b.contactChannels,
+  }
   try {
     // ¿Correo ya registrado como miembro? (no relacionado con el antifraude Demo, pero evita choque)
     const [[dupe]] = await pool.query('SELECT 1 AS x FROM members WHERE email=? LIMIT 1', [email.trim().toLowerCase()])
@@ -55,8 +66,17 @@ const signup = async (req, res) => {
     await subs.assignSubscription(accId, { accountTypeId: demoType.id, subscriptionPlanId: null })
     const expiresAt = Date.now() + (demoType.demoDaysDuration || 7) * 86400000
 
-    // Registrar y consumir overrides usados
-    await guard.recordAttempt({ accountId: accId, email, ip, fingerprint, phone, result: v.overrideIds?.length ? 'created_override' : 'created', expiresAt })
+    // Aprovisionar la IA: prompt maestro + agente + flujo de respuesta + Webchat activo.
+    let prov = { agentId: null, webchatLink: null, iaName: iaName || name.trim() }
+    try { prov = await provision.provisionDemoAgent(accId, onboarding) }
+    catch (e) { console.warn('[demo provision]', e.message) }
+
+    // Registrar (con datos del onboarding) y consumir overrides usados
+    await guard.recordAttempt({
+      accountId: accId, email, ip, fingerprint, phone,
+      result: v.overrideIds?.length ? 'created_override' : 'created', expiresAt,
+      company, country, industry, iaName: prov.iaName, onboarding,
+    })
     if (v.overrideIds?.length) await guard.consumeOverrides(v.overrideIds)
 
     // Auto-login: token de sesión del owner recién creado
@@ -65,7 +85,15 @@ const signup = async (req, res) => {
       accountId: accId, accountName: name.trim(), allAccountIds: [accId],
       roleId: ownerRoleId, permissions: parseJ(OWNER_PERMS, {}), agentAccess: [],
     }
-    res.json({ ok: true, accountId: accId, token: sign(session), session })
+    // URL pública del webchat para "Probar mi IA"
+    const base = (process.env.PUBLIC_URL || process.env.BASE_URL || '').replace(/\/$/, '')
+    const webchatUrl = prov.agentId && prov.webchatLink ? `${base}/chat/${accId}/${prov.agentId}/${prov.webchatLink}` : null
+    res.json({
+      ok: true, accountId: accId, agentId: prov.agentId, iaName: prov.iaName,
+      webchatLink: prov.webchatLink, webchatUrl, demoExpiresAt: expiresAt,
+      demoMaxConversations: demoType.demoMaxConversations || 100,
+      token: sign(session), session,
+    })
   } catch (err) { console.error('[demo signup]', err); res.status(500).json({ error: 'No se pudo crear la cuenta Demo' }) }
 }
 

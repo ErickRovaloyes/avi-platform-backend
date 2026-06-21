@@ -756,6 +756,12 @@ app.use('/api',                webhookRoutes)
      )`,
     // Precio mensual del plan (para MRR / ingresos por plan en el dashboard comercial).
     "ALTER TABLE subscription_plans ADD COLUMN monthly_price DECIMAL(10,2) DEFAULT 0",
+    // Datos del onboarding inteligente de la Demo (para métricas + generación de IA).
+    "ALTER TABLE demo_registrations ADD COLUMN company VARCHAR(150)",
+    "ALTER TABLE demo_registrations ADD COLUMN country VARCHAR(80)",
+    "ALTER TABLE demo_registrations ADD COLUMN industry VARCHAR(80)",
+    "ALTER TABLE demo_registrations ADD COLUMN ia_name VARCHAR(80)",
+    "ALTER TABLE demo_registrations ADD COLUMN onboarding JSON",
   ]
   for (const sql of migrations) {
     try { await pool.query(sql) } catch (e) { /* column exists or unsupported */ }
