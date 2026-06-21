@@ -234,9 +234,23 @@ const downloadActiveTemplate = async (req, res) => {
 }
 
 function sendTemplate(res, t) {
-  const buf = Buffer.from(t.data_base64, 'base64')
-  res.setHeader('Content-Type', t.mime || 'application/octet-stream')
-  res.setHeader('Content-Disposition', `attachment; filename="${(t.filename || 'plantilla').replace(/"/g, '')}"`)
+  // Falta de contenido → 404 claro (en vez de reventar Buffer.from con null).
+  if (!t || t.data_base64 == null || t.data_base64 === '') {
+    return res.status(404).json({ error: 'La plantilla no tiene contenido almacenado.' })
+  }
+  let buf
+  try { buf = Buffer.from(String(t.data_base64), 'base64') }
+  catch { return res.status(500).json({ error: 'No se pudo decodificar la plantilla.' }) }
+
+  // El nombre real puede tener acentos/caracteres no-ASCII (p. ej. "INFORMACIÓN"),
+  // que NO son válidos en una cabecera HTTP y hacían reventar res.setHeader →
+  // 500 "Internal Server Error". Usamos un nombre ASCII seguro para filename= y
+  // el nombre real en filename*=UTF-8'' (RFC 5987) para clientes que lo soporten.
+  const rawName   = String(t.filename || 'plantilla')
+  const asciiName = rawName.replace(/[^\x20-\x7e]/g, '_').replace(/["\\]/g, '')
+  res.setHeader('Content-Type', String(t.mime || 'application/octet-stream').replace(/[^\x20-\x7e]/g, ''))
+  res.setHeader('Content-Disposition',
+    `attachment; filename="${asciiName}"; filename*=UTF-8''${encodeURIComponent(rawName)}`)
   res.send(buf)
 }
 
