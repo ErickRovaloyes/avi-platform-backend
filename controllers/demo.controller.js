@@ -146,6 +146,75 @@ const setIpRestriction = async (req, res) => {
   catch { res.status(500).json({ error: 'Error interno' }) }
 }
 
+// ── Dashboard de Demos (superadmin) ────────────────────────────────────────────
+const getDashboard = async (req, res) => {
+  if (!requireSA(req, res)) return
+  const now = Date.now(), DAY = 86400000
+  try {
+    const [regs] = await pool.query("SELECT * FROM demo_registrations WHERE result IN ('created','created_override') ORDER BY created_at DESC")
+    const accIds = regs.map(r => r.account_id).filter(Boolean)
+    let subByAcc = {}
+    if (accIds.length) {
+      const [srows] = await pool.query(
+        `SELECT account_id, conversation_count_current_period AS used, demo_expires_at, status FROM account_subscriptions WHERE account_id IN (${accIds.map(() => '?').join(',')})`, accIds)
+      subByAcc = Object.fromEntries(srows.map(s => [s.account_id, s]))
+    }
+    const types = await subs.listTypes()
+    const maxConv = types.find(t => t.isDemo)?.demoMaxConversations || 100
+
+    const list = regs.map(r => {
+      const s = subByAcc[r.account_id]
+      const used = s?.used || 0
+      const expiresAt = s?.demo_expires_at || r.expires_at
+      const daysLeft = expiresAt ? Math.ceil((expiresAt - now) / DAY) : null
+      const converted = r.status === 'converted'
+      const expired = !converted && ((s?.status === 'expired') || (expiresAt && now > expiresAt))
+      const pct = maxConv ? Math.round((used / maxConv) * 100) : null
+      return {
+        id: r.id, accountId: r.account_id, company: r.company || '(sin nombre)', email: r.email,
+        country: r.country || '—', industry: r.industry || '—', iaName: r.ia_name,
+        createdAt: r.created_at, expiresAt, daysLeft, used, maxConv, pct,
+        converted, expired, active: !converted && !expired,
+      }
+    })
+
+    const kpis = {
+      created: list.length,
+      active: list.filter(x => x.active).length,
+      expired: list.filter(x => x.expired).length,
+      expiringSoon: list.filter(x => x.active && x.daysLeft != null && x.daysLeft <= 3).length,
+      conversions: list.filter(x => x.converted).length,
+      conversionRate: list.length ? Math.round((list.filter(x => x.converted).length / list.length) * 100) : 0,
+    }
+    const byIndustry = {}, byCountry = {}
+    for (const x of list) {
+      if (x.industry && x.industry !== '—') byIndustry[x.industry] = (byIndustry[x.industry] || 0) + 1
+      if (x.country && x.country !== '—') byCountry[x.country] = (byCountry[x.country] || 0) + 1
+    }
+    const alerts = []
+    for (const x of list) {
+      if (x.converted) continue
+      if (x.active && x.daysLeft != null && x.daysLeft <= 1) alerts.push({ sev: 'crit', company: x.company, text: x.daysLeft <= 0 ? 'Demo vence hoy' : 'Demo vence mañana' })
+      else if (x.active && x.daysLeft != null && x.daysLeft <= 3) alerts.push({ sev: 'warn', company: x.company, text: `Demo vence en ${x.daysLeft} días` })
+      if (x.pct != null && x.pct >= 100) alerts.push({ sev: 'crit', company: x.company, text: 'Consumo 100%' })
+      else if (x.pct != null && x.pct >= 90) alerts.push({ sev: 'warn', company: x.company, text: `Consumo ${x.pct}%` })
+      else if (x.pct != null && x.pct >= 80) alerts.push({ sev: 'info', company: x.company, text: `Consumo ${x.pct}%` })
+    }
+    const order = { crit: 0, warn: 1, info: 2 }
+    alerts.sort((a, b) => order[a.sev] - order[b.sev])
+
+    const lists = {
+      expiring: list.filter(x => x.active && x.daysLeft != null).sort((a, b) => a.daysLeft - b.daysLeft).slice(0, 20),
+      mostUsed: [...list].sort((a, b) => b.used - a.used).slice(0, 20),
+      // Mayor probabilidad de conversión: heurística por uso + consumo + antigüedad activa.
+      likely: list.filter(x => x.active).map(x => ({ ...x, score: (x.used || 0) * 2 + (x.pct || 0) + Math.max(0, 7 - (x.daysLeft || 7)) }))
+        .sort((a, b) => b.score - a.score).slice(0, 20),
+      converted: list.filter(x => x.converted),
+    }
+    res.json({ kpis, byIndustry, byCountry, alerts: alerts.slice(0, 60), lists, generatedAt: now })
+  } catch (err) { console.error('[demo dashboard]', err); res.status(500).json({ error: 'Error interno' }) }
+}
+
 // ── Estado público del registro Demo (lo consulta el asistente) ────────────────
 const publicStatus = async (req, res) => {
   try {
@@ -228,5 +297,5 @@ const setRegistration = async (req, res) => {
 module.exports = {
   signup, listRegistrations, listOverrides, allow, removeOverride, setIpRestriction,
   publicStatus, downloadActiveTemplate, listTemplates, uploadTemplate, activateTemplate, deleteTemplate, downloadTemplate,
-  getRegistration, setRegistration,
+  getRegistration, setRegistration, getDashboard,
 }

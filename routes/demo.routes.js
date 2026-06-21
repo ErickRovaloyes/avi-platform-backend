@@ -11,6 +11,9 @@ router.get('/public/demo-status',     ctrl.publicStatus)
 router.get('/public/demo-template',   ctrl.downloadActiveTemplate)
 router.post('/public/demo-signup',    upload.single('document'), ctrl.signup)
 
+// Superadmin: dashboard de Demos.
+router.get('/admin/demo/dashboard',          authMiddleware, ctrl.getDashboard)
+
 // Superadmin: auditoría / excepciones.
 router.get('/admin/demo/registrations',      authMiddleware, ctrl.listRegistrations)
 router.get('/admin/demo/overrides',          authMiddleware, ctrl.listOverrides)
