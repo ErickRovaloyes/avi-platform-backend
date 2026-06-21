@@ -122,7 +122,72 @@ async function provisionDemoAgent(accId, d, discoveryText = '') {
      `¡Hola! Soy ${iaName}. ¿En qué puedo ayudarte?`,
      JSON.stringify(prompts), JSON.stringify(channels), JSON.stringify({ enabled: false, files: [] }), '[]', flowId]
   )
-  return { agentId, webchatLink: webchatId, iaName }
+  return { agentId, webchatLink: webchatId, iaName, masterPrompt }
 }
 
-module.exports = { buildMasterPrompt, generateMasterPrompt, provisionDemoAgent }
+// ── Conversaciones de demostración (efecto "wow" en el inbox) ──────────────────
+const SAMPLE_SCENARIOS = [
+  'Solicitud de información', 'Consulta de precios', 'Pregunta frecuente',
+  'Objeción de venta', 'Caso de soporte', 'Cierre comercial',
+]
+
+function buildSampleConversationsFallback(d) {
+  const ia = clean(d.iaName) || 'Asistente'
+  const co = clean(d.company) || 'la empresa'
+  return [
+    { scenario: 'Solicitud de información', guestName: 'Cliente · Información', messages: [
+      { role: 'user', text: `Hola, ¿qué ofrece ${co}?` },
+      { role: 'assistant', text: `¡Hola! Soy ${ia}. En ${co} ${clean(d.whatCompanyDoes) || 'ayudamos a nuestros clientes con soluciones a su medida'}. ¿Te cuento más sobre algún producto o servicio en particular?` },
+    ] },
+    { scenario: 'Consulta de precios', guestName: 'Cliente · Precios', messages: [
+      { role: 'user', text: '¿Cuánto cuesta?' },
+      { role: 'assistant', text: `Con gusto. Para darte un precio exacto necesito un par de datos sobre lo que buscas. ¿Me cuentas qué necesitas y para cuándo? Así te preparo una propuesta de ${co}.` },
+    ] },
+    { scenario: 'Objeción de venta', guestName: 'Cliente · Objeción', messages: [
+      { role: 'user', text: 'Lo vi más barato en otro lado.' },
+      { role: 'assistant', text: `Entiendo. Lo que nos diferencia es ${clean(d.differentiator) || 'la calidad y el acompañamiento'}. Muchos clientes eligen ${co} justo por eso. ¿Quieres que comparemos lo que incluye cada opción?` },
+    ] },
+  ]
+}
+
+async function generateSampleConversations(accId, agentId, d, masterPrompt) {
+  let convos = null
+  const apiKey = await platformOpenaiKey()
+  if (apiKey) {
+    try {
+      const sys = `Genera CONVERSACIONES de ejemplo (en español) entre un cliente y el asistente "${clean(d.iaName) || 'Asistente'}" de la empresa "${clean(d.company) || ''}", para mostrarlas como demo. Cada conversación: 2 a 4 turnos, realista, y el asistente DEBE responder usando la información del negocio. Cubre estos escenarios: ${SAMPLE_SCENARIOS.join(', ')}. Devuelve SOLO un array JSON: [{"scenario":"...","guestName":"Cliente · ...","messages":[{"role":"user","text":"..."},{"role":"assistant","text":"..."}]}]`
+      const user = `Contexto del negocio:\n${(masterPrompt || '').slice(0, 6000)}`
+      const out = await chat({ provider: 'openai', model: 'gpt-4o-mini', apiKey, messages: [{ role: 'system', content: sys }, { role: 'user', content: user }], maxTokens: 1800, temperature: 0.6 })
+      const text = typeof out === 'string' ? out : ''
+      const m = text.match(/\[[\s\S]*\]/)
+      if (m) convos = JSON.parse(m[0])
+    } catch { convos = null }
+  }
+  if (!Array.isArray(convos) || !convos.length) convos = buildSampleConversationsFallback(d)
+
+  const socket = require('./socket')
+  let n = 0
+  for (const c of convos.slice(0, 6)) {
+    if (!Array.isArray(c?.messages) || !c.messages.length) continue
+    const convId = `conv_webchat_${Date.now()}_${++n}`
+    const guest = clean(c.guestName) || `Ejemplo ${n}`
+    const last = c.messages[c.messages.length - 1]?.text || ''
+    const ts = Date.now() - (convos.length - n) * 60000
+    await pool.query(
+      `INSERT INTO conversations (id,account_id,agent_id,channel_id,channel_type,guest_name,guest_id,initials,preview,unread,ai_enabled,labels,pipeline_cards,local_vars,debug_log,created_at,updated_at)
+       VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`,
+      [convId, accId, agentId, 'webchat', 'webchat', `🧪 ${guest}`, String(1000 + n), (guest || '').slice(0, 2).toUpperCase(),
+       last.slice(0, 60), 0, 1, '[]', '[]', JSON.stringify({ _sample: true }), '[]', ts, ts]
+    )
+    let mi = 0
+    for (const msg of c.messages) {
+      const sender = msg.role === 'assistant' ? 'ai' : 'user'
+      await pool.query('INSERT INTO messages (id,conversation_id,sender,content,metadata,ts) VALUES (?,?,?,?,?,?)',
+        [`msg_${Date.now()}_${n}_${mi}`, convId, sender, String(msg.text || ''), JSON.stringify({ sample: true }), ts + (mi++ * 1000)])
+    }
+  }
+  try { socket.emit(accId, 'convos:updated', { accId, agId: agentId }) } catch {}
+  return n
+}
+
+module.exports = { buildMasterPrompt, generateMasterPrompt, provisionDemoAgent, generateSampleConversations }

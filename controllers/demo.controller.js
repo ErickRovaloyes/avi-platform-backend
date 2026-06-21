@@ -83,9 +83,16 @@ const signup = async (req, res) => {
     }
 
     // Aprovisionar la IA: prompt maestro + agente + flujo de respuesta + Webchat activo.
-    let prov = { agentId: null, webchatLink: null, iaName: iaName || name.trim() }
+    let prov = { agentId: null, webchatLink: null, iaName: iaName || name.trim(), masterPrompt: '' }
     try { prov = await provision.provisionDemoAgent(accId, onboarding, discoveryText) }
     catch (e) { console.warn('[demo provision]', e.message) }
+
+    // Conversaciones de demostración (en segundo plano: no retrasa la respuesta;
+    // aparecen en el inbox vía socket cuando estén listas).
+    if (prov.agentId) {
+      provision.generateSampleConversations(accId, prov.agentId, onboarding, prov.masterPrompt)
+        .catch(e => console.warn('[demo samples]', e.message))
+    }
 
     // Registrar (con datos del onboarding) y consumir overrides usados
     await guard.recordAttempt({
