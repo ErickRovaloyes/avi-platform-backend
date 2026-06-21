@@ -9,7 +9,7 @@ const upload = multer({ storage: multer.memoryStorage(), limits: { fileSize: 30 
 // Público: estado del registro + descarga de la plantilla activa + alta de Demo.
 router.get('/public/demo-status',     ctrl.publicStatus)
 router.get('/public/demo-template',   ctrl.downloadActiveTemplate)
-router.post('/public/demo-signup',    ctrl.signup)
+router.post('/public/demo-signup',    upload.single('document'), ctrl.signup)
 
 // Superadmin: auditoría / excepciones.
 router.get('/admin/demo/registrations',      authMiddleware, ctrl.listRegistrations)

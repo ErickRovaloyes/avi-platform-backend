@@ -16,8 +16,12 @@ const { chat } = require('./aiClient')
 
 const clean = s => String(s || '').trim()
 
+// Recorta el texto de la plantilla para no inflar el prompt (≈ 16k chars).
+const DISCOVERY_MAX = 16000
+const trimDiscovery = t => { const s = String(t || '').trim(); return s.length > DISCOVERY_MAX ? s.slice(0, DISCOVERY_MAX) : s }
+
 // Ensamblado determinista (siempre funciona, sin depender de la IA).
-function buildMasterPrompt(d) {
+function buildMasterPrompt(d, discoveryText = '') {
   const L = []
   const ia = clean(d.iaName) || 'Asistente'
   L.push(`# IDENTIDAD`)
@@ -51,6 +55,13 @@ function buildMasterPrompt(d) {
   L.push(`- Guía siempre la conversación hacia el objetivo (${clean(d.objective) || 'ayudar y convertir'}).`)
   L.push(`- No inventes precios, políticas ni datos que no se te hayan dado.`)
   L.push(`- Sé breve; evita textos largos salvo que el usuario pida detalle.`)
+  const disc = trimDiscovery(discoveryText)
+  if (disc) {
+    L.push('')
+    L.push(`# BASE DE CONOCIMIENTO (documento de descubrimiento)`)
+    L.push(`Usa esta información del negocio como fuente principal de verdad:`)
+    L.push(disc)
+  }
   return L.join('\n')
 }
 
@@ -60,13 +71,15 @@ async function platformOpenaiKey() {
 }
 
 // Genera el prompt maestro con IA (si hay key de plataforma); si falla → determinista.
-async function generateMasterPrompt(d) {
-  const fallback = buildMasterPrompt(d)
+async function generateMasterPrompt(d, discoveryText = '') {
+  const fallback = buildMasterPrompt(d, discoveryText)
   const apiKey = await platformOpenaiKey()
   if (!apiKey) return fallback
   try {
-    const sys = `Eres un PROMPT ENGINEER SENIOR. Genera un SYSTEM PROMPT en español, profesional, detallado y accionable, para un asistente IA de atención/ventas de una empresa, a partir de los datos estructurados del negocio que te paso. Incluye: identidad y tono, descripción de la empresa, productos/servicios, cliente ideal, FAQs, manejo de objeciones, proceso comercial, atención (horarios/cobertura), objetivo de conversión y reglas (no inventar precios/políticas, derivar a humano si no sabe). Devuelve SOLO el prompt, sin comentarios.`
-    const user = `Datos del negocio (JSON):\n${JSON.stringify(d, null, 2)}`
+    const sys = `Eres un PROMPT ENGINEER SENIOR. Genera un SYSTEM PROMPT en español, profesional, detallado y accionable, para un asistente IA de atención/ventas de una empresa, a partir de los datos estructurados del negocio y del documento de descubrimiento que te paso. Incluye: identidad y tono, descripción de la empresa, productos/servicios, cliente ideal, FAQs, manejo de objeciones, proceso comercial, atención (horarios/cobertura), objetivo de conversión, una sección de BASE DE CONOCIMIENTO con los datos concretos del negocio (extraídos del documento) y reglas (no inventar precios/políticas, derivar a humano si no sabe). Devuelve SOLO el prompt, sin comentarios.`
+    const disc = trimDiscovery(discoveryText)
+    const user = `Datos del negocio (JSON):\n${JSON.stringify(d, null, 2)}` +
+      (disc ? `\n\nDOCUMENTO DE DESCUBRIMIENTO (texto del archivo que subió el cliente):\n"""\n${disc}\n"""` : '')
     const out = await chat({
       provider: 'openai', model: 'gpt-4o-mini', apiKey,
       messages: [{ role: 'system', content: sys }, { role: 'user', content: user }],
@@ -78,9 +91,9 @@ async function generateMasterPrompt(d) {
 }
 
 // Crea agente + flujo de respuesta + canal Webchat activo. Devuelve ids.
-async function provisionDemoAgent(accId, d) {
+async function provisionDemoAgent(accId, d, discoveryText = '') {
   const iaName = clean(d.iaName) || 'Asistente'
-  const masterPrompt = await generateMasterPrompt(d)
+  const masterPrompt = await generateMasterPrompt(d, discoveryText)
 
   // 1) Flujo de respuesta: Agente IA usando el prompt activo del agente.
   const flowId = 'flow_' + uid()

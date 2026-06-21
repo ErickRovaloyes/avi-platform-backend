@@ -73,9 +73,18 @@ const signup = async (req, res) => {
     await subs.assignSubscription(accId, { accountTypeId: demoType.id, subscriptionPlanId: null })
     const expiresAt = Date.now() + (demoType.demoDaysDuration || 7) * 86400000
 
+    // Plantilla diligenciada (opcional): extraemos su texto para enriquecer la IA.
+    let discoveryText = ''
+    if (req.file) {
+      try {
+        const ext = (req.file.originalname || '').split('.').pop().toLowerCase()
+        discoveryText = await require('../services/docExtract').extractText(req.file.buffer, ext)
+      } catch { /* ignorar */ }
+    }
+
     // Aprovisionar la IA: prompt maestro + agente + flujo de respuesta + Webchat activo.
     let prov = { agentId: null, webchatLink: null, iaName: iaName || name.trim() }
-    try { prov = await provision.provisionDemoAgent(accId, onboarding) }
+    try { prov = await provision.provisionDemoAgent(accId, onboarding, discoveryText) }
     catch (e) { console.warn('[demo provision]', e.message) }
 
     // Registrar (con datos del onboarding) y consumir overrides usados
