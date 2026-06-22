@@ -558,22 +558,15 @@ const aiNodes = [
           mensajeUsuario: (userMsg || '').slice(0, 200) })
 
       if (toolsInvoked) {
-        // Tras ejecutar la(s) herramienta(s), el modelo puede dar una respuesta
-        // final (multi-ronda). La guardamos en la variable destino igual que en el
-        // flujo normal.
+        // Tras usar una herramienta, ENTREGAMOS la respuesta del modelo
+        // directamente al usuario y detenemos el flujo. No dependemos de un nodo
+        // de mensaje posterior ({{respuesta_ia}}), que según el flujo puede no
+        // existir (p. ej. un agente con un solo nodo IA) y haría que la respuesta
+        // se pierda. La guardamos también en la variable destino por si se usa.
         logDebug(ctx, 'flow_run', '🔧 Herramienta IA activada' + (reply ? ' (+ respuesta final)' : ''), {})
         if (node.data?.variable_destino) await setVarBoth(ctx, node.data.variable_destino, reply || '')
-        if (node.data?.sendToUser !== false) {
-          // Modo directo: este nodo envía la respuesta del modelo y detiene el flujo.
-          if (reply) await sendBotMsg(ctx, reply)
-          ctx._suppressDefaultNext = true
-        } else if (!reply) {
-          // Modo variable (flujo): si el modelo no dio texto (la herramienta ya
-          // envió su propio contenido, p. ej. fotos o link de pago), detenemos para
-          // no mandar un mensaje vacío. Si SÍ dio texto, dejamos que el flujo
-          // continúe al nodo de mensaje que envía {{respuesta_ia}}.
-          ctx._suppressDefaultNext = true
-        }
+        if (reply) await sendBotMsg(ctx, reply)
+        ctx._suppressDefaultNext = true
         return
       }
 
