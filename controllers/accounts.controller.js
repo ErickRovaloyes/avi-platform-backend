@@ -41,7 +41,10 @@ const SPECIAL_WOO_TOOL = {
   special: true,
 }
 const woo = require('../services/woocommerce')
-const wooTools = (acc) => (woo.isEnabled(parseJ(acc.woocommerce, null)) ? [SPECIAL_WOO_TOOL] : [])
+// La herramienta de la tienda SIEMPRE está disponible para asignar a un prompt
+// (igual que la del CMS). Se "activa" al asignarla; en runtime solo responde si
+// la tienda está conectada (URL + llaves) en la pestaña Tienda.
+const wooTools = () => [SPECIAL_WOO_TOOL]
 
 const mapCmsAsset = c => ({
   id: c.id, name: c.name, description: c.description || '', tags: parseJ(c.tags, []),

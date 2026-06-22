@@ -35,7 +35,7 @@ function buildToolDefs(toolList, account) {
   const defs = []
   for (const tool of (toolList || [])) {
     if (tool.actionType === 'cms_resource') { const d = buildResourceToolDef(account); if (d) defs.push(d) }
-    else if (tool.actionType === 'woocommerce') defs.push(...buildWooToolDefs())
+    else if (tool.actionType === 'woocommerce') { if (account?.woocommerce?.connected) defs.push(...buildWooToolDefs()) }
     else { const d = buildOneToolDef(tool); if (d) defs.push(d) }
   }
   return defs

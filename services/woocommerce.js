@@ -22,13 +22,15 @@ async function loadConfig(accId) {
 async function saveConfig(accId, cfg) {
   await pool.query('UPDATE accounts SET woocommerce=? WHERE id=?', [JSON.stringify(cfg || {}), accId])
 }
-function isEnabled(cfg) { return !!(cfg && cfg.enabled && cfg.storeUrl && cfg.consumerKey && cfg.consumerSecret) }
+// "Conectada" = hay URL + llaves. La herramienta IA se ASIGNA al prompt (no
+// depende de un interruptor); en runtime solo funciona si la tienda está conectada.
+function isEnabled(cfg) { return !!(cfg && cfg.storeUrl && cfg.consumerKey && cfg.consumerSecret) }
 
 // Versión segura para el navegador / objeto público (sin secretos).
 function publicConfig(cfg) {
-  if (!cfg) return { enabled: false }
+  if (!cfg) return { connected: false }
   return {
-    enabled: !!cfg.enabled,
+    connected: isEnabled(cfg),
     storeUrl: cfg.storeUrl || '',
     hasKeys: !!(cfg.consumerKey && cfg.consumerSecret),
     consumerKeyMasked: cfg.consumerKey ? cfg.consumerKey.slice(0, 6) + '…' + cfg.consumerKey.slice(-4) : '',

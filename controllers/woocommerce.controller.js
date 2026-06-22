@@ -43,7 +43,6 @@ const saveConfig = async (req, res) => {
     const b = req.body || {}
     const cfg = {
       ...cur,
-      enabled: b.enabled !== undefined ? !!b.enabled : cur.enabled,
       storeUrl: (b.storeUrl ?? cur.storeUrl ?? '').trim().replace(/\/$/, ''),
       consumerKey: (b.consumerKey && b.consumerKey.trim()) || cur.consumerKey || '',
       consumerSecret: (b.consumerSecret && b.consumerSecret.trim()) || cur.consumerSecret || '',
@@ -55,8 +54,9 @@ const saveConfig = async (req, res) => {
     if (cur.storeUrl !== cfg.storeUrl || cur.consumerKey !== cfg.consumerKey) cfg.webhook = null
     await woo.saveConfig(accId, cfg)
 
+    // Conectada = hay URL + llaves. Probar y registrar el webhook de pago.
     let connection = { ok: false }
-    if (cfg.enabled && cfg.storeUrl && cfg.consumerKey && cfg.consumerSecret) {
+    if (woo.isEnabled(cfg)) {
       connection = await woo.testConnection(cfg)
       if (connection.ok && !cfg.webhook?.id) {
         try { await woo.registerWebhook(accId) } catch (e) { connection.webhookError = e.message }
