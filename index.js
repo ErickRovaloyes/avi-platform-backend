@@ -242,6 +242,10 @@ app.use('/api',                webhookRoutes)
     "ALTER TABLE conversations     ADD COLUMN origin JSON",
     // Conexión de tienda (WooCommerce/Shopify) por cuenta.
     "ALTER TABLE accounts          ADD COLUMN woocommerce JSON",
+    // Memoria PERMANENTE del cliente (resumen + estado), acumulada entre todas sus
+    // conversaciones. Se inyecta en el prompt además de los últimos 16 mensajes.
+    "ALTER TABLE contacts          ADD COLUMN memory TEXT",
+    "ALTER TABLE contacts          ADD COLUMN memory_updated_at BIGINT",
     // Pedidos creados por el asistente → mapeo pedido↔conversación para confirmar el pago.
     `CREATE TABLE IF NOT EXISTS woo_orders (
        id          VARCHAR(60)  PRIMARY KEY,

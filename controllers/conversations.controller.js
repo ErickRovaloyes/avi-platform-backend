@@ -113,7 +113,12 @@ const createConvo = async (req, res) => {
 
   const contactId = await findOrCreateContact(accId, { guestName, guestId, waFrom, messengerFrom, igFrom, channelType })
   const localVars = { var_nombre: guestName || '' }
-  if (contactId) localVars.contact_id = contactId
+  if (contactId) {
+    localVars.contact_id = contactId
+    // Memoria permanente del cliente (de conversaciones pasadas) → la nueva
+    // conversación arranca conociéndolo.
+    try { const mem = await require('../services/conversationMemory').getContactMemory(accId, contactId); if (mem) localVars._summary = mem } catch {}
+  }
 
   try {
     // Origen del lead: usa el que envía el cliente (webchat ya clasificado) o lo
@@ -419,7 +424,10 @@ async function createOrGetSocialConvo(accId, agId, lookupCol, lookupVal, guestNa
   else if (lookupCol === 'ig_from')   contactArgs.igFrom        = lookupVal
   const contactId = await findOrCreateContact(accId, contactArgs)
   const localVars = { var_nombre: guestName || '' }
-  if (contactId) localVars.contact_id = contactId
+  if (contactId) {
+    localVars.contact_id = contactId
+    try { const mem = await require('../services/conversationMemory').getContactMemory(accId, contactId); if (mem) localVars._summary = mem } catch {}
+  }
 
   const cols = {
     id, account_id: accId, agent_id: agId,
@@ -485,9 +493,18 @@ const createSocial = async (req, res) => {
   } catch (err) { res.status(500).json({ error: 'Error interno' }) }
 }
 
+// Actualiza la MEMORIA persistente de la conversación (resumen + estado). Lo
+// llama el webchat-en-navegador tras cada respuesta del asistente. Responde de
+// inmediato y resume en segundo plano (no bloquea el chat).
+const updateMemory = async (req, res) => {
+  const { accId, agId, convId } = req.params
+  res.json({ ok: true })
+  try { require('../services/conversationMemory').updateMemory(accId, agId, convId).catch(() => {}) } catch {}
+}
+
 module.exports = {
   listConvos, getConvo, createConvo, updateConvo, markRead,
-  appendMessage, sendManual, appendDebug, patchVars, getGuest,
+  appendMessage, sendManual, appendDebug, patchVars, getGuest, updateMemory,
   createWhatsApp, createMessenger, createInstagram, createSocial,
   // Reusable cores for the server-side flow engine
   createOrGetSocialConvo,

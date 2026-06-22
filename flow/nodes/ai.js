@@ -10,6 +10,13 @@ const store = require('../store')
 
 const DEFAULT_MODEL = { openai: 'gpt-4o-mini', deepseek: 'deepseek-chat', anthropic: 'claude-sonnet-4-6' }
 
+// Tras cada respuesta del asistente, actualiza la memoria persistente del
+// cliente (resumen + estado) en segundo plano. Nunca bloquea ni lanza.
+function scheduleMemory(ctx) {
+  if (ctx?._sandbox || !ctx?.accId || !ctx?.convId) return
+  try { require('../../services/conversationMemory').updateMemory(ctx.accId, ctx.agId, ctx.convId).catch(() => {}) } catch {}
+}
+
 function buildOneToolDef(tool) {
   return {
     type: 'function',
@@ -538,6 +545,13 @@ const aiNodes = [
         }
       } catch (e) { logDebug(ctx, 'error', `RAG no disponible: ${e.message}`, {}) }
 
+      // Memoria PERMANENTE del cliente (resumen + estado de lo hablado, también de
+      // conversaciones pasadas). Se inyecta además de los últimos 16 mensajes.
+      const _mem = ctx.variables?._summary
+      if (_mem && String(_mem).trim()) {
+        sysWithRag = `${sysWithRag}\n\n---\n[MEMORIA DEL CLIENTE — resumen permanente de lo hablado y datos importantes; úsala para personalizar y no volver a preguntar lo que ya sabes]\n${String(_mem).trim()}\n---`
+      }
+
       const history = await loadHistory(ctx)
       const toolDefs = buildToolDefs(assignedTools, ctx.account)
 
@@ -568,12 +582,14 @@ const aiNodes = [
         logDebug(ctx, 'flow_run', '🔧 Herramienta IA activada' + (reply ? ' (+ respuesta final)' : ''), {})
         if (node.data?.variable_destino) await setVarBoth(ctx, node.data.variable_destino, reply || '')
         if (reply) await sendBotMsg(ctx, reply)
+        scheduleMemory(ctx)
         ctx._suppressDefaultNext = true
         return
       }
 
       if (node.data?.variable_destino) await setVarBoth(ctx, node.data.variable_destino, reply)
       if (node.data?.sendToUser !== false && reply) await sendBotMsg(ctx, reply)
+      scheduleMemory(ctx)
     },
   },
   {

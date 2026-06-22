@@ -13,6 +13,7 @@ router.post('/:accId/:agId/:convId/messages',           optionalAuth, ctrl.appen
 router.post('/:accId/:agId/:convId/send-manual',        optionalAuth, ctrl.sendManual)
 router.post('/:accId/:agId/:convId/debug',              optionalAuth, ctrl.appendDebug)
 router.patch('/:accId/:agId/:convId/vars',              optionalAuth, ctrl.patchVars)
+router.post('/:accId/:agId/:convId/memory',             optionalAuth, ctrl.updateMemory)
 router.post('/:accId/:agId/whatsapp',                   optionalAuth, ctrl.createWhatsApp)
 router.post('/:accId/:agId/messenger',                  optionalAuth, ctrl.createMessenger)
 router.post('/:accId/:agId/instagram',                  optionalAuth, ctrl.createInstagram)
