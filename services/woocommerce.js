@@ -152,9 +152,9 @@ async function createOrder(accId, { items, customer = {}, convId = null, agId = 
   const pay = payUrlFor(cfg, order)
   const now = Date.now()
   await pool.query(
-    `INSERT INTO woo_orders (id,account_id,agent_id,conv_id,order_id,order_key,status,total,currency,pay_url,paid_notified,created_at,updated_at)
-     VALUES (?,?,?,?,?,?,?,?,?,?,0,?,?)`,
-    ['woo_' + uid(), accId, agId, convId, String(order.id), order.order_key || '', order.status || 'pending',
+    `INSERT INTO woo_orders (id,account_id,agent_id,conv_id,platform,order_id,order_key,status,total,currency,pay_url,paid_notified,reminders_sent,created_at,updated_at)
+     VALUES (?,?,?,?,?,?,?,?,?,?,?,0,0,?,?)`,
+    ['woo_' + uid(), accId, agId, convId, 'woocommerce', String(order.id), order.order_key || '', order.status || 'pending',
      String(order.total || ''), order.currency || cfg.currency || '', pay, now, now]
   ).catch(() => {})
   return {
@@ -188,6 +188,17 @@ function verifySignature(cfg, rawBody, signature) {
   } catch { return false }
 }
 
+// Estado de un pedido (para el worker de recuperación / confirmación por sondeo).
+async function getOrderStatus(accId, rec) {
+  const cfg = await loadConfig(accId)
+  if (!isEnabled(cfg)) return null
+  try {
+    const o = await wooFetch(cfg, `/orders/${encodeURIComponent(rec.order_id)}`)
+    const status = String(o?.status || rec.status || '').toLowerCase()
+    return { status, paid: ['processing', 'completed', 'paid'].includes(status), total: o?.total || rec.total, currency: o?.currency || rec.currency }
+  } catch { return null }
+}
+
 const PAID_STATUSES = new Set(['processing', 'completed', 'paid'])
 // Procesa un order.updated: si el pedido quedó pagado y no se ha confirmado aún,
 // devuelve el mapeo conv↔pedido para enviar la confirmación (lo hace el controller).
@@ -209,6 +220,6 @@ async function handleOrderUpdate(accId, order) {
 
 module.exports = {
   loadConfig, saveConfig, isEnabled, publicConfig,
-  testConnection, fetchStoreCurrency, searchProducts, getProduct, createOrder,
+  testConnection, fetchStoreCurrency, searchProducts, getProduct, createOrder, getOrderStatus,
   registerWebhook, verifySignature, handleOrderUpdate,
 }

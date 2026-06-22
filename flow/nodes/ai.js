@@ -202,11 +202,13 @@ function buildWooToolDefs() {
   ]
 }
 async function wooExec(ctx, fnName, args) {
-  const woo = require('../../services/woocommerce')
+  const store = require('../../services/store')
   const accId = ctx.accId
+  const cfg = await store.loadConfig(accId)
+  const maxImgs = store.maxImages(cfg)
   try {
     if (fnName === 'buscar_productos') {
-      const list = await woo.searchProducts(accId, args?.consulta || args?.query || '')
+      const list = await store.searchProducts(accId, args?.consulta || args?.query || '')
       if (!list.length) return 'No encontré productos para esa búsqueda en la tienda.'
       logDebug(ctx, 'tool_result', `🛒 ${list.length} producto(s) encontrados`, {})
       return 'Productos encontrados:\n' + list.slice(0, 8).map((p, i) => {
@@ -215,30 +217,30 @@ async function wooExec(ctx, fnName, args) {
       }).join('\n')
     }
     if (fnName === 'enviar_producto') {
-      const list = await woo.searchProducts(accId, args?.producto || args?.consulta || '')
+      const list = await store.searchProducts(accId, args?.producto || args?.consulta || '')
       const p = list[0]
       if (!p) return 'No encontré ese producto para enviarlo.'
       const desc = p.shortDescription || p.description || ''
       const caption = `*${p.name}* — ${p.price} ${p.currency}${desc ? `\n${desc}` : ''}${p.permalink ? `\n${p.permalink}` : ''}`
-      const imgs = (p.images || []).slice(0, 4)
+      const imgs = (p.images || []).slice(0, maxImgs)
       if (!imgs.length) { await sendBotMsg(ctx, caption) }
       else { for (let i = 0; i < imgs.length; i++) await sendBotMsg(ctx, i === 0 ? caption : '', { media: { kind: 'image', url: imgs[i] }, mediaUrl: imgs[i] }) }
       logDebug(ctx, 'tool_result', `🛒 Enviado "${p.name}" (${imgs.length} foto/s)`, {})
       return `Envié el producto "${p.name}" con ${imgs.length} foto(s) al usuario.`
     }
     if (fnName === 'crear_pedido') {
-      const list = await woo.searchProducts(accId, args?.producto || '')
+      const list = await store.searchProducts(accId, args?.producto || '')
       const p = list[0]
       if (!p) return 'No encontré ese producto para crear el pedido.'
       const qty = Math.max(1, parseInt(args?.cantidad) || 1)
       const customer = { name: ctx.variables?.var_nombre || ctx.variables?.nombre || '', phone: ctx.variables?.telefono || '', email: ctx.variables?.email || '' }
-      const order = await woo.createOrder(accId, { items: [{ productId: p.id, quantity: qty }], customer, convId: ctx.convId, agId: ctx.agId })
+      const order = await store.createOrder(accId, { items: [{ productId: p.id, variantId: p.variantId, quantity: qty }], customer, convId: ctx.convId, agId: ctx.agId })
       await sendBotMsg(ctx, `🛒 Pedido creado: ${qty} × ${p.name}\nTotal: ${order.total} ${order.currency}\n\n💳 Paga aquí:\n${order.payUrl}\n\nApenas completes el pago te confirmo automáticamente.`)
       logDebug(ctx, 'tool_result', `🛒 Pedido #${order.orderId} creado (${order.total} ${order.currency})`, {})
       return `Pedido #${order.orderId} creado por ${order.total} ${order.currency}. Ya envié el link de pago al usuario.`
     }
   } catch (e) {
-    logDebug(ctx, 'error', `Tienda WooCommerce: ${e.message}`, {})
+    logDebug(ctx, 'error', `Tienda: ${e.message}`, {})
     return `No se pudo completar la acción de la tienda: ${e.message}`
   }
   return 'Acción de tienda no reconocida.'

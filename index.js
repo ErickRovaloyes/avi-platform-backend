@@ -240,7 +240,7 @@ app.use('/api',                webhookRoutes)
     "ALTER TABLE conversations     ADD COLUMN ai_disabled_reason VARCHAR(40)",
     // Origen del lead (anuncio/link/directo + plataforma + id de anuncio + UTM).
     "ALTER TABLE conversations     ADD COLUMN origin JSON",
-    // Conexión WooCommerce por cuenta (URL tienda, llaves, pasarela, webhook).
+    // Conexión de tienda (WooCommerce/Shopify) por cuenta.
     "ALTER TABLE accounts          ADD COLUMN woocommerce JSON",
     // Pedidos creados por el asistente → mapeo pedido↔conversación para confirmar el pago.
     `CREATE TABLE IF NOT EXISTS woo_orders (
@@ -248,6 +248,7 @@ app.use('/api',                webhookRoutes)
        account_id  VARCHAR(50)  NOT NULL,
        agent_id    VARCHAR(50),
        conv_id     VARCHAR(80),
+       platform    VARCHAR(20)  DEFAULT 'woocommerce',
        order_id    VARCHAR(40)  NOT NULL,
        order_key   VARCHAR(80),
        status      VARCHAR(30)  DEFAULT 'pending',
@@ -255,11 +256,17 @@ app.use('/api',                webhookRoutes)
        currency    VARCHAR(10),
        pay_url     TEXT,
        paid_notified TINYINT(1) DEFAULT 0,
+       reminders_sent TINYINT(1) DEFAULT 0,
+       last_reminder_at BIGINT,
        created_at  BIGINT,
        updated_at  BIGINT,
        INDEX idx_woo_order (account_id, order_id),
        INDEX idx_woo_conv (account_id, conv_id)
      )`,
+    // Columnas añadidas a woo_orders en instalaciones que ya tenían la tabla.
+    "ALTER TABLE woo_orders ADD COLUMN platform VARCHAR(20) DEFAULT 'woocommerce'",
+    "ALTER TABLE woo_orders ADD COLUMN reminders_sent TINYINT(1) DEFAULT 0",
+    "ALTER TABLE woo_orders ADD COLUMN last_reminder_at BIGINT",
     `CREATE TABLE IF NOT EXISTS crm_notes (
        id          VARCHAR(50) PRIMARY KEY,
        account_id  VARCHAR(50) NOT NULL,
@@ -825,6 +832,8 @@ app.use('/api',                webhookRoutes)
   } catch (e) { console.warn('[subscriptions] no iniciado:', e.message) }
   // Bucle de recordatorios de citas por WhatsApp
   try { require('./services/calendarReminders').start() } catch (e) { console.warn('[reminders] no iniciado:', e.message) }
+  // Recuperación de carritos / confirmación de pago de la tienda (Woo + Shopify)
+  try { require('./services/storeRecovery').start() } catch (e) { console.warn('[store recovery] no iniciado:', e.message) }
   // Worker de mensajes masivos: procesa campañas programadas vencidas.
   try { require('./services/campaigns').startWorker() } catch (e) { console.warn('[campaigns] worker no iniciado:', e.message) }
   // Procesador del outbox de eventos de dominio (Core Booking Engine, Fase 0)

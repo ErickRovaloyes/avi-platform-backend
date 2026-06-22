@@ -34,16 +34,16 @@ const SPECIAL_CMS_TOOL = {
 // fotos, crear pedidos con link de pago y confirmar el pago.
 const SPECIAL_WOO_TOOL = {
   id: 'woo_store',
-  name: 'tienda_woocommerce',
-  description: 'Tienda WooCommerce conectada: busca productos y responde sobre precios/características, envía productos con sus fotos, crea pedidos y envía el link de pago (el pago se confirma solo). Asígnala a un prompt para habilitarla.',
+  name: 'tienda',
+  description: 'Tienda conectada (WooCommerce o Shopify): busca productos y responde sobre precios/características, envía productos con sus fotos, crea pedidos y envía el link de pago (el pago se confirma solo). Asígnala a un prompt para habilitarla.',
   collectFields: [],
   actionType: 'woocommerce',
   special: true,
 }
-const woo = require('../services/woocommerce')
+const storeSvc = require('../services/store')
 // La herramienta de la tienda SIEMPRE está disponible para asignar a un prompt
 // (igual que la del CMS). Se "activa" al asignarla; en runtime solo responde si
-// la tienda está conectada (URL + llaves) en la pestaña Tienda.
+// la tienda está conectada (Woo/Shopify) en la pestaña Tienda.
 const wooTools = () => [SPECIAL_WOO_TOOL]
 
 const mapCmsAsset = c => ({
@@ -84,7 +84,7 @@ async function loadPublicAccount(accId) {
     agents: agents.map(mapAgent),
     variables: variables.map(v => ({ id: v.id, name: v.name, type: v.type, defaultValue: v.default_value, description: v.description, isSystem: !!v.is_system })),
     aiTools:   [SPECIAL_CMS_TOOL, ...wooTools(acc), ...aiTools.map(t => ({ id: t.id, name: t.name, description: t.description, collectFields: parseJ(t.collect_fields, []), flowId: t.flow_id, actionType: t.action_type || 'variable' }))],
-    woocommerce: woo.publicConfig(parseJ(acc.woocommerce, null)),
+    woocommerce: storeSvc.publicConfig(parseJ(acc.woocommerce, null)),
     cmsAssets: cmsAssets.map(mapCmsAsset),
     cmsFolders: cmsFolders.map(mapCmsFolder),
     cmsTags: cmsTags.map(mapNamed),
@@ -165,7 +165,7 @@ const getAccount = async (req, res) => {
       pipelines: pipelines.map(p => ({ id: p.id, name: p.name, stages: parseJ(p.stages, []), cards: parseJ(p.cards, []) })),
       variables: variables.map(v => ({ id: v.id, name: v.name, type: v.type, defaultValue: v.default_value, description: v.description, isSystem: !!v.is_system })),
       aiTools:   [SPECIAL_CMS_TOOL, ...wooTools(acc), ...aiTools.map(t => ({ id: t.id, name: t.name, description: t.description, collectFields: parseJ(t.collect_fields, []), flowId: t.flow_id, actionType: t.action_type || 'variable', createdAt: t.created_at }))],
-      woocommerce: woo.publicConfig(parseJ(acc.woocommerce, null)),
+      woocommerce: storeSvc.publicConfig(parseJ(acc.woocommerce, null)),
       cmsAssets: cmsAssets.map(mapCmsAsset),
       cmsFolders: cmsFolders.map(mapCmsFolder),
       cmsTags: cmsTags.map(mapNamed),

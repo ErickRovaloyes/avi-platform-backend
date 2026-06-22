@@ -2,14 +2,15 @@
 const pool = require('../db')
 const { parseJ } = require('../utils')
 const woo = require('../services/woocommerce')
-const store = require('../flow/store')
+const store = require('../services/store')
+const flowStore = require('../flow/store')
 const { sendWhatsAppText, sendMessengerText, sendInstagramText } = require('../services/metaSend')
 
 // Entrega un texto a la conversación: queda en la bandeja/webchat (socket) y,
 // si el chat es de un canal externo (WhatsApp/Messenger/IG), también se envía allí.
 async function sendConversationMessage(accId, agId, convId, text) {
   if (!convId) return
-  try { await store.appendMsg(accId, agId, convId, { sender: 'ai', content: text }) } catch (e) { console.warn('[woo msg]', e.message) }
+  try { await flowStore.appendMsg(accId, agId, convId, { sender: 'ai', content: text }) } catch (e) { console.warn('[woo msg]', e.message) }
   try {
     const [[c]] = await pool.query('SELECT channel_type, wa_from, messenger_from, ig_from FROM conversations WHERE id=? AND account_id=?', [convId, accId])
     if (!c || c.channel_type === 'webchat' || c.channel_type === 'test') return
@@ -30,51 +31,61 @@ async function sendConversationMessage(accId, agId, convId, text) {
 
 // ── Config (autenticado) ───────────────────────────────────────────────────────
 const getConfig = async (req, res) => {
-  try { res.json(woo.publicConfig(await woo.loadConfig(req.params.accId))) }
+  try { res.json(store.publicConfig(await store.loadConfig(req.params.accId))) }
   catch { res.status(500).json({ error: 'Error interno' }) }
 }
 
-// Guarda la conexión. Si secret/key vienen vacíos, se conservan los actuales
-// (para no perderlos al editar). Prueba la conexión y registra el webhook.
+// Guarda la conexión (WooCommerce o Shopify). Si los secretos vienen vacíos se
+// conservan los actuales. Prueba la conexión, autodetecta la moneda y (en Woo)
+// registra el webhook de pago.
 const saveConfig = async (req, res) => {
   const { accId } = req.params
   try {
-    const cur = await woo.loadConfig(accId) || {}
+    const cur = await store.loadConfig(accId) || {}
     const b = req.body || {}
+    const platform = (b.platform === 'shopify' || (b.platform === undefined && cur.platform === 'shopify')) ? 'shopify' : 'woocommerce'
     const cfg = {
       ...cur,
+      platform,
+      // WooCommerce
       storeUrl: (b.storeUrl ?? cur.storeUrl ?? '').trim().replace(/\/$/, ''),
       consumerKey: (b.consumerKey && b.consumerKey.trim()) || cur.consumerKey || '',
       consumerSecret: (b.consumerSecret && b.consumerSecret.trim()) || cur.consumerSecret || '',
+      // Shopify
+      shopDomain: (b.shopDomain ?? cur.shopDomain ?? '').trim().replace(/^https?:\/\//, '').replace(/\/$/, ''),
+      adminToken: (b.adminToken && b.adminToken.trim()) || cur.adminToken || '',
+      // Compartido
       gateway: b.gateway || cur.gateway || { mode: 'native' },
       currency: b.currency ?? cur.currency ?? '',
+      maxImagesPerProduct: b.maxImagesPerProduct != null ? Math.max(1, Math.min(10, parseInt(b.maxImagesPerProduct) || 4)) : (cur.maxImagesPerProduct ?? 4),
+      abandonedCart: b.abandonedCart || cur.abandonedCart || { enabled: false, hours: 20, maxReminders: 1, message: '' },
       webhook: cur.webhook || null,
     }
-    // Si cambia la URL/llaves, invalida el webhook anterior (apunta a otra tienda).
-    if (cur.storeUrl !== cfg.storeUrl || cur.consumerKey !== cfg.consumerKey) cfg.webhook = null
-    await woo.saveConfig(accId, cfg)
+    // Si cambia la tienda/llaves, invalida el webhook anterior (apunta a otra tienda).
+    if (cur.storeUrl !== cfg.storeUrl || cur.consumerKey !== cfg.consumerKey || cur.shopDomain !== cfg.shopDomain) cfg.webhook = null
+    await store.saveConfig(accId, cfg)
 
-    // Conectada = hay URL + llaves. Probar, autodetectar la moneda y registrar
-    // el webhook de pago.
     let connection = { ok: false }
-    if (woo.isEnabled(cfg)) {
-      connection = await woo.testConnection(cfg)
+    if (store.isEnabled(cfg)) {
+      connection = await store.testConnection(cfg)
       if (connection.ok) {
         if (!cfg.currency) {
-          const cur = await woo.fetchStoreCurrency(cfg)
-          if (cur) { cfg.currency = cur; await woo.saveConfig(accId, cfg) }
+          const detected = await store.fetchStoreCurrency(cfg)
+          if (detected) { cfg.currency = detected; await store.saveConfig(accId, cfg) }
         }
-        if (!cfg.webhook?.id) {
+        // El webhook instantáneo de pago solo aplica a WooCommerce; Shopify se
+        // confirma por sondeo en el worker de recuperación.
+        if (platform === 'woocommerce' && !cfg.webhook?.id) {
           try { await woo.registerWebhook(accId) } catch (e) { connection.webhookError = e.message }
         }
       }
     }
-    res.json({ ok: true, connection, config: woo.publicConfig(await woo.loadConfig(accId)) })
-  } catch (e) { console.error('[woo saveConfig]', e); res.status(500).json({ error: e.message || 'Error interno' }) }
+    res.json({ ok: true, connection, config: store.publicConfig(await store.loadConfig(accId)) })
+  } catch (e) { console.error('[store saveConfig]', e); res.status(500).json({ error: e.message || 'Error interno' }) }
 }
 
 const testConnection = async (req, res) => {
-  try { res.json(await woo.testConnection(await woo.loadConfig(req.params.accId))) }
+  try { res.json(await store.testConnection(await store.loadConfig(req.params.accId))) }
   catch (e) { res.status(400).json({ error: e.message }) }
 }
 
@@ -82,13 +93,13 @@ const testConnection = async (req, res) => {
 const products = async (req, res) => {
   try {
     const q = req.body?.query ?? req.query.query ?? ''
-    res.json({ products: await woo.searchProducts(req.params.accId, q, { limit: Number(req.body?.limit) || 8 }) })
+    res.json({ products: await store.searchProducts(req.params.accId, q, { limit: Number(req.body?.limit) || 8 }) })
   } catch (e) { res.status(400).json({ error: e.message }) }
 }
 const createOrder = async (req, res) => {
   try {
     const { items, customer, convId, agId } = req.body || {}
-    res.json(await woo.createOrder(req.params.accId, { items, customer, convId, agId }))
+    res.json(await store.createOrder(req.params.accId, { items, customer, convId, agId }))
   } catch (e) { res.status(400).json({ error: e.message }) }
 }
 
