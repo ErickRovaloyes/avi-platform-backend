@@ -373,7 +373,17 @@ async function callAI(ctx, { systemPrompt, userPrompt, model, provider, maxToken
       return cleaned.replace(/\n{3,}/g, '\n\n').trim()
     }
     const finishText = async (text) => {
-      const clean = await runTextCalls(text || '')
+      let clean = await runTextCalls(text || '')
+      // Si se ejecutaron herramientas pero el modelo NO redactó respuesta (caso
+      // típico de DeepSeek: llama la función y devuelve vacío), forzamos una
+      // redacción final SIN herramientas usando los resultados ya añadidos a la
+      // conversación, para que SIEMPRE responda en base a la info obtenida.
+      if (!clean && executed.length && canThread) {
+        try {
+          const synth = await chat({ provider: prov, model: finalModel, apiKey, messages: convo, maxTokens, temperature, onUsage })
+          if (typeof synth === 'string' && synth.trim()) clean = synth.trim()
+        } catch (e) { logDebug(ctx, 'error', `Síntesis post-herramienta falló: ${e.message}`, {}) }
+      }
       if (typeof onTools === 'function') onTools({ invoked: executed.length > 0, names: executed })
       return clean
     }
@@ -405,8 +415,8 @@ async function callAI(ctx, { systemPrompt, userPrompt, model, provider, maxToken
       }
       // openai/deepseek → siguiente ronda con los resultados en contexto
     }
-    if (typeof onTools === 'function') onTools({ invoked: executed.length > 0, names: executed })
-    return ''
+    // Se agotaron las rondas: redacta una respuesta final con los resultados.
+    return await finishText('')
   }
 
   // ── Sin herramientas → completion simple ─────────────────────────────────
