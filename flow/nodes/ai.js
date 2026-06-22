@@ -209,14 +209,17 @@ async function wooExec(ctx, fnName, args) {
       const list = await woo.searchProducts(accId, args?.consulta || args?.query || '')
       if (!list.length) return 'No encontré productos para esa búsqueda en la tienda.'
       logDebug(ctx, 'tool_result', `🛒 ${list.length} producto(s) encontrados`, {})
-      return 'Productos encontrados:\n' + list.slice(0, 8).map((p, i) =>
-        `${i + 1}. ${p.name} — ${p.price} ${p.currency}${p.stockStatus === 'outofstock' ? ' (agotado)' : ''}${p.shortDescription ? `\n   ${p.shortDescription}` : ''}`).join('\n')
+      return 'Productos encontrados:\n' + list.slice(0, 8).map((p, i) => {
+        const d = (p.shortDescription || p.description || '').slice(0, 200)
+        return `${i + 1}. ${p.name} — ${p.price} ${p.currency}${p.stockStatus === 'outofstock' ? ' (agotado)' : ''}${d ? `\n   ${d}` : ''}`
+      }).join('\n')
     }
     if (fnName === 'enviar_producto') {
       const list = await woo.searchProducts(accId, args?.producto || args?.consulta || '')
       const p = list[0]
       if (!p) return 'No encontré ese producto para enviarlo.'
-      const caption = `*${p.name}* — ${p.price} ${p.currency}${p.shortDescription ? `\n${p.shortDescription}` : ''}${p.permalink ? `\n${p.permalink}` : ''}`
+      const desc = p.shortDescription || p.description || ''
+      const caption = `*${p.name}* — ${p.price} ${p.currency}${desc ? `\n${desc}` : ''}${p.permalink ? `\n${p.permalink}` : ''}`
       const imgs = (p.images || []).slice(0, 4)
       if (!imgs.length) { await sendBotMsg(ctx, caption) }
       else { for (let i = 0; i < imgs.length; i++) await sendBotMsg(ctx, i === 0 ? caption : '', { media: { kind: 'image', url: imgs[i] }, mediaUrl: imgs[i] }) }
@@ -546,11 +549,21 @@ const aiNodes = [
 
       if (toolsInvoked) {
         // Tras ejecutar la(s) herramienta(s), el modelo puede dar una respuesta
-        // final (multi-ronda). Si la hay, se envía; luego el flujo se detiene.
+        // final (multi-ronda). La guardamos en la variable destino igual que en el
+        // flujo normal.
         logDebug(ctx, 'flow_run', '🔧 Herramienta IA activada' + (reply ? ' (+ respuesta final)' : ''), {})
-        if (node.data?.variable_destino) await setVarBoth(ctx, node.data.variable_destino, reply)
-        if (node.data?.sendToUser !== false && reply) await sendBotMsg(ctx, reply)
-        ctx._suppressDefaultNext = true
+        if (node.data?.variable_destino) await setVarBoth(ctx, node.data.variable_destino, reply || '')
+        if (node.data?.sendToUser !== false) {
+          // Modo directo: este nodo envía la respuesta del modelo y detiene el flujo.
+          if (reply) await sendBotMsg(ctx, reply)
+          ctx._suppressDefaultNext = true
+        } else if (!reply) {
+          // Modo variable (flujo): si el modelo no dio texto (la herramienta ya
+          // envió su propio contenido, p. ej. fotos o link de pago), detenemos para
+          // no mandar un mensaje vacío. Si SÍ dio texto, dejamos que el flujo
+          // continúe al nodo de mensaje que envía {{respuesta_ia}}.
+          ctx._suppressDefaultNext = true
+        }
         return
       }
 

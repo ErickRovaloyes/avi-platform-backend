@@ -54,12 +54,19 @@ const saveConfig = async (req, res) => {
     if (cur.storeUrl !== cfg.storeUrl || cur.consumerKey !== cfg.consumerKey) cfg.webhook = null
     await woo.saveConfig(accId, cfg)
 
-    // Conectada = hay URL + llaves. Probar y registrar el webhook de pago.
+    // Conectada = hay URL + llaves. Probar, autodetectar la moneda y registrar
+    // el webhook de pago.
     let connection = { ok: false }
     if (woo.isEnabled(cfg)) {
       connection = await woo.testConnection(cfg)
-      if (connection.ok && !cfg.webhook?.id) {
-        try { await woo.registerWebhook(accId) } catch (e) { connection.webhookError = e.message }
+      if (connection.ok) {
+        if (!cfg.currency) {
+          const cur = await woo.fetchStoreCurrency(cfg)
+          if (cur) { cfg.currency = cur; await woo.saveConfig(accId, cfg) }
+        }
+        if (!cfg.webhook?.id) {
+          try { await woo.registerWebhook(accId) } catch (e) { connection.webhookError = e.message }
+        }
       }
     }
     res.json({ ok: true, connection, config: woo.publicConfig(await woo.loadConfig(accId)) })

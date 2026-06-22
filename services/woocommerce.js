@@ -73,6 +73,12 @@ async function testConnection(cfg) {
   } catch (e) { return { ok: false, error: e.message } }
 }
 
+// Moneda de la tienda (p. ej. COP) para mostrar los precios.
+async function fetchStoreCurrency(cfg) {
+  try { const c = await wooFetch(cfg, '/data/currencies/current'); return c?.code || '' }
+  catch { return '' }
+}
+
 // ── Productos ──────────────────────────────────────────────────────────────────
 const stripHtml = s => String(s || '').replace(/<[^>]*>/g, ' ').replace(/&[a-z]+;/gi, ' ').replace(/\s+/g, ' ').trim()
 function mapProduct(p) {
@@ -96,15 +102,19 @@ function mapProduct(p) {
 async function searchProducts(accId, query, { limit = 8 } = {}) {
   const cfg = await loadConfig(accId)
   if (!isEnabled(cfg)) throw new Error('La tienda WooCommerce no está conectada.')
+  // OJO: WooCommerce NO acepta orderby='relevance' (devuelve 400). Con `search`
+  // ya ordena por coincidencia; dejamos el orderby por defecto.
   const data = await wooFetch(cfg, '/products', {
-    query: { search: String(query || '').slice(0, 120), per_page: Math.min(limit, 20), status: 'publish', orderby: 'relevance' },
+    query: { search: String(query || '').slice(0, 120), per_page: Math.min(limit, 20), status: 'publish' },
   })
-  return (Array.isArray(data) ? data : []).map(mapProduct)
+  const cur = cfg.currency || ''
+  return (Array.isArray(data) ? data : []).map(p => ({ ...mapProduct(p), currency: mapProduct(p).currency || cur }))
 }
 async function getProduct(accId, id) {
   const cfg = await loadConfig(accId)
   if (!isEnabled(cfg)) throw new Error('La tienda WooCommerce no está conectada.')
-  return mapProduct(await wooFetch(cfg, `/products/${encodeURIComponent(id)}`))
+  const p = mapProduct(await wooFetch(cfg, `/products/${encodeURIComponent(id)}`))
+  return { ...p, currency: p.currency || cfg.currency || '' }
 }
 
 // ── Pedidos + link de pago ─────────────────────────────────────────────────────
@@ -199,6 +209,6 @@ async function handleOrderUpdate(accId, order) {
 
 module.exports = {
   loadConfig, saveConfig, isEnabled, publicConfig,
-  testConnection, searchProducts, getProduct, createOrder,
+  testConnection, fetchStoreCurrency, searchProducts, getProduct, createOrder,
   registerWebhook, verifySignature, handleOrderUpdate,
 }
