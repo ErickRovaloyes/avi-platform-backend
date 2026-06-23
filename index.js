@@ -115,6 +115,7 @@ const flowLogsRoutes      = require('./routes/flowLogs.routes')
 const aiMediaRoutes       = require('./routes/aiMedia.routes')
 const calendarRoutes      = require('./routes/calendars.routes')
 const woocommerceRoutes   = require('./routes/woocommerce.routes')
+const paymentsRoutes      = require('./routes/payments.routes')
 const schedulingRoutes    = require('./routes/scheduling.routes')
 
 // Guest counter alias (used by storage.js generateGuest)
@@ -155,6 +156,7 @@ app.use('/api',                flowLogsRoutes)
 app.use('/api',                aiMediaRoutes)
 app.use('/api',                calendarRoutes)
 app.use('/api',                woocommerceRoutes)
+app.use('/api',                paymentsRoutes)
 app.use('/api',                schedulingRoutes)
 app.use('/api',                webhookRoutes)
 
@@ -276,6 +278,31 @@ app.use('/api',                webhookRoutes)
     "ALTER TABLE woo_orders ADD COLUMN platform VARCHAR(20) DEFAULT 'woocommerce'",
     "ALTER TABLE woo_orders ADD COLUMN reminders_sent TINYINT(1) DEFAULT 0",
     "ALTER TABLE woo_orders ADD COLUMN last_reminder_at BIGINT",
+    // Pasarela de pago general (Wompi …): config por cuenta.
+    "ALTER TABLE accounts ADD COLUMN payments JSON",
+    // Intentos de pago creados por el asistente → mapeo pago↔conversación para
+    // confirmar el pago (webhook) y disparar el flujo de éxito/fallo.
+    `CREATE TABLE IF NOT EXISTS payment_intents (
+       id            VARCHAR(60)  PRIMARY KEY,
+       account_id    VARCHAR(50)  NOT NULL,
+       agent_id      VARCHAR(50),
+       conv_id       VARCHAR(80),
+       provider      VARCHAR(20)  DEFAULT 'wompi',
+       reference     VARCHAR(80)  NOT NULL,
+       link_id       VARCHAR(80),
+       link_url      TEXT,
+       amount        DECIMAL(14,2),
+       currency      VARCHAR(10),
+       description   VARCHAR(255),
+       status        VARCHAR(20)  DEFAULT 'pending',
+       transaction_id VARCHAR(80),
+       result_notified TINYINT(1) DEFAULT 0,
+       created_at    BIGINT,
+       updated_at    BIGINT,
+       UNIQUE KEY uq_pi_ref (account_id, reference),
+       INDEX idx_pi_link (account_id, link_id),
+       INDEX idx_pi_conv (account_id, conv_id)
+     )`,
     `CREATE TABLE IF NOT EXISTS crm_notes (
        id          VARCHAR(50) PRIMARY KEY,
        account_id  VARCHAR(50) NOT NULL,

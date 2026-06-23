@@ -44,6 +44,7 @@ function buildToolDefs(toolList, account) {
     if (tool.actionType === 'cms_resource') { const d = buildResourceToolDef(account); if (d) defs.push(d) }
     else if (tool.actionType === 'woocommerce') { if (account?.woocommerce?.connected) defs.push(...buildWooToolDefs()) }
     else if (tool.actionType === 'scheduling') { if (account?.scheduling?.connected) defs.push(...buildAgendaToolDefs(account)) }
+    else if (tool.actionType === 'payment') { if (account?.payments?.connected) defs.push(...buildPaymentToolDefs()) }
     else { const d = buildOneToolDef(tool); if (d) defs.push(d) }
   }
   return defs
@@ -58,6 +59,10 @@ async function execToolCall(ctx, toolList, toolName, toolArgs) {
   // Agenda de citas.
   if (AGENDA_FUNCS.has(normalized) && (toolList || []).some(t => t.actionType === 'scheduling')) {
     return agendaExec(ctx, normalized, toolArgs)
+  }
+  // Pasarela de pago.
+  if (PAYMENT_FUNCS.has(normalized) && (toolList || []).some(t => t.actionType === 'payment')) {
+    return paymentExec(ctx, normalized, toolArgs)
   }
   const tool = (toolList || []).find(t => t.name.replace(/\s+/g, '_').toLowerCase() === normalized)
   if (!tool) return `Error: herramienta "${toolName}" no encontrada o no asignada a este prompt.`
@@ -284,6 +289,50 @@ async function agendaExec(ctx, fnName, args) {
     logDebug(ctx, 'tool_result', `📅 ${fnName}`, {})
     return r?.text || 'Hecho.'
   } catch (e) { logDebug(ctx, 'error', `Agenda: ${e.message}`, {}); return `No se pudo completar la acción de agenda: ${e.message}` }
+}
+
+// ── Pasarela de pago: herramienta especial con varias funciones ────────────────
+const PAYMENT_FUNCS = new Set(['generar_link_pago', 'verificar_pago'])
+function buildPaymentToolDefs() {
+  return [
+    { type: 'function', function: { name: 'generar_link_pago',
+      description: 'Genera un LINK DE PAGO y se lo envía al usuario. Úsalo cuando el usuario quiera pagar y tengas claro el monto. Cuando complete el pago se detecta automáticamente.',
+      parameters: { type: 'object', properties: {
+        monto: { type: 'string', description: 'Monto a cobrar en la unidad mayor de la moneda (p. ej. 50000 para 50.000 COP)' },
+        concepto: { type: 'string', description: 'Concepto/descripción breve del pago (qué se está cobrando)' },
+      }, required: ['monto'] } } },
+    { type: 'function', function: { name: 'verificar_pago',
+      description: 'Verifica si el último pago de esta conversación ya se realizó. Úsalo cuando el usuario diga que ya pagó o preguntes por el estado.',
+      parameters: { type: 'object', properties: {} } } },
+  ]
+}
+async function paymentExec(ctx, fnName, args) {
+  const payments = require('../../services/payments')
+  const accId = ctx.accId
+  try {
+    if (fnName === 'generar_link_pago') {
+      const amount = parseFloat(String(args?.monto || '').replace(/[^\d.]/g, ''))
+      if (!amount || amount <= 0) return 'Indica un monto válido para generar el link de pago.'
+      const r = await payments.createPaymentLink(accId, {
+        amount, description: args?.concepto || 'Pago', convId: ctx.convId, agId: ctx.agId,
+      })
+      await sendBotMsg(ctx, `💳 Aquí está tu link de pago por ${r.amount} ${r.currency}:\n${r.url}\n\nApenas completes el pago te confirmo automáticamente.`)
+      logDebug(ctx, 'tool_result', `💳 Link de pago ${r.amount} ${r.currency}`, {})
+      return `Link de pago generado por ${r.amount} ${r.currency} y enviado al usuario.`
+    }
+    if (fnName === 'verificar_pago') {
+      const st = await payments.latestIntentStatus(accId, ctx.convId)
+      if (!st) return 'No hay ningún pago pendiente en esta conversación.'
+      logDebug(ctx, 'tool_result', `💳 Estado pago: ${st.status}`, {})
+      if (st.status === 'approved') return `El pago de ${st.amount} ${st.currency} está CONFIRMADO.`
+      if (st.status === 'declined') return `El pago de ${st.amount} ${st.currency} fue RECHAZADO o no se completó.`
+      return `El pago de ${st.amount} ${st.currency} aún está PENDIENTE (sin confirmar todavía).`
+    }
+  } catch (e) {
+    logDebug(ctx, 'error', `Pasarela: ${e.message}`, {})
+    return `No se pudo completar la acción de pago: ${e.message}`
+  }
+  return 'Acción de pago no reconocida.'
 }
 
 // Carga los turnos recientes para dar MEMORIA al agente. Descarta el/los turnos

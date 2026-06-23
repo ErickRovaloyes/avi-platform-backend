@@ -57,7 +57,19 @@ const SPECIAL_AGENDA_TOOL = {
   actionType: 'scheduling',
   special: true,
 }
-const specialTools = () => [SPECIAL_WOO_TOOL, SPECIAL_AGENDA_TOOL]
+const paymentsSvc = require('../services/payments')
+// Herramienta IA Especial de PAGOS (siempre asignable; opera solo si la cuenta
+// conectó una pasarela en Zona IA → Pasarela de pago). El asistente puede generar
+// links de pago y consultar si un pago se completó.
+const SPECIAL_PAYMENT_TOOL = {
+  id: 'pasarela_pago',
+  name: 'pasarela_pago',
+  description: 'Pasarela de pago (Wompi …): el asistente genera links de pago y detecta si un pago se realizó. Al confirmarse el pago se dispara el flujo configurado. Asígnala a un prompt para habilitarla.',
+  collectFields: [],
+  actionType: 'payment',
+  special: true,
+}
+const specialTools = () => [SPECIAL_WOO_TOOL, SPECIAL_AGENDA_TOOL, SPECIAL_PAYMENT_TOOL]
 
 const mapCmsAsset = c => ({
   id: c.id, name: c.name, description: c.description || '', tags: parseJ(c.tags, []),
@@ -100,6 +112,7 @@ async function loadPublicAccount(accId) {
     aiTools:   [SPECIAL_CMS_TOOL, ...specialTools(), ...aiTools.map(t => ({ id: t.id, name: t.name, description: t.description, collectFields: parseJ(t.collect_fields, []), flowId: t.flow_id, actionType: t.action_type || 'variable' }))],
     woocommerce: storeSvc.publicConfig(parseJ(acc.woocommerce, null)),
     scheduling: schedulingCfg,
+    payments: paymentsSvc.publicConfig(parseJ(acc.payments, null)),
     cmsAssets: cmsAssets.map(mapCmsAsset),
     cmsFolders: cmsFolders.map(mapCmsFolder),
     cmsTags: cmsTags.map(mapNamed),
@@ -183,6 +196,7 @@ const getAccount = async (req, res) => {
       aiTools:   [SPECIAL_CMS_TOOL, ...specialTools(), ...aiTools.map(t => ({ id: t.id, name: t.name, description: t.description, collectFields: parseJ(t.collect_fields, []), flowId: t.flow_id, actionType: t.action_type || 'variable', createdAt: t.created_at }))],
       woocommerce: storeSvc.publicConfig(parseJ(acc.woocommerce, null)),
       scheduling: schedulingCfg,
+      payments: paymentsSvc.publicConfig(parseJ(acc.payments, null)),
       // Modelo por defecto para prompts nuevos (lo fija el super admin). El owner
       // y demás usuarios no pueden cambiar el modelo; solo lo ve/edita el super admin.
       defaultPromptProvider: pf?.default_prompt_provider || 'deepseek',
