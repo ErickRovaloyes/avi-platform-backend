@@ -98,26 +98,26 @@ const whatsappVerify = (req, res) => {
   mode === 'subscribe' ? res.status(200).send(challenge) : res.sendStatus(403)
 }
 
-const whatsappReceive = async (req, res) => {
-  const { accId, agentId } = req.params
-  const value = req.body?.entry?.[0]?.changes?.[0]?.value || {}
+// Procesa UNA entry del webhook de WhatsApp para una cuenta/agente concretos.
+// Reutilizable por el webhook POR CUENTA (URL con :accId/:agentId) y por el
+// webhook GLOBAL de la app de Coexistencia (que resuelve la cuenta por número).
+async function processWhatsAppEntry(accId, agentId, entry) {
+  const value = entry?.changes?.[0]?.value || {}
   const msgs = value.messages || []
   const statuses = value.statuses || []
 
   // Acuses de estado (sent/delivered/read) de mensajes salientes
   if (!msgs.length && statuses.length) {
-    res.sendStatus(200)
     for (const st of statuses) {
       flowStore.updateMessageStatus(st.id, st.status).catch(e => console.error('[WA status]', e.message))
     }
     return
   }
-  if (!msgs.length) return res.sendStatus(200)
-  // ACK immediately to Meta; do the (potentially slow) media download in the background
-  res.sendStatus(200)
-  let payload = req.body
+  if (!msgs.length) return
+
+  let payload = { object: 'whatsapp_business_account', entry: [entry] }
   try {
-    payload = await enrichWhatsAppPayloadWithMedia(accId, agentId, req.body)
+    payload = await enrichWhatsAppPayloadWithMedia(accId, agentId, payload)
   } catch (e) {
     console.error('[whatsappReceive] media enrich', e)
   }
@@ -127,6 +127,45 @@ const whatsappReceive = async (req, res) => {
   // `payload`) se detenga y deje de procesar/responder en paralelo.
   pushSSE({ type: 'whatsapp', accId, agentId, ts: Date.now() })
   flow.processWhatsApp(accId, agentId, payload).catch(e => console.error('[flow WA]', e))
+}
+
+// Busca a qué cuenta/agente pertenece un phone_number_id (entre los canales de
+// WhatsApp conectados). Lo usa el webhook GLOBAL de Coexistencia.
+async function findAgentByPhoneNumberId(pnid) {
+  if (!pnid) return null
+  try {
+    const [rows] = await pool.query('SELECT id, account_id, channels FROM agents WHERE channels LIKE ?', [`%${pnid}%`])
+    for (const r of rows) {
+      const channels = parseJ(r.channels, [])
+      const ch = channels.find(c => c.type === 'whatsapp' && c.config && String(c.config.phoneNumberId) === String(pnid))
+      if (ch) return { accId: r.account_id, agentId: r.id }
+    }
+  } catch (e) { console.error('[findAgentByPhoneNumberId]', e.message) }
+  return null
+}
+
+const whatsappReceive = async (req, res) => {
+  const { accId, agentId } = req.params
+  // ACK inmediato a Meta; el resto va en segundo plano.
+  res.sendStatus(200)
+  for (const entry of (req.body?.entry || [])) {
+    processWhatsAppEntry(accId, agentId, entry).catch(e => console.error('[WA entry]', e.message))
+  }
+}
+
+// Webhook GLOBAL de la app de Coexistencia: Meta envía TODOS los mensajes de
+// todos los clientes a una sola URL. Aquí resolvemos la cuenta/agente por el
+// phone_number_id de cada entry y procesamos como el webhook por cuenta.
+const whatsappReceiveGlobal = async (req, res) => {
+  res.sendStatus(200)
+  for (const entry of (req.body?.entry || [])) {
+    try {
+      const pnid = entry?.changes?.[0]?.value?.metadata?.phone_number_id
+      const target = await findAgentByPhoneNumberId(pnid)
+      if (!target) { console.warn('[WA global] sin agente para phone_number_id', pnid); continue }
+      await processWhatsAppEntry(target.accId, target.agentId, entry)
+    } catch (e) { console.error('[WA global entry]', e.message) }
+  }
 }
 
 // ── Messenger ─────────────────────────────────────────────────────────────────
@@ -217,7 +256,7 @@ const getDebug = (req, res) => {
 const getHealth = (req, res) => res.json({ status: 'ok', sseClients: sseClients.size })
 
 module.exports = {
-  whatsappVerify, whatsappReceive,
+  whatsappVerify, whatsappReceive, whatsappReceiveGlobal,
   messengerVerify, messengerReceive,
   instagramVerify, instagramReceive,
   sseStream, testMessage, getDebug, getHealth,
