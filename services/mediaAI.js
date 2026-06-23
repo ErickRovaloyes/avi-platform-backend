@@ -37,20 +37,20 @@ async function getTranscriptionModel() {
 }
 
 // ── Transcripción de audio (OpenAI Whisper / gpt-4o-transcribe) ───────────────
-async function transcribeMedia(accId, mediaId, { model, language } = {}) {
-  const m = await loadMedia(accId, mediaId)
-  if (!m) throw new Error('Audio no encontrado')
+// Transcribe un Buffer de audio crudo (sin necesidad de tenerlo persistido en
+// `media`). Lo usan: transcribeMedia (audio ya guardado) y el endpoint de
+// transcripción "en vivo" de la vista previa del asesor (audio aún sin enviar).
+async function transcribeBuffer(accId, buf, { mime, filename, model, language } = {}) {
   const apiKey = await getOpenAIKey(accId)
   if (!apiKey) throw new Error('Sin API Key de OpenAI para transcribir audios')
   // Modelo: el que pase el llamador, o el configurado en el Super Panel.
   if (!model) model = await getTranscriptionModel()
 
-  const buf = Buffer.from(m.data_base64, 'base64')
-  if (!buf.length) throw new Error('El audio está vacío')
+  if (!buf || !buf.length) throw new Error('El audio está vacío')
 
   // Whisper acepta: flac, m4a, mp3, mp4, mpeg, mpga, oga, ogg, wav, webm. Hay que
   // mandar un nombre de archivo con extensión válida y un mime sin "; codecs=...".
-  const baseMime = String(m.mime_type || 'audio/ogg').split(';')[0].trim().toLowerCase()
+  const baseMime = String(mime || 'audio/ogg').split(';')[0].trim().toLowerCase()
   const EXT_BY_MIME = {
     'audio/webm': 'webm', 'audio/ogg': 'ogg', 'audio/oga': 'oga', 'audio/opus': 'ogg',
     'audio/mpeg': 'mp3', 'audio/mp3': 'mp3', 'audio/mp4': 'mp4', 'audio/m4a': 'm4a',
@@ -59,15 +59,15 @@ async function transcribeMedia(accId, mediaId, { model, language } = {}) {
   }
   const SUPPORTED = /\.(flac|m4a|mp3|mp4|mpeg|mpga|oga|ogg|wav|webm)$/i
   const ext = EXT_BY_MIME[baseMime] || 'ogg'
-  let filename = m.filename || `audio.${ext}`
-  if (!SUPPORTED.test(filename)) filename = `audio.${ext}`
+  let fname = filename || `audio.${ext}`
+  if (!SUPPORTED.test(fname)) fname = `audio.${ext}`
 
   const form = new FormData()
   // File conserva el nombre/extensión de forma fiable en el multipart de Node.
   const fileObj = (typeof File !== 'undefined')
-    ? new File([buf], filename, { type: baseMime })
+    ? new File([buf], fname, { type: baseMime })
     : new Blob([buf], { type: baseMime })
-  form.append('file', fileObj, filename)
+  form.append('file', fileObj, fname)
   form.append('model', model)
   form.append('response_format', 'text')
   if (language) form.append('language', language)
@@ -84,6 +84,13 @@ async function transcribeMedia(accId, mediaId, { model, language } = {}) {
   // response_format=text → cuerpo es texto plano
   const text = (await res.text()).trim()
   return text
+}
+
+async function transcribeMedia(accId, mediaId, { model, language } = {}) {
+  const m = await loadMedia(accId, mediaId)
+  if (!m) throw new Error('Audio no encontrado')
+  const buf = Buffer.from(m.data_base64, 'base64')
+  return transcribeBuffer(accId, buf, { mime: m.mime_type, filename: m.filename, model, language })
 }
 
 // ── Llamada simple a chat completions (visión o texto) ────────────────────────
@@ -149,4 +156,4 @@ async function analyzeMedia(accId, mediaId, { model, prompt } = {}) {
   return text
 }
 
-module.exports = { transcribeMedia, analyzeMedia, loadMedia }
+module.exports = { transcribeMedia, transcribeBuffer, analyzeMedia, loadMedia }

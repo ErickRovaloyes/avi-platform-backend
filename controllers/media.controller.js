@@ -123,6 +123,17 @@ const uploadMedia = async (req, res) => {
           )
         } catch {}
       }
+    } else if (media.kind === 'audio') {
+      // Audio SALIENTE (asesor): el navegador ya transcribió en la vista previa y
+      // manda el texto en el body. Se guarda SOLO en metadata (no pisa el caption
+      // ni el `content` del mensaje) para que la transcripción se vea como una
+      // línea bajo el audio, igual al recargar que en vivo. No se vuelve a llamar
+      // a Whisper para no duplicar coste ni demorar el envío al canal.
+      const providedTx = typeof req.body.transcription === 'string' ? req.body.transcription.trim() : ''
+      if (providedTx) {
+        metadata.transcription = providedTx
+        try { await pool.query('UPDATE messages SET metadata=? WHERE id=?', [JSON.stringify(metadata), messageId]) } catch {}
+      }
     }
 
     // 3) bump preview + updated_at on the conversation (same as appendMessage)
