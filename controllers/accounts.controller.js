@@ -195,12 +195,14 @@ const getAccount = async (req, res) => {
       flows:     flows.map(f => ({ id: f.id, name: f.name, trigger: f.trigger, startNodeId: f.start_node_id, nodes: parseJ(f.nodes, []), createdAt: f.created_at })),
       contacts:  contacts.map(c => ({ id: c.id, name: c.name, email: c.email, phone: c.phone, ...parseJ(c.extra, {}), createdAt: c.created_at })),
       calendars: calendars.map(c => ({
-        id: c.id, type: c.type || 'booking', name: c.name, description: c.description || '',
+        id: c.id, type: c.type || 'booking', vertical: c.vertical || 'appointment',
+        name: c.name, description: c.description || '',
         timezone: c.timezone, color: c.color, status: c.status,
         availability: parseJ(c.availability, {}), exceptions: parseJ(c.exceptions, []),
         appointment: parseJ(c.appointment, {}), formConfig: parseJ(c.form_config, {}),
         notifications: parseJ(c.notifications, {}), integrations: parseJ(c.integrations, {}),
-        flowId: c.flow_id || null, createdAt: c.created_at, updatedAt: c.updated_at,
+        flowId: c.flow_id || null, sharedGroup: c.shared_group || '',
+        createdAt: c.created_at, updatedAt: c.updated_at,
       })),
     })
   } catch (err) {

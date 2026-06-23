@@ -440,6 +440,10 @@ app.use('/api',                webhookRoutes)
     // Vertical del calendario (medical|restaurant|hotel|cinema|appointment).
     // Default 'appointment' = comportamiento actual (time-slot + Google sync).
     "ALTER TABLE calendars ADD COLUMN vertical VARCHAR(20) DEFAULT 'appointment'",
+    // Grupo de espacios compartidos: calendarios del MISMO grupo (y mismo
+    // vertical) se excluyen mutuamente en franjas que se solapan en el tiempo,
+    // para no superponer citas entre ellos. NULL = no comparte espacios.
+    "ALTER TABLE calendars ADD COLUMN shared_group VARCHAR(80) DEFAULT NULL",
     // Outbox de eventos de dominio (microservices-ready).
     `CREATE TABLE IF NOT EXISTS domain_events (
        id          BIGINT PRIMARY KEY AUTO_INCREMENT,

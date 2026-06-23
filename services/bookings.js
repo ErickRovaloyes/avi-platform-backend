@@ -20,9 +20,17 @@ const restaurant = require('./restaurant')
 // Contexto de datos que las estrategias de disponibilidad reciben por inyección.
 // Cada estrategia usa solo lo que necesita (time-slot: holiday/bookings/google;
 // capacity: tables/shifts/allocations).
-function strategyCtx() {
+//
+// Si el calendario pertenece a un grupo de ESPACIOS COMPARTIDOS, la carga de
+// reservas del día incluye las de sus calendarios hermanos, de modo que una cita
+// solapada en cualquiera de ellos bloquee el horario aquí (exclusión mutua).
+function strategyCtx(calendar = null) {
   return {
-    holidayBlocked, bookingsForDate, googleBusyForDate: sync.busyForDate,
+    holidayBlocked,
+    bookingsForDate: (calendar && calendar.sharedGroup)
+      ? ((accId, _calId, dateStr) => sharedBookingsForDate(accId, calendar, dateStr))
+      : bookingsForDate,
+    googleBusyForDate: sync.busyForDate,
     getTables: restaurant.getTables, getShifts: restaurant.getShifts,
     getDateAllocations: restaurant.getDateAllocations, insertAllocations: restaurant.insertAllocations,
   }
@@ -51,6 +59,7 @@ function mapCalendar(r) {
     notifications: parseJ(r.notifications, {}),
     integrations: parseJ(r.integrations, {}),
     flowId: r.flow_id || null,
+    sharedGroup: r.shared_group || '',
     createdAt: r.created_at, updatedAt: r.updated_at,
   }
 }
@@ -106,6 +115,36 @@ async function bookingsForDate(accId, calendarId, dateStr) {
     [accId, calendarId, dateStr]
   )
   return rows.map(r => ({ id: r.id, date: r.date, time: r.time, duration: r.duration, status: r.status }))
+}
+
+// ── Espacios compartidos ────────────────────────────────────────────────────
+// Calendarios "hermanos" que comparten espacios con éste: mismo grupo, mismo
+// vertical, activos y distinto id. Sirve para la exclusión mutua de citas
+// solapadas entre calendarios del mismo tipo de negocio.
+async function siblingCalendarIds(accId, calendar) {
+  const grp = String(calendar?.sharedGroup || '').trim()
+  if (!grp || !calendar?.id) return []
+  try {
+    const [rows] = await pool.query(
+      "SELECT id FROM calendars WHERE account_id=? AND shared_group=? AND id<>? AND COALESCE(vertical,'appointment')=? AND COALESCE(status,'active')<>'inactive'",
+      [accId, grp, calendar.id, calendar.vertical || 'appointment']
+    )
+    return rows.map(r => r.id)
+  } catch { return [] }
+}
+
+// Reservas del día propias + de los calendarios que comparten espacios, para que
+// una cita en un calendario bloquee el horario solapado en sus hermanos.
+async function sharedBookingsForDate(accId, calendar, dateStr) {
+  const own = await bookingsForDate(accId, calendar.id, dateStr)
+  const sibs = await siblingCalendarIds(accId, calendar)
+  if (!sibs.length) return own
+  const [rows] = await pool.query(
+    `SELECT id, date, time, duration, status FROM calendar_bookings
+       WHERE account_id=? AND date=? AND calendar_id IN (${sibs.map(() => '?').join(',')})`,
+    [accId, dateStr, ...sibs]
+  )
+  return [...own, ...rows.map(r => ({ id: r.id, date: r.date, time: r.time, duration: r.duration, status: r.status }))]
 }
 
 // ── Clientes (paciente/huésped) como entidad de primer nivel ────────────────
@@ -178,7 +217,7 @@ async function getAvailability(accId, calendarId, dateStr, durationMin, partySiz
   if (!calendar) throw new Error('Calendario no encontrado')
   // El cálculo se delega a la estrategia del vertical (time-slot / capacity / …).
   const strategy = resolveStrategy(calendar)
-  return strategy.getDayAvailability(calendar, dateStr, { durationMin, partySize, ctx: strategyCtx() })
+  return strategy.getDayAvailability(calendar, dateStr, { durationMin, partySize, ctx: strategyCtx(calendar) })
 }
 
 const toDateKey = (d) => (typeof d === 'string' ? d.slice(0, 10) : new Date(d).toISOString().slice(0, 10))
@@ -195,14 +234,18 @@ async function getMonthAvailability(accId, calendarId, year, month, durationMin,
   // Estrategias no time-slot definen su propia lógica de "días abiertos" del mes.
   const strategy = resolveStrategy(calendar)
   if (typeof strategy.getMonthDays === 'function') {
-    return strategy.getMonthDays(calendar, { year: y, month: m, durationMin, partySize, ctx: strategyCtx() })
+    return strategy.getMonthDays(calendar, { year: y, month: m, durationMin, partySize, ctx: strategyCtx(calendar) })
   }
   const mm = String(m).padStart(2, '0')
   const lastDay = new Date(Date.UTC(y, m, 0)).getUTCDate()
   const first = `${y}-${mm}-01`, last = `${y}-${mm}-${String(lastDay).padStart(2, '0')}`
+  // Espacios compartidos: incluye las reservas de los calendarios hermanos para
+  // que un día se considere ocupado también por las citas solapadas de ellos.
+  const sibs = await siblingCalendarIds(accId, calendar)
+  const calIds = [calendarId, ...sibs]
   const [rows] = await pool.query(
-    'SELECT date, time, duration, status FROM calendar_bookings WHERE account_id=? AND calendar_id=? AND date BETWEEN ? AND ?',
-    [accId, calendarId, first, last]
+    `SELECT date, time, duration, status FROM calendar_bookings WHERE account_id=? AND calendar_id IN (${calIds.map(() => '?').join(',')}) AND date BETWEEN ? AND ?`,
+    [accId, ...calIds, first, last]
   )
   const byDate = {}
   for (const r of rows) {
@@ -245,7 +288,8 @@ async function createBooking(accId, calendarId, data = {}, { validate = true } =
         if (!ok) throw new Error('No hay mesa disponible para ese horario y número de personas')
       } else {
         if (await holidayBlocked(calendar, date)) throw new Error('Ese día es festivo y está bloqueado para reservas')
-        const bookings = await bookingsForDate(accId, calendarId, date)
+        // Espacios compartidos: valida contra reservas propias + de calendarios hermanos.
+        const bookings = await sharedBookingsForDate(accId, calendar, date)
         if (!av.isSlotAvailable(calendar, date, time, bookings, { durationMin: duration })) {
           throw new Error('El horario seleccionado ya no está disponible')
         }
@@ -324,7 +368,8 @@ async function rescheduleBooking(accId, bookingId, newDate, newTime, { validate 
     await strategy.allocate(calendar, bookingId, { date, time, partySize: booking.partySize, ctx: strategyCtx() }).catch(() => {})
   } else {
     if (validate) {
-      const bookings = await bookingsForDate(accId, booking.calendarId, date)
+      // Espacios compartidos: valida contra reservas propias + de calendarios hermanos.
+      const bookings = await sharedBookingsForDate(accId, calendar, date)
       if (!av.isSlotAvailable(calendar, date, time, bookings, { durationMin: booking.duration, ignoreBookingId: bookingId })) {
         throw new Error('El nuevo horario no está disponible')
       }

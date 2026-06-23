@@ -38,14 +38,15 @@ const create = async (req, res) => {
   const ts = Date.now()
   try {
     await pool.query(
-      `INSERT INTO calendars (id, account_id, type, vertical, name, description, timezone, color, status, availability, exceptions, appointment, form_config, flow_id, created_at, updated_at)
-       VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`,
+      `INSERT INTO calendars (id, account_id, type, vertical, name, description, timezone, color, status, availability, exceptions, appointment, form_config, flow_id, shared_group, created_at, updated_at)
+       VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`,
       [id, accId, b.type || 'booking', b.vertical || 'appointment', b.name || 'Calendario', b.description || '',
        b.timezone || 'America/Lima', b.color || '#7c6fff', b.status || 'active',
        JSON.stringify(b.availability || DEFAULT_AVAILABILITY),
        JSON.stringify(b.exceptions || []),
        JSON.stringify(b.appointment || DEFAULT_APPOINTMENT),
-       JSON.stringify(b.formConfig || {}), b.flowId || null, ts, ts]
+       JSON.stringify(b.formConfig || {}), b.flowId || null,
+       b.sharedGroup ? String(b.sharedGroup).slice(0, 80) : null, ts, ts]
     )
     socket.emit(accId, 'account:updated', { accId })
     res.json(await bookings.getCalendar(accId, id))
@@ -63,6 +64,8 @@ const update = async (req, res) => {
   const sets = []; const vals = []
   for (const [k, col] of Object.entries(map)) if (b[k] !== undefined) { sets.push(`${col}=?`); vals.push(b[k]) }
   for (const [k, col] of Object.entries(jsonMap)) if (b[k] !== undefined) { sets.push(`${col}=?`); vals.push(JSON.stringify(b[k])) }
+  // Grupo de espacios compartidos: cadena vacía => NULL (deja de compartir).
+  if (b.sharedGroup !== undefined) { sets.push('shared_group=?'); vals.push(b.sharedGroup ? String(b.sharedGroup).slice(0, 80) : null) }
   if (!sets.length) return res.json(await bookings.getCalendar(accId, calId))
   sets.push('updated_at=?'); vals.push(Date.now())
   vals.push(calId, accId)
