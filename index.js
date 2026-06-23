@@ -115,6 +115,7 @@ const flowLogsRoutes      = require('./routes/flowLogs.routes')
 const aiMediaRoutes       = require('./routes/aiMedia.routes')
 const calendarRoutes      = require('./routes/calendars.routes')
 const woocommerceRoutes   = require('./routes/woocommerce.routes')
+const schedulingRoutes    = require('./routes/scheduling.routes')
 
 // Guest counter alias (used by storage.js generateGuest)
 const guestRouter = require('express').Router()
@@ -154,6 +155,7 @@ app.use('/api',                flowLogsRoutes)
 app.use('/api',                aiMediaRoutes)
 app.use('/api',                calendarRoutes)
 app.use('/api',                woocommerceRoutes)
+app.use('/api',                schedulingRoutes)
 app.use('/api',                webhookRoutes)
 
 // ── Auto-migrate DB columns added after initial schema ────────────────────────
@@ -246,6 +248,9 @@ app.use('/api',                webhookRoutes)
     // conversaciones. Se inyecta en el prompt además de los últimos 16 mensajes.
     "ALTER TABLE contacts          ADD COLUMN memory TEXT",
     "ALTER TABLE contacts          ADD COLUMN memory_updated_at BIGINT",
+    // Herramienta IA de agenda: calendarios que el asistente puede usar para ver
+    // disponibilidad / agendar / mover / cancelar citas.
+    "ALTER TABLE accounts          ADD COLUMN scheduling JSON",
     // Pedidos creados por el asistente → mapeo pedido↔conversación para confirmar el pago.
     `CREATE TABLE IF NOT EXISTS woo_orders (
        id          VARCHAR(60)  PRIMARY KEY,

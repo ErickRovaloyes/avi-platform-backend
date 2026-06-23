@@ -43,6 +43,7 @@ function buildToolDefs(toolList, account) {
   for (const tool of (toolList || [])) {
     if (tool.actionType === 'cms_resource') { const d = buildResourceToolDef(account); if (d) defs.push(d) }
     else if (tool.actionType === 'woocommerce') { if (account?.woocommerce?.connected) defs.push(...buildWooToolDefs()) }
+    else if (tool.actionType === 'scheduling') { if (account?.scheduling?.connected) defs.push(...buildAgendaToolDefs(account)) }
     else { const d = buildOneToolDef(tool); if (d) defs.push(d) }
   }
   return defs
@@ -53,6 +54,10 @@ async function execToolCall(ctx, toolList, toolName, toolArgs) {
   // Tienda WooCommerce: la herramienta especial expone varias funciones.
   if (WOO_FUNCS.has(normalized) && (toolList || []).some(t => t.actionType === 'woocommerce')) {
     return wooExec(ctx, normalized, toolArgs)
+  }
+  // Agenda de citas.
+  if (AGENDA_FUNCS.has(normalized) && (toolList || []).some(t => t.actionType === 'scheduling')) {
+    return agendaExec(ctx, normalized, toolArgs)
   }
   const tool = (toolList || []).find(t => t.name.replace(/\s+/g, '_').toLowerCase() === normalized)
   if (!tool) return `Error: herramienta "${toolName}" no encontrada o no asignada a este prompt.`
@@ -251,6 +256,33 @@ async function wooExec(ctx, fnName, args) {
     return `No se pudo completar la acción de la tienda: ${e.message}`
   }
   return 'Acción de tienda no reconocida.'
+}
+
+// ── Agenda de citas: herramienta especial con varias funciones ─────────────────
+const AGENDA_FUNCS = new Set(['ver_disponibilidad', 'recomendar_citas', 'agendar_cita', 'mover_cita', 'cancelar_cita'])
+function buildAgendaToolDefs(account) {
+  const cals = account?.scheduling?.calendars || []
+  if (!cals.length) return []
+  const menu = cals.map(c => `• ${c.name}${c.description ? ` — ${c.description}` : ''}`).join('\n')
+  const multi = cals.length > 1
+  const servicioDesc = multi
+    ? `Calendario/servicio a usar. ELIGE según la DESCRIPCIÓN del que mejor encaje con lo que pide el cliente (pasa el nombre del calendario). Calendarios disponibles:\n${menu}`
+    : `(opcional; solo hay un calendario: ${cals[0].name})`
+  return [
+    { type: 'function', function: { name: 'ver_disponibilidad', description: 'Muestra los horarios LIBRES de un calendario para una fecha. Úsalo cuando el cliente pregunte por disponibilidad de un día concreto. No inventes horarios.', parameters: { type: 'object', properties: { fecha: { type: 'string', description: 'Fecha YYYY-MM-DD (o "hoy"/"mañana")' }, servicio: { type: 'string', description: servicioDesc } }, required: ['fecha'] } } },
+    { type: 'function', function: { name: 'recomendar_citas', description: 'Recomienda las PRÓXIMAS citas disponibles (siguientes días con cupo). Úsalo cuando el cliente quiere agendar pero no fijó un día.', parameters: { type: 'object', properties: { servicio: { type: 'string', description: servicioDesc } } } } },
+    { type: 'function', function: { name: 'agendar_cita', description: 'Agenda una cita. Úsalo SOLO cuando el cliente confirme fecha y hora (de las que diste por disponibilidad) y tengas su nombre.', parameters: { type: 'object', properties: { fecha: { type: 'string', description: 'YYYY-MM-DD' }, hora: { type: 'string', description: 'HH:MM' }, servicio: { type: 'string', description: servicioDesc }, nombre: { type: 'string', description: 'Nombre del cliente' }, telefono: { type: 'string' }, email: { type: 'string' }, nota: { type: 'string' } }, required: ['fecha', 'hora'] } } },
+    { type: 'function', function: { name: 'mover_cita', description: 'Reagenda la cita del cliente a otra fecha/hora.', parameters: { type: 'object', properties: { nueva_fecha: { type: 'string', description: 'YYYY-MM-DD' }, nueva_hora: { type: 'string', description: 'HH:MM' }, telefono: { type: 'string' }, bookingId: { type: 'string', description: 'id de la cita si el cliente tiene varias' } }, required: ['nueva_fecha', 'nueva_hora'] } } },
+    { type: 'function', function: { name: 'cancelar_cita', description: 'Cancela la cita del cliente.', parameters: { type: 'object', properties: { telefono: { type: 'string' }, bookingId: { type: 'string', description: 'id de la cita si tiene varias' } } } } },
+  ]
+}
+async function agendaExec(ctx, fnName, args) {
+  try {
+    const sched = require('../../services/scheduling')
+    const r = await sched.toolCall(ctx.accId, fnName, args || {}, { convId: ctx.convId, agId: ctx.agId })
+    logDebug(ctx, 'tool_result', `📅 ${fnName}`, {})
+    return r?.text || 'Hecho.'
+  } catch (e) { logDebug(ctx, 'error', `Agenda: ${e.message}`, {}); return `No se pudo completar la acción de agenda: ${e.message}` }
 }
 
 // Carga los turnos recientes para dar MEMORIA al agente. Descarta el/los turnos
@@ -550,6 +582,14 @@ const aiNodes = [
       const _mem = ctx.variables?._summary
       if (_mem && String(_mem).trim()) {
         sysWithRag = `${sysWithRag}\n\n---\n[MEMORIA DEL CLIENTE — resumen permanente de lo hablado y datos importantes; úsala para personalizar y no volver a preguntar lo que ya sabes]\n${String(_mem).trim()}\n---`
+      }
+
+      // Conciencia temporal para la agenda: el modelo necesita saber qué día es hoy.
+      const _sch = ctx.account?.scheduling
+      if (_sch?.connected) {
+        let hoy = ''
+        try { hoy = new Date().toLocaleDateString('es-CO', { timeZone: _sch.timezone || 'America/Lima', weekday: 'long', year: 'numeric', month: 'long', day: 'numeric' }) } catch { hoy = new Date().toISOString().slice(0, 10) }
+        sysWithRag = `${sysWithRag}\n\n📅 HOY es ${hoy} (zona horaria ${_sch.timezone || 'America/Lima'}). Para citas usa SIEMPRE la herramienta de agenda (ver_disponibilidad / recomendar_citas / agendar_cita / mover_cita / cancelar_cita); NO inventes horarios ni confirmes citas sin la herramienta.`
       }
 
       const history = await loadHistory(ctx)

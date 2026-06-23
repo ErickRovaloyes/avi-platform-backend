@@ -41,10 +41,23 @@ const SPECIAL_WOO_TOOL = {
   special: true,
 }
 const storeSvc = require('../services/store')
+const schedulingSvc = require('../services/scheduling')
 // La herramienta de la tienda SIEMPRE está disponible para asignar a un prompt
 // (igual que la del CMS). Se "activa" al asignarla; en runtime solo responde si
 // la tienda está conectada (Woo/Shopify) en la pestaña Tienda.
 const wooTools = () => [SPECIAL_WOO_TOOL]
+
+// Herramienta IA Especial de AGENDA (siempre asignable; opera solo si el cliente
+// eligió calendarios en Zona IA → Agenda).
+const SPECIAL_AGENDA_TOOL = {
+  id: 'agenda',
+  name: 'agenda',
+  description: 'Agenda de citas: el asistente puede ver disponibilidad, recomendar horarios, agendar, mover y cancelar citas en los calendarios que el cliente habilitó. Asígnala a un prompt para habilitarla.',
+  collectFields: [],
+  actionType: 'scheduling',
+  special: true,
+}
+const specialTools = () => [SPECIAL_WOO_TOOL, SPECIAL_AGENDA_TOOL]
 
 const mapCmsAsset = c => ({
   id: c.id, name: c.name, description: c.description || '', tags: parseJ(c.tags, []),
@@ -78,13 +91,15 @@ async function loadPublicAccount(accId) {
   const effOpenai    = (acc.openai_key    && acc.openai_key.trim())    || pf?.openai_key    || ''
   const effDeepseek  = (acc.deepseek_key  && acc.deepseek_key.trim())  || pf?.deepseek_key  || ''
   const effAnthropic = (acc.anthropic_key && acc.anthropic_key.trim()) || pf?.anthropic_key || ''
+  const schedulingCfg = await schedulingSvc.publicConfig(accId).catch(() => ({ connected: false }))
   return {
     id: acc.id, name: acc.name,
     openaiKey: effOpenai, deepseekKey: effDeepseek, anthropicKey: effAnthropic,
     agents: agents.map(mapAgent),
     variables: variables.map(v => ({ id: v.id, name: v.name, type: v.type, defaultValue: v.default_value, description: v.description, isSystem: !!v.is_system })),
-    aiTools:   [SPECIAL_CMS_TOOL, ...wooTools(acc), ...aiTools.map(t => ({ id: t.id, name: t.name, description: t.description, collectFields: parseJ(t.collect_fields, []), flowId: t.flow_id, actionType: t.action_type || 'variable' }))],
+    aiTools:   [SPECIAL_CMS_TOOL, ...specialTools(), ...aiTools.map(t => ({ id: t.id, name: t.name, description: t.description, collectFields: parseJ(t.collect_fields, []), flowId: t.flow_id, actionType: t.action_type || 'variable' }))],
     woocommerce: storeSvc.publicConfig(parseJ(acc.woocommerce, null)),
+    scheduling: schedulingCfg,
     cmsAssets: cmsAssets.map(mapCmsAsset),
     cmsFolders: cmsFolders.map(mapCmsFolder),
     cmsTags: cmsTags.map(mapNamed),
@@ -136,6 +151,7 @@ const getAccount = async (req, res) => {
     const effOpenai    = (acc.openai_key    && acc.openai_key.trim())    || pf?.openai_key    || ''
     const effDeepseek  = (acc.deepseek_key  && acc.deepseek_key.trim())  || pf?.deepseek_key  || ''
     const effAnthropic = (acc.anthropic_key && acc.anthropic_key.trim()) || pf?.anthropic_key || ''
+    const schedulingCfg = await schedulingSvc.publicConfig(accId).catch(() => ({ connected: false }))
     res.json({
       id: acc.id, name: acc.name, email: acc.email, plan: acc.plan, status: acc.status, createdAt: acc.created_at,
       // Own keys (user-settable in Settings); read-only effective ones below
@@ -164,8 +180,9 @@ const getAccount = async (req, res) => {
       labels:    labels.map(l => ({ id: l.id, name: l.name, color: l.color })),
       pipelines: pipelines.map(p => ({ id: p.id, name: p.name, stages: parseJ(p.stages, []), cards: parseJ(p.cards, []) })),
       variables: variables.map(v => ({ id: v.id, name: v.name, type: v.type, defaultValue: v.default_value, description: v.description, isSystem: !!v.is_system })),
-      aiTools:   [SPECIAL_CMS_TOOL, ...wooTools(acc), ...aiTools.map(t => ({ id: t.id, name: t.name, description: t.description, collectFields: parseJ(t.collect_fields, []), flowId: t.flow_id, actionType: t.action_type || 'variable', createdAt: t.created_at }))],
+      aiTools:   [SPECIAL_CMS_TOOL, ...specialTools(), ...aiTools.map(t => ({ id: t.id, name: t.name, description: t.description, collectFields: parseJ(t.collect_fields, []), flowId: t.flow_id, actionType: t.action_type || 'variable', createdAt: t.created_at }))],
       woocommerce: storeSvc.publicConfig(parseJ(acc.woocommerce, null)),
+      scheduling: schedulingCfg,
       cmsAssets: cmsAssets.map(mapCmsAsset),
       cmsFolders: cmsFolders.map(mapCmsFolder),
       cmsTags: cmsTags.map(mapNamed),
