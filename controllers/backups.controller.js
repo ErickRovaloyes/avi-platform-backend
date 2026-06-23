@@ -128,6 +128,17 @@ const createBackup = async (req, res) => {
   }
 }
 
+// Devuelve el JSON COMPLETO del backup (para exportar/descargar). La lista NO
+// incluye `data` (sería enorme), por eso la descarga necesita este endpoint.
+const getBackup = async (req, res) => {
+  const { accId, agId, bkId } = req.params
+  try {
+    const [[row]] = await pool.query('SELECT data FROM backups WHERE id=? AND account_id=? AND agent_id=?', [bkId, accId, agId])
+    if (!row) return res.status(404).json({ error: 'Backup no encontrado' })
+    res.json(parseJ(row.data, {}))
+  } catch (err) { console.error('[GET BACKUP]', err); res.status(500).json({ error: 'Error interno' }) }
+}
+
 const deleteBackup = async (req, res) => {
   const { accId, agId, bkId } = req.params
   try {
@@ -182,4 +193,4 @@ const putBackupSettings = async (req, res) => {
   } catch (err) { res.status(500).json({ error: 'Error interno' }) }
 }
 
-module.exports = { listBackups, createBackup, createBackupInternal, deleteBackup, restoreBackup, getBackupSettings, putBackupSettings }
+module.exports = { listBackups, getBackup, createBackup, createBackupInternal, deleteBackup, restoreBackup, getBackupSettings, putBackupSettings }

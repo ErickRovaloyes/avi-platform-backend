@@ -87,7 +87,7 @@ async function loadPublicAccount(accId) {
   try { [stickers]      = await pool.query('SELECT * FROM stickers WHERE account_id=? ORDER BY created_at DESC', [accId]) } catch { stickers = [] }
   const [flows]     = await pool.query('SELECT * FROM flows WHERE account_id=?', [accId])
   // Resolve API keys with super-admin platform fallback
-  const [[pf]] = await pool.query('SELECT openai_key, deepseek_key, anthropic_key FROM platform_settings WHERE id=1')
+  const [[pf]] = await pool.query('SELECT openai_key, deepseek_key, anthropic_key, default_prompt_provider, default_prompt_model FROM platform_settings WHERE id=1')
   const effOpenai    = (acc.openai_key    && acc.openai_key.trim())    || pf?.openai_key    || ''
   const effDeepseek  = (acc.deepseek_key  && acc.deepseek_key.trim())  || pf?.deepseek_key  || ''
   const effAnthropic = (acc.anthropic_key && acc.anthropic_key.trim()) || pf?.anthropic_key || ''
@@ -147,7 +147,7 @@ const getAccount = async (req, res) => {
     let calendars = []
     try { [calendars] = await pool.query('SELECT * FROM calendars WHERE account_id=? ORDER BY created_at DESC', [accId]) } catch { calendars = [] }
     // Effective keys (account own → platform fallback). UI shows badge per provider.
-    const [[pf]] = await pool.query('SELECT openai_key, deepseek_key, anthropic_key FROM platform_settings WHERE id=1')
+    const [[pf]] = await pool.query('SELECT openai_key, deepseek_key, anthropic_key, default_prompt_provider, default_prompt_model FROM platform_settings WHERE id=1')
     const effOpenai    = (acc.openai_key    && acc.openai_key.trim())    || pf?.openai_key    || ''
     const effDeepseek  = (acc.deepseek_key  && acc.deepseek_key.trim())  || pf?.deepseek_key  || ''
     const effAnthropic = (acc.anthropic_key && acc.anthropic_key.trim()) || pf?.anthropic_key || ''
@@ -183,6 +183,10 @@ const getAccount = async (req, res) => {
       aiTools:   [SPECIAL_CMS_TOOL, ...specialTools(), ...aiTools.map(t => ({ id: t.id, name: t.name, description: t.description, collectFields: parseJ(t.collect_fields, []), flowId: t.flow_id, actionType: t.action_type || 'variable', createdAt: t.created_at }))],
       woocommerce: storeSvc.publicConfig(parseJ(acc.woocommerce, null)),
       scheduling: schedulingCfg,
+      // Modelo por defecto para prompts nuevos (lo fija el super admin). El owner
+      // y demás usuarios no pueden cambiar el modelo; solo lo ve/edita el super admin.
+      defaultPromptProvider: pf?.default_prompt_provider || 'deepseek',
+      defaultPromptModel: pf?.default_prompt_model || 'deepseek-v4-flash',
       cmsAssets: cmsAssets.map(mapCmsAsset),
       cmsFolders: cmsFolders.map(mapCmsFolder),
       cmsTags: cmsTags.map(mapNamed),
@@ -287,7 +291,7 @@ const getEffectiveKeys = async (req, res) => {
   try {
     const [[acc]] = await pool.query('SELECT openai_key, deepseek_key, anthropic_key FROM accounts WHERE id=?', [accId])
     if (!acc) return res.status(404).json({ error: 'Cuenta no encontrada' })
-    const [[pf]] = await pool.query('SELECT openai_key, deepseek_key, anthropic_key FROM platform_settings WHERE id=1')
+    const [[pf]] = await pool.query('SELECT openai_key, deepseek_key, anthropic_key, default_prompt_provider, default_prompt_model FROM platform_settings WHERE id=1')
 
     const pick = (own, platform) => {
       if (own && own.trim())               return { value: own,      source: 'account'  }

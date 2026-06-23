@@ -9,5 +9,6 @@ router.delete('/:accId/:agId/:bkId',        authMiddleware, ctrl.deleteBackup)
 router.post('/:accId/:agId/:bkId/restore',  authMiddleware, ctrl.restoreBackup)
 router.get('/:accId/:agId/settings',        authMiddleware, ctrl.getBackupSettings)
 router.put('/:accId/:agId/settings',        authMiddleware, ctrl.putBackupSettings)
+router.get('/:accId/:agId/:bkId/data',      authMiddleware, ctrl.getBackup)
 
 module.exports = router

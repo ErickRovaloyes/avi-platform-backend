@@ -335,6 +335,9 @@ app.use('/api',                webhookRoutes)
     "ALTER TABLE platform_settings ADD COLUMN deepseek_key TEXT",
     "ALTER TABLE platform_settings ADD COLUMN anthropic_key TEXT",
     "ALTER TABLE backups ADD COLUMN type VARCHAR(10) DEFAULT 'master'",
+    // Modelo por defecto para PROMPTS nuevos (solo lo cambia el super admin).
+    "ALTER TABLE platform_settings ADD COLUMN default_prompt_provider VARCHAR(20) DEFAULT 'deepseek'",
+    "ALTER TABLE platform_settings ADD COLUMN default_prompt_model VARCHAR(60) DEFAULT 'deepseek-v4-flash'",
     "ALTER TABLE agents ADD COLUMN fallback_flow_id VARCHAR(50)",
     "ALTER TABLE agents ADD COLUMN test_flow_id VARCHAR(50)",
     "ALTER TABLE team_chat ADD COLUMN media JSON",

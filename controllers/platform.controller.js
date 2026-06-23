@@ -69,6 +69,8 @@ const getSettings = async (req, res) => {
           hasPlatformAnthropicKey: !!r.anthropic_key,
           mediaMaxSizeMb: r.media_max_size_mb || 30,
           transcriptionModel: r.transcription_model || 'whisper-1',
+          defaultPromptProvider: r.default_prompt_provider || 'deepseek',
+          defaultPromptModel: r.default_prompt_model || 'deepseek-v4-flash',
         }
       : {
           changeAgentModel: 'gpt-4o-mini',
@@ -89,6 +91,8 @@ const getSettings = async (req, res) => {
           promptGeneratorMaxFileMb: 30,
           mediaMaxSizeMb: 30,
           transcriptionModel: 'whisper-1',
+          defaultPromptProvider: 'deepseek',
+          defaultPromptModel: 'deepseek-v4-flash',
         })
   } catch (err) { res.status(500).json({ error: 'Error interno' }) }
 }
@@ -104,6 +108,7 @@ const updateSettings = async (req, res) => {
     promptGeneratorMaxFileMb,
     platformOpenaiKey, platformDeepseekKey, platformAnthropicKey,
     mediaMaxSizeMb, transcriptionModel,
+    defaultPromptProvider, defaultPromptModel,
   } = req.body
   try {
     const sets = []; const vals = []
@@ -127,6 +132,8 @@ const updateSettings = async (req, res) => {
       // Hard cap at 100 MB (same as media — matches the multer ceiling)
       sets.push('prompt_generator_max_file_mb=?'); vals.push(Math.max(1, Math.min(100, n)))
     }
+    if (defaultPromptProvider     !== undefined) { sets.push('default_prompt_provider=?');      vals.push(String(defaultPromptProvider || 'deepseek')) }
+    if (defaultPromptModel        !== undefined) { sets.push('default_prompt_model=?');         vals.push(String(defaultPromptModel || 'deepseek-v4-flash')) }
     if (platformOpenaiKey         !== undefined) { sets.push('openai_key=?');                   vals.push(platformOpenaiKey) }
     if (platformDeepseekKey       !== undefined) { sets.push('deepseek_key=?');                 vals.push(platformDeepseekKey) }
     if (platformAnthropicKey      !== undefined) { sets.push('anthropic_key=?');                vals.push(platformAnthropicKey) }
