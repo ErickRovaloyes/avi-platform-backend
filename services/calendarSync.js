@@ -36,20 +36,49 @@ function wallInTz(utcMs, tz) {
   return { date: `${o.year}-${o.month}-${o.day}`, min: parseInt(o.hour) * 60 + parseInt(o.minute) }
 }
 
+// Rellena una plantilla con los datos de la reserva. Placeholders soportados:
+// {cliente} {servicio} {calendario} {fecha} {hora} {telefono} {email} {duracion}
+// {notas} {id}. Si una plantilla está vacía, el llamador usa el valor por defecto.
+function fillTemplate(tpl, calendar, booking) {
+  const map = {
+    cliente: booking.clientName || '', servicio: calendar.name || '', calendario: calendar.name || '',
+    fecha: booking.date || '', hora: booking.time || '', telefono: booking.clientPhone || '',
+    email: booking.clientEmail || '', duracion: String(booking.duration || ''), notas: booking.notes || '', id: booking.id || '',
+  }
+  return String(tpl || '').replace(/\{(\w+)\}/g, (_, k) => (map[k] != null ? map[k] : `{${k}}`))
+}
+
 function buildEvent(calendar, booking) {
   const tz = calendar.timezone || 'UTC'
+  const gi = calendar.integrations?.google || {}
   const [h, m] = String(booking.time || '00:00').split(':').map(Number)
   const startMins = (h || 0) * 60 + (m || 0)
   const endMins = startMins + (Number(booking.duration) || 30)
   let endDate = booking.date
   if (endMins >= 1440) endDate = new Date(Date.parse(booking.date + 'T00:00:00Z') + 86400000).toISOString().slice(0, 10)
   const eMin = endMins % 1440
-  return {
-    summary: `${calendar.name || 'Reserva'} — ${booking.clientName || 'Cliente'}`,
-    description: `Reserva ${booking.id}\nCliente: ${booking.clientName || ''}\nTel: ${booking.clientPhone || ''}\nEmail: ${booking.clientEmail || ''}`,
+
+  // Título y descripción personalizables por calendario (con plantillas).
+  const summary = (gi.eventTitle && gi.eventTitle.trim())
+    ? fillTemplate(gi.eventTitle, calendar, booking)
+    : `${calendar.name || 'Reserva'} — ${booking.clientName || 'Cliente'}`
+  const description = (gi.eventDescription && gi.eventDescription.trim())
+    ? fillTemplate(gi.eventDescription, calendar, booking)
+    : `Reserva ${booking.id}\nCliente: ${booking.clientName || ''}\nTel: ${booking.clientPhone || ''}\nEmail: ${booking.clientEmail || ''}${booking.notes ? `\nNotas: ${booking.notes}` : ''}`
+
+  const event = {
+    summary,
+    description,
     start: { dateTime: `${booking.date}T${booking.time}:00`, timeZone: tz },
     end: { dateTime: `${endDate}T${pad(Math.floor(eMin / 60))}:${pad(eMin % 60)}:00`, timeZone: tz },
   }
+  if (gi.location && gi.location.trim()) event.location = fillTemplate(gi.location, calendar, booking)
+  if (gi.colorId) event.colorId = String(gi.colorId)
+  // Invitar al cliente como asistente (recibe la invitación en su correo).
+  if (gi.addGuest && booking.clientEmail && /@/.test(booking.clientEmail)) {
+    event.attendees = [{ email: booking.clientEmail, displayName: booking.clientName || undefined }]
+  }
+  return event
 }
 
 // Evento en formato Microsoft Graph.
@@ -83,22 +112,36 @@ async function pushOutlook(accId, calendar, booking, action) {
   } catch (e) { console.warn('[calendarSync outlook]', action, e.message) }
 }
 
+// Guarda el resultado de la sincronización en la reserva (meta.googleSync) para
+// poder DIAGNOSTICAR por qué un evento no se creó (visible en la ficha de la reserva).
+async function setSyncMeta(accId, booking, val) {
+  try {
+    const meta = { ...(booking.meta || {}), googleSync: { ...val, at: Date.now() } }
+    await pool.query('UPDATE calendar_bookings SET meta=? WHERE id=? AND account_id=?', [JSON.stringify(meta), booking.id, accId])
+  } catch { /* non-critical */ }
+}
+
 // Crea/actualiza/borra el evento en Google (+ Outlook). Devuelve el eventId de
 // Google (o null) — el llamador lo guarda en external_id (back-compat).
 async function pushBooking(accId, calendar, booking, action) {
   // Outlook en paralelo (no bloquea ni afecta el retorno de Google).
   pushOutlook(accId, calendar, booking, action).catch(() => {})
+  const gi = calendar.integrations?.google
+  if (!gi?.enabled) return null  // sync desactivado para este calendario → no se registra
+  const calId = gi.calendarId || 'primary'
   try {
-    const gi = calendar.integrations?.google
-    if (!gi?.enabled) return null
-    const calId = gi.calendarId || 'primary'
     const token = await g.getValidAccessToken(accId)
-    if (action === 'delete') { if (booking.externalId) await g.deleteCalendarEvent(token, calId, booking.externalId); return null }
+    if (action === 'delete') { if (booking.externalId) await g.deleteCalendarEvent(token, calId, booking.externalId); await setSyncMeta(accId, booking, { status: 'deleted', calendarId: calId }); return null }
     const event = buildEvent(calendar, booking)
-    if (action === 'update' && booking.externalId) { await g.updateCalendarEvent(token, calId, booking.externalId, event); return booking.externalId }
+    if (action === 'update' && booking.externalId) { await g.updateCalendarEvent(token, calId, booking.externalId, event); await setSyncMeta(accId, booking, { status: 'ok', eventId: booking.externalId, calendarId: calId }); return booking.externalId }
     const r = await g.createCalendarEvent(token, calId, event)
+    await setSyncMeta(accId, booking, { status: 'ok', eventId: r?.id || null, calendarId: calId })
     return r?.id || null
-  } catch (e) { console.warn('[calendarSync push]', action, e.message); return null }
+  } catch (e) {
+    console.warn('[calendarSync push]', action, e.message)
+    await setSyncMeta(accId, booking, { status: 'error', error: e.message, calendarId: calId })
+    return null
+  }
 }
 
 // Intervalos ocupados de Google para una fecha → "reservas" virtuales (bloquean).

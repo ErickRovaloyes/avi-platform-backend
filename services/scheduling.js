@@ -98,6 +98,12 @@ async function customerFromConv(accId, convId, args = {}) {
   }
 }
 
+const phoneMatch = (bookingPhone, phone) => {
+  const a = String(bookingPhone || '').replace(/[^\d]/g, '')
+  if (!a || !phone) return false
+  return a.endsWith(phone.slice(-8)) || phone.endsWith(a.slice(-8))
+}
+
 // Reservas próximas (activas) del cliente, por teléfono, en los calendarios permitidos.
 async function upcomingForPhone(accId, cals, phone, tz) {
   if (!phone) return []
@@ -108,11 +114,32 @@ async function upcomingForPhone(accId, cals, phone, tz) {
     try { list = await bookings.listBookings(accId, c.id, { from: today, q: phone }) } catch {}
     for (const b of list) {
       if (['cancelled', 'noshow', 'completed'].includes(b.status)) continue
-      if (String(b.clientPhone || '').replace(/[^\d]/g, '').endsWith(phone.slice(-8)) || !b.clientPhone) out.push({ ...b, calendarName: c.name })
+      if (phoneMatch(b.clientPhone, phone)) out.push({ ...b, calendarName: c.name })
     }
   }
   return out.sort((a, b) => (a.date + a.time).localeCompare(b.date + b.time))
 }
+
+// TODAS las reservas del cliente (por teléfono) → separadas en próximas y pasadas.
+async function allForPhone(accId, cals, phone, tz) {
+  if (!phone) return { upcoming: [], past: [] }
+  const today = todayInTz(tz)
+  const upcoming = [], past = []
+  for (const c of cals) {
+    let list = []
+    try { list = await bookings.listBookings(accId, c.id, { q: phone }) } catch {}
+    for (const b of list) {
+      if (!phoneMatch(b.clientPhone, phone)) continue
+      const item = { ...b, calendarName: c.name }
+      const isPast = b.date < today || ['completed', 'noshow', 'cancelled'].includes(b.status)
+      if (isPast) past.push(item); else upcoming.push(item)
+    }
+  }
+  upcoming.sort((a, b) => (a.date + a.time).localeCompare(b.date + b.time))
+  past.sort((a, b) => (b.date + b.time).localeCompare(a.date + a.time)) // más reciente primero
+  return { upcoming, past }
+}
+const STATUS_ES = { pending: 'pendiente', confirmed: 'confirmada', rescheduled: 'reagendada', cancelled: 'cancelada', noshow: 'no asistió', completed: 'completada' }
 
 // ── Dispatcher de funciones (lo llaman el nodo IA del servidor y el proxy) ──────
 async function toolCall(accId, fn, args = {}, meta = {}) {
@@ -174,6 +201,18 @@ async function toolCall(accId, fn, args = {}, meta = {}) {
         })
         return { text: `✅ Cita agendada en "${cal.name}" para ${cust.name} el ${prettyDate(date)} (${date}) a las ${time}. (id ${bk.id})` }
       } catch (e) { return { text: `No se pudo agendar: ${e.message}. Ofrece otro horario o usa ver_disponibilidad.` } }
+    }
+
+    if (fn === 'ver_mis_citas') {
+      const cust = await customerFromConv(accId, meta.convId, args)
+      if (!cust.phone) return { text: 'Para ver tus citas necesito tu número de teléfono. Pídeselo al cliente.' }
+      const { upcoming, past } = await allForPhone(accId, cals, cust.phone, tz)
+      if (!upcoming.length && !past.length) return { text: `No encontré citas registradas para ese cliente (tel ${cust.phone}).` }
+      const fmt = b => `• ${prettyDate(b.date)} (${b.date}) ${b.time} · ${b.calendarName}${b.status && b.status !== 'pending' && b.status !== 'confirmed' ? ` [${STATUS_ES[b.status] || b.status}]` : ''}`
+      let txt = ''
+      txt += upcoming.length ? `CITAS ACTIVAS / PRÓXIMAS:\n${upcoming.map(fmt).join('\n')}` : 'No tiene citas activas próximas.'
+      if (past.length) txt += `\n\nCITAS ANTERIORES (${past.length}):\n${past.slice(0, 10).map(fmt).join('\n')}`
+      return { text: txt }
     }
 
     if (fn === 'mover_cita') {

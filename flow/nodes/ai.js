@@ -259,7 +259,7 @@ async function wooExec(ctx, fnName, args) {
 }
 
 // ── Agenda de citas: herramienta especial con varias funciones ─────────────────
-const AGENDA_FUNCS = new Set(['ver_disponibilidad', 'recomendar_citas', 'agendar_cita', 'mover_cita', 'cancelar_cita'])
+const AGENDA_FUNCS = new Set(['ver_disponibilidad', 'recomendar_citas', 'agendar_cita', 'mover_cita', 'cancelar_cita', 'ver_mis_citas'])
 function buildAgendaToolDefs(account) {
   const cals = account?.scheduling?.calendars || []
   if (!cals.length) return []
@@ -274,6 +274,7 @@ function buildAgendaToolDefs(account) {
     { type: 'function', function: { name: 'agendar_cita', description: 'Agenda una cita. Úsalo SOLO cuando el cliente confirme fecha y hora (de las que diste por disponibilidad) y tengas su nombre.', parameters: { type: 'object', properties: { fecha: { type: 'string', description: 'YYYY-MM-DD' }, hora: { type: 'string', description: 'HH:MM' }, servicio: { type: 'string', description: servicioDesc }, nombre: { type: 'string', description: 'Nombre del cliente' }, telefono: { type: 'string' }, email: { type: 'string' }, nota: { type: 'string' } }, required: ['fecha', 'hora'] } } },
     { type: 'function', function: { name: 'mover_cita', description: 'Reagenda la cita del cliente a otra fecha/hora.', parameters: { type: 'object', properties: { nueva_fecha: { type: 'string', description: 'YYYY-MM-DD' }, nueva_hora: { type: 'string', description: 'HH:MM' }, telefono: { type: 'string' }, bookingId: { type: 'string', description: 'id de la cita si el cliente tiene varias' } }, required: ['nueva_fecha', 'nueva_hora'] } } },
     { type: 'function', function: { name: 'cancelar_cita', description: 'Cancela la cita del cliente.', parameters: { type: 'object', properties: { telefono: { type: 'string' }, bookingId: { type: 'string', description: 'id de la cita si tiene varias' } } } } },
+    { type: 'function', function: { name: 'ver_mis_citas', description: 'Muestra las citas del cliente: las ACTIVAS/próximas y las ANTERIORES (historial). Úsalo cuando el cliente pregunte "¿qué citas tengo?" o por su historial.', parameters: { type: 'object', properties: { telefono: { type: 'string', description: 'Teléfono del cliente (si no, se toma el de la conversación)' } } } } },
   ]
 }
 async function agendaExec(ctx, fnName, args) {
