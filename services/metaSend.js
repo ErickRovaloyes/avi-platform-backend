@@ -119,7 +119,7 @@ async function sendWhatsAppTemplate({ phoneNumberId, accessToken, to, templateNa
 
 // Lista las plantillas de mensaje de un WhatsApp Business Account (WABA).
 async function listWhatsAppTemplates({ businessAccountId, accessToken }) {
-  const url = `${GRAPH_BASE}/${businessAccountId}/message_templates?fields=name,status,language,category,components&limit=200`
+  const url = `${GRAPH_BASE}/${businessAccountId}/message_templates?fields=id,name,status,language,category,components&limit=200`
   const res = await fetch(url, { headers: { 'Authorization': `Bearer ${accessToken}` } })
   if (!res.ok) {
     const err = await res.json().catch(() => ({}))
@@ -127,6 +127,45 @@ async function listWhatsAppTemplates({ businessAccountId, accessToken }) {
   }
   const data = await res.json()
   return data?.data || []
+}
+
+// Mensaje de error legible que devuelve la Graph API (prioriza el texto de usuario).
+function graphError(data, status) {
+  return data?.error?.error_user_msg || data?.error?.message || `HTTP ${status}`
+}
+
+// Crea una plantilla en el WABA (queda PENDING hasta que Meta la apruebe).
+async function createWhatsAppTemplate({ businessAccountId, accessToken, payload }) {
+  const res = await fetch(`${GRAPH_BASE}/${businessAccountId}/message_templates`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${accessToken}` },
+    body: JSON.stringify(payload),
+  })
+  const data = await res.json().catch(() => ({}))
+  if (!res.ok) throw new Error(graphError(data, res.status))
+  return data
+}
+
+// Edita una plantilla existente (por id). Meta solo permite editar ciertas
+// plantillas (aprobadas/rechazadas/pausadas) y un nº limitado de veces.
+async function updateWhatsAppTemplate({ templateId, accessToken, payload }) {
+  const res = await fetch(`${GRAPH_BASE}/${templateId}`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${accessToken}` },
+    body: JSON.stringify(payload),
+  })
+  const data = await res.json().catch(() => ({}))
+  if (!res.ok) throw new Error(graphError(data, res.status))
+  return data
+}
+
+// Elimina una plantilla por nombre (todas sus traducciones).
+async function deleteWhatsAppTemplate({ businessAccountId, accessToken, name }) {
+  const url = `${GRAPH_BASE}/${businessAccountId}/message_templates?name=${encodeURIComponent(name)}`
+  const res = await fetch(url, { method: 'DELETE', headers: { Authorization: `Bearer ${accessToken}` } })
+  const data = await res.json().catch(() => ({}))
+  if (!res.ok) throw new Error(graphError(data, res.status))
+  return data
 }
 
 function parseWhatsAppWebhook(body) {
@@ -284,6 +323,7 @@ function parseInstagramWebhook(body) {
 module.exports = {
   sendWhatsAppText, sendWhatsAppMedia, sendWhatsAppRead, sendWhatsAppCtaUrl, parseWhatsAppWebhook,
   sendWhatsAppTemplate, listWhatsAppTemplates,
+  createWhatsAppTemplate, updateWhatsAppTemplate, deleteWhatsAppTemplate,
   sendMessengerText, sendMessengerButtons, parseMessengerWebhook,
   sendInstagramText, parseInstagramWebhook,
 }

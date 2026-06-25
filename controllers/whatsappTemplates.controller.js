@@ -8,7 +8,10 @@
 
 const pool = require('../db')
 const { parseJ } = require('../utils')
-const { sendWhatsAppTemplate, listWhatsAppTemplates } = require('../services/metaSend')
+const {
+  sendWhatsAppTemplate, listWhatsAppTemplates,
+  createWhatsAppTemplate, updateWhatsAppTemplate, deleteWhatsAppTemplate,
+} = require('../services/metaSend')
 const store = require('../flow/store')
 
 // Resuelve la config del canal WhatsApp de un agente. Si se pasa channelId,
@@ -121,4 +124,68 @@ const send = async (req, res) => {
   }
 }
 
-module.exports = { list, listAll, send }
+// POST /api/whatsapp/:accId/:agentId/templates
+// body: { channelId, name, language, category, components }
+// Crea la plantilla en Meta (queda PENDING hasta aprobación).
+const create = async (req, res) => {
+  const { accId, agentId } = req.params
+  const { channelId, name, language, category, components } = req.body || {}
+  if (!name || !language || !category || !Array.isArray(components) || !components.length) {
+    return res.status(400).json({ error: 'Faltan name, language, category o components.' })
+  }
+  try {
+    const channel = await resolveWhatsAppChannel(accId, agentId, channelId)
+    const cfg = channel?.config || {}
+    if (!cfg.businessAccountId) return res.status(400).json({ error: 'Falta el Business Account ID en la configuración del canal.' })
+    if (!cfg.accessToken) return res.status(400).json({ error: 'Falta el Access Token en la configuración del canal.' })
+    const data = await createWhatsAppTemplate({
+      businessAccountId: cfg.businessAccountId, accessToken: cfg.accessToken,
+      payload: { name: String(name).toLowerCase().replace(/[^a-z0-9_]/g, '_').slice(0, 512), language, category, components, allow_category_change: true },
+    })
+    res.json({ ok: true, id: data.id, status: data.status, category: data.category })
+  } catch (err) {
+    console.error('[WA TEMPLATES create]', err.message)
+    res.status(502).json({ error: err.message || 'No se pudo crear la plantilla' })
+  }
+}
+
+// PUT /api/whatsapp/:accId/:agentId/templates
+// body: { channelId, templateId, category?, components }
+const update = async (req, res) => {
+  const { accId, agentId } = req.params
+  const { channelId, templateId, category, components } = req.body || {}
+  if (!templateId || !Array.isArray(components) || !components.length) {
+    return res.status(400).json({ error: 'Faltan templateId o components.' })
+  }
+  try {
+    const channel = await resolveWhatsAppChannel(accId, agentId, channelId)
+    const cfg = channel?.config || {}
+    if (!cfg.accessToken) return res.status(400).json({ error: 'Falta el Access Token en la configuración del canal.' })
+    const payload = { components }
+    if (category) payload.category = category
+    const data = await updateWhatsAppTemplate({ templateId, accessToken: cfg.accessToken, payload })
+    res.json({ ok: true, ...data })
+  } catch (err) {
+    console.error('[WA TEMPLATES update]', err.message)
+    res.status(502).json({ error: err.message || 'No se pudo actualizar la plantilla' })
+  }
+}
+
+// DELETE /api/whatsapp/:accId/:agentId/templates?name=&channelId=
+const remove = async (req, res) => {
+  const { accId, agentId } = req.params
+  const { name, channelId } = req.query
+  if (!name) return res.status(400).json({ error: 'Falta el nombre de la plantilla.' })
+  try {
+    const channel = await resolveWhatsAppChannel(accId, agentId, channelId)
+    const cfg = channel?.config || {}
+    if (!cfg.businessAccountId || !cfg.accessToken) return res.status(400).json({ error: 'Falta Business Account ID o Access Token en el canal.' })
+    await deleteWhatsAppTemplate({ businessAccountId: cfg.businessAccountId, accessToken: cfg.accessToken, name })
+    res.json({ ok: true })
+  } catch (err) {
+    console.error('[WA TEMPLATES remove]', err.message)
+    res.status(502).json({ error: err.message || 'No se pudo eliminar la plantilla' })
+  }
+}
+
+module.exports = { list, listAll, send, create, update, remove }
