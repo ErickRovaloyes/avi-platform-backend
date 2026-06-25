@@ -48,6 +48,37 @@ const list = async (req, res) => {
   }
 }
 
+// GET /api/whatsapp/:accId/:agentId/templates/all?channelId=
+// Todas las plantillas CON su estado (APPROVED, PENDING, REJECTED, …), para la
+// pestaña de gestión en Canales. (list, en cambio, solo devuelve las aprobadas
+// para poder enviarlas desde el inbox.)
+const listAll = async (req, res) => {
+  const { accId, agentId } = req.params
+  const { channelId } = req.query
+  try {
+    const channel = await resolveWhatsAppChannel(accId, agentId, channelId)
+    const cfg = channel?.config || {}
+    if (!cfg.businessAccountId) {
+      return res.status(400).json({ error: 'Falta el Business Account ID en la configuración del canal de WhatsApp.' })
+    }
+    if (!cfg.accessToken) {
+      return res.status(400).json({ error: 'Falta el Access Token en la configuración del canal de WhatsApp.' })
+    }
+    const all = await listWhatsAppTemplates({ businessAccountId: cfg.businessAccountId, accessToken: cfg.accessToken })
+    const templates = all.map(t => ({
+      name: t.name,
+      language: t.language,
+      category: t.category,
+      status: (t.status || 'UNKNOWN').toUpperCase(),
+      components: t.components || [],
+    }))
+    res.json({ channelId: channel.id, templates })
+  } catch (err) {
+    console.error('[WA TEMPLATES listAll]', err)
+    res.status(502).json({ error: err.message || 'No se pudieron obtener las plantillas' })
+  }
+}
+
 // POST /api/whatsapp/:accId/:agentId/send-template
 // body: { convId, channelId, templateName, language, components, previewText }
 const send = async (req, res) => {
@@ -90,4 +121,4 @@ const send = async (req, res) => {
   }
 }
 
-module.exports = { list, send }
+module.exports = { list, listAll, send }
