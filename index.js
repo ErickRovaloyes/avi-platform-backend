@@ -241,6 +241,8 @@ app.use('/api',                webhookRoutes)
      )`,
     "ALTER TABLE ai_tools ADD COLUMN action_type VARCHAR(20) DEFAULT 'variable'",
     "ALTER TABLE conversations     ADD COLUMN assigned_to JSON",
+    // Contador de mensajes no leídos por conversación (para la burbuja del móvil).
+    "ALTER TABLE conversations     ADD COLUMN unread_count INT DEFAULT 0",
     // Motivo por el que la IA quedó desactivada en un chat (p. ej. límite de
     // respuestas IA por conversación en Demo). Solo lo ven los administradores.
     "ALTER TABLE conversations     ADD COLUMN ai_disabled_reason VARCHAR(40)",

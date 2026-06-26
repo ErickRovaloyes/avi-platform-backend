@@ -144,7 +144,7 @@ const uploadMedia = async (req, res) => {
       : ((caption ? caption.slice(0, 50) + ' ' : '') + `${previewIcon} ${filename}`).slice(0, 60)
     const sets = ['preview=?', 'updated_at=?']
     const vals = [preview, ts]
-    if (sender === 'user') sets.push('unread=1')
+    if (sender === 'user') sets.push('unread=1', 'unread_count=unread_count+1')
     vals.push(convId, accId)
     await pool.query(`UPDATE conversations SET ${sets.join(',')} WHERE id=? AND account_id=?`, vals)
 

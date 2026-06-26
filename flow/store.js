@@ -80,7 +80,7 @@ async function appendMsg(accId, agId, convId, msg) {
     [id, convId, sender, content, metadata ? JSON.stringify(metadata) : null, ts])
   const sets = ['preview=?', 'updated_at=?']
   const vals = [(content || '').slice(0, 60), ts]
-  if (sender === 'user') sets.push('unread=1')
+  if (sender === 'user') sets.push('unread=1', 'unread_count=unread_count+1')
   vals.push(convId, accId)
   await pool.query(`UPDATE conversations SET ${sets.join(',')} WHERE id=? AND account_id=?`, vals)
 

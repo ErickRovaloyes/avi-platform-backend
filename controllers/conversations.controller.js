@@ -54,7 +54,7 @@ const mapConvo = (c, messages = []) => ({
   channelId: c.channel_id, linkId: c.channel_id, channel: c.channel_type,
   waFrom: c.wa_from, messengerFrom: c.messenger_from, igFrom: c.ig_from,
   initials: c.initials, preview: c.preview,
-  unread: !!c.unread, aiEnabled: !!c.ai_enabled,
+  unread: !!c.unread, unreadCount: Number(c.unread_count) || 0, aiEnabled: !!c.ai_enabled,
   aiDisabledReason: c.ai_disabled_reason || null,
   origin:        parseJ(c.origin, null),
   labels:        parseJ(c.labels, []),
@@ -201,7 +201,7 @@ const updateConvo = async (req, res) => {
 const markRead = async (req, res) => {
   const { accId, agId, convId } = req.params
   try {
-    await pool.query('UPDATE conversations SET unread=0 WHERE id=? AND account_id=?', [convId, accId])
+    await pool.query('UPDATE conversations SET unread=0, unread_count=0 WHERE id=? AND account_id=?', [convId, accId])
     socket.emit(accId, 'convos:updated', { accId, agId })
     res.json({ ok: true })
   } catch (err) { res.status(500).json({ error: 'Error interno' }) }
@@ -218,7 +218,7 @@ async function appendMessageCore(accId, agId, convId, body) {
     [id, convId, sender, content, metadata ? JSON.stringify(metadata) : null, ts])
   const sets = ['preview=?', 'updated_at=?']
   const vals = [(content || '').slice(0, 60), ts]
-  if (sender === 'user') sets.push('unread=1')
+  if (sender === 'user') sets.push('unread=1', 'unread_count=unread_count+1')
   vals.push(convId, accId)
   await pool.query(`UPDATE conversations SET ${sets.join(',')} WHERE id=? AND account_id=?`, vals)
 
