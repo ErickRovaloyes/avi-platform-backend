@@ -116,6 +116,7 @@ const aiMediaRoutes       = require('./routes/aiMedia.routes')
 const calendarRoutes      = require('./routes/calendars.routes')
 const woocommerceRoutes   = require('./routes/woocommerce.routes')
 const paymentsRoutes      = require('./routes/payments.routes')
+const pushRoutes          = require('./routes/push.routes')
 const schedulingRoutes    = require('./routes/scheduling.routes')
 
 // Guest counter alias (used by storage.js generateGuest)
@@ -157,6 +158,7 @@ app.use('/api',                aiMediaRoutes)
 app.use('/api',                calendarRoutes)
 app.use('/api',                woocommerceRoutes)
 app.use('/api',                paymentsRoutes)
+app.use('/api',                pushRoutes)
 app.use('/api',                schedulingRoutes)
 app.use('/api',                webhookRoutes)
 
@@ -280,6 +282,18 @@ app.use('/api',                webhookRoutes)
     "ALTER TABLE woo_orders ADD COLUMN last_reminder_at BIGINT",
     // Pasarela de pago general (Wompi …): config por cuenta.
     "ALTER TABLE accounts ADD COLUMN payments JSON",
+    // Tokens de push de la app móvil (Expo). Un token por dispositivo/cuenta.
+    `CREATE TABLE IF NOT EXISTS push_tokens (
+       id          VARCHAR(40) PRIMARY KEY,
+       account_id  VARCHAR(50) NOT NULL,
+       member_id   VARCHAR(50),
+       token       VARCHAR(255) NOT NULL,
+       platform    VARCHAR(20),
+       created_at  BIGINT,
+       updated_at  BIGINT,
+       UNIQUE KEY uq_push_token (token),
+       INDEX idx_push_acc (account_id)
+     )`,
     // Intentos de pago creados por el asistente → mapeo pago↔conversación para
     // confirmar el pago (webhook) y disparar el flujo de éxito/fallo.
     `CREATE TABLE IF NOT EXISTS payment_intents (
