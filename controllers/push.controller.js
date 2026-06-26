@@ -19,4 +19,15 @@ const unregister = async (req, res) => {
   catch (e) { res.status(500).json({ error: 'Error interno' }) }
 }
 
-module.exports = { register, unregister }
+// POST /api/push/test  → envía un push de prueba a los dispositivos de la cuenta.
+const test = async (req, res) => {
+  const accId = req.user?.accountId
+  if (!accId) return res.status(400).json({ error: 'Sesión sin cuenta' })
+  try {
+    const tokens = await push.tokensForAccount(accId)
+    const r = await push.sendTest(accId)
+    res.json({ ok: true, sent: r.sent, tokens: tokens.length })
+  } catch (e) { res.status(500).json({ error: e.message || 'Error interno' }) }
+}
+
+module.exports = { register, unregister, test }

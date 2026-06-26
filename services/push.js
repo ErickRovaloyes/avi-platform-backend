@@ -56,11 +56,21 @@ async function sendExpo(messages) {
   }
 }
 
+// Envía un push a todos los tokens de la cuenta. Devuelve cuántos se enviaron.
+async function pushToAccount(accId, { title, body, data }) {
+  const tokens = await tokensForAccount(accId)
+  if (!tokens.length) return { sent: 0 }
+  const messages = tokens.map(to => ({
+    to, sound: 'default', priority: 'high', channelId: 'default',
+    title: title || 'Nuevo mensaje', body: body || '', data: data || {},
+  }))
+  await sendExpo(messages)
+  return { sent: messages.length }
+}
+
 // Disparo al llegar un mensaje del cliente. data = { accId, agId, convId, message }.
 async function onInboundMessage(accId, data) {
   try {
-    const tokens = await tokensForAccount(accId)
-    if (!tokens.length) return
     const msg = data?.message || {}
     const body = (msg.content && String(msg.content).slice(0, 140))
       || (msg.kind === 'audio' ? '🎤 Nota de voz'
@@ -72,12 +82,17 @@ async function onInboundMessage(accId, data) {
       const [[c]] = await pool.query('SELECT guest_name, wa_from FROM conversations WHERE id=? AND account_id=?', [data.convId, accId])
       title = c?.guest_name || c?.wa_from || 'Nuevo mensaje'
     } catch {}
-    const messages = tokens.map(to => ({
-      to, sound: 'default', title, body,
-      data: { accId, agId: data.agId, convId: data.convId, title },
-    }))
-    await sendExpo(messages)
+    await pushToAccount(accId, { title, body, data: { accId, agId: data.agId, convId: data.convId, title } })
   } catch (e) { console.warn('[push inbound]', e.message) }
 }
 
-module.exports = { registerToken, removeToken, tokensForAccount, onInboundMessage }
+// Push de prueba (diagnóstico desde la app).
+async function sendTest(accId) {
+  return pushToAccount(accId, {
+    title: 'Notificación de prueba ✅',
+    body: 'Si ves esto, las notificaciones funcionan.',
+    data: { test: true },
+  })
+}
+
+module.exports = { registerToken, removeToken, tokensForAccount, onInboundMessage, sendTest, pushToAccount }
