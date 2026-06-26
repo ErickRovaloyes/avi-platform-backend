@@ -13,9 +13,12 @@ const fs = require('fs')
 const os = require('os')
 const path = require('path')
 
-function convertWebmToOgg(buffer) {
+// Convierte CUALQUIER audio (webm del navegador, m4a/aac del móvil, mp3, wav…) a
+// ogg/opus mono — el formato de nota de voz que acepta y reproduce WhatsApp.
+function convertAudioToOgg(buffer, inputExt = 'webm') {
   const base = path.join(os.tmpdir(), `avi_${Date.now()}_${Math.random().toString(36).slice(2)}`)
-  const inF = base + '.webm'
+  const safeExt = String(inputExt || 'bin').replace(/[^a-z0-9]/gi, '').slice(0, 5) || 'bin'
+  const inF = base + '.' + safeExt
   const outF = base + '.ogg'
   return new Promise((resolve, reject) => {
     fs.promises.writeFile(inF, buffer).then(() => {
@@ -50,4 +53,8 @@ function convertWebmToOgg(buffer) {
   })
 }
 
-module.exports = { convertWebmToOgg }
+// Compat: el navegador graba webm; el móvil graba m4a. Ambos pasan por el mismo
+// conversor genérico.
+function convertWebmToOgg(buffer) { return convertAudioToOgg(buffer, 'webm') }
+
+module.exports = { convertWebmToOgg, convertAudioToOgg }

@@ -7,7 +7,7 @@ const {
   uploadFacebookAttachment, sendMessengerMediaMessage,
   sendInstagramMediaMessage,
 } = require('../services/metaMedia')
-const { convertWebmToOgg } = require('../services/audioConvert')
+const { convertWebmToOgg, convertAudioToOgg } = require('../services/audioConvert')
 
 // Map a mime type to one of our 4 kinds.
 function detectKind(mime, filename = '') {
@@ -165,12 +165,15 @@ const uploadMedia = async (req, res) => {
           const ch = channels.find(x => x.id === c.channel_id) || channels.find(x => x.type === c.channel_type)
           const cfg = ch?.config || {}
           if (c.channel_type === 'whatsapp' && cfg.phoneNumberId && cfg.accessToken && c.wa_from) {
-            // WhatsApp no acepta audio/webm (lo que graba el navegador): lo
-            // convertimos a ogg/opus antes de subirlo.
+            // WhatsApp solo reproduce audio OGG/Opus como nota de voz. El navegador
+            // graba webm y el móvil graba m4a/aac: convertimos cualquier audio que
+            // no sea ya ogg antes de subirlo.
             let upBuffer = req.file.buffer, upMime = mime, upFilename = filename
-            if (media.kind === 'audio' && /webm/i.test(mime)) {
+            if (media.kind === 'audio' && !/ogg/i.test(mime)) {
               try {
-                upBuffer = await convertWebmToOgg(req.file.buffer)
+                const inExt = (String(filename || '').match(/\.([a-z0-9]+)$/i)?.[1]
+                  || String(mime).split('/')[1] || 'webm').toLowerCase()
+                upBuffer = await convertAudioToOgg(req.file.buffer, inExt)
                 upMime = 'audio/ogg'
                 upFilename = (filename || 'audio').replace(/\.[^.]+$/, '') + '.ogg'
               } catch (e) { console.warn('[audio convert]', e.message) }
@@ -301,9 +304,27 @@ const getMediaRaw = async (req, res) => {
     )
     if (!m) return res.status(404).send('not found')
     const buf = Buffer.from(m.data_base64, 'base64')
+    const total = buf.length
     res.set('Content-Type', m.mime_type || 'application/octet-stream')
+    res.set('Accept-Ranges', 'bytes')
     res.set('Cache-Control', 'public, max-age=31536000, immutable')
     res.set('Content-Disposition', `inline; filename="${(m.filename || 'file').replace(/"/g, '')}"`)
+    // Soporte de HTTP Range: imprescindible para que el reproductor de iOS
+    // (AVPlayer / expo-audio) reproduzca audio/video remoto sin colgarse.
+    const range = req.headers.range
+    if (range) {
+      const match = /bytes=(\d*)-(\d*)/.exec(range)
+      let start = match && match[1] ? parseInt(match[1], 10) : 0
+      let end   = match && match[2] ? parseInt(match[2], 10) : total - 1
+      if (isNaN(start) || start < 0) start = 0
+      if (isNaN(end) || end >= total) end = total - 1
+      if (start > end) { res.set('Content-Range', `bytes */${total}`); return res.status(416).end() }
+      res.status(206)
+      res.set('Content-Range', `bytes ${start}-${end}/${total}`)
+      res.set('Content-Length', String(end - start + 1))
+      return res.end(buf.subarray(start, end + 1))
+    }
+    res.set('Content-Length', String(total))
     res.send(buf)
   } catch (err) {
     console.error('[GET MEDIA RAW]', err)
