@@ -18,15 +18,16 @@ const createType = async (req, res) => {
   const now = Date.now()
   const id = 'atype_' + uid()
   try {
+    const modulesVal = Array.isArray(b.modules) ? JSON.stringify(b.modules) : null
     await pool.query(
       `INSERT INTO account_types
         (id,name,max_webchat_channels,max_whatsapp_channels,max_test_channels,max_messenger_channels,max_instagram_channels,
-         is_demo,demo_days_duration,demo_max_conversations,demo_max_ai_responses_per_conversation,sort_order,created_at,updated_at)
-       VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?)`,
+         is_demo,demo_days_duration,demo_max_conversations,demo_max_ai_responses_per_conversation,sort_order,modules,created_at,updated_at)
+       VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`,
       [id, b.name || 'Nuevo tipo', n(b.maxWebchatChannels, 1), n(b.maxWhatsappChannels, 1), n(b.maxTestChannels, 1),
        n(b.maxMessengerChannels, 0), n(b.maxInstagramChannels, 0), b.isDemo ? 1 : 0,
        n(b.demoDaysDuration, 7), n(b.demoMaxConversations, 100), n(b.demoMaxAiResponsesPerConversation, 30),
-       n(b.sortOrder, 0), now, now]
+       n(b.sortOrder, 0), modulesVal, now, now]
     )
     res.json({ id })
   } catch (err) { console.error('[createType]', err); res.status(500).json({ error: 'Error interno' }) }
@@ -45,6 +46,8 @@ const updateType = async (req, res) => {
   for (const [k, col] of Object.entries(map)) {
     if (b[k] !== undefined) { sets.push(`${col}=?`); vals.push(k === 'isDemo' ? (b[k] ? 1 : 0) : b[k]) }
   }
+  // Preset de módulos del tipo (array vacío o no-array → null = todos los módulos).
+  if (b.modules !== undefined) { sets.push('modules=?'); vals.push(Array.isArray(b.modules) && b.modules.length ? JSON.stringify(b.modules) : null) }
   if (!sets.length) return res.json({ ok: true })
   sets.push('updated_at=?'); vals.push(Date.now(), id)
   try { await pool.query(`UPDATE account_types SET ${sets.join(',')} WHERE id=?`, vals); res.json({ ok: true }) }

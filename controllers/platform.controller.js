@@ -263,6 +263,7 @@ const listAccounts = async (req, res) => {
     }
     res.json(accounts.map(a => ({
       id: a.id, name: a.name, email: a.email, plan: a.plan, status: a.status,
+      modules: parseJ(a.modules, null),
       channelLimitsOverride: parseJ(a.channel_limits_override, {}),
       changeAgentLimitOverride: a.change_agent_limit_override ?? null,
       changeAgentTokenLimitsOverride: parseJ(a.change_agent_token_limits_override, null),
@@ -320,12 +321,14 @@ const createAccount = async (req, res) => {
 const updateSAAccount = async (req, res) => {
   if (req.user.type !== 'superadmin') return res.status(403).json({ error: 'Solo super admin' })
   const { accId } = req.params
-  const { plan, status, channelLimitsOverride, changeAgentLimitOverride, changeAgentTokenLimitsOverride } = req.body
+  const { plan, status, channelLimitsOverride, changeAgentLimitOverride, changeAgentTokenLimitsOverride, modules } = req.body
   try {
     const sets = []; const vals = []
     if (plan                     !== undefined) { sets.push('plan=?');                      vals.push(plan) }
     if (status                   !== undefined) { sets.push('status=?');                    vals.push(status) }
     if (channelLimitsOverride    !== undefined) { sets.push('channel_limits_override=?');   vals.push(JSON.stringify(channelLimitsOverride)) }
+    // Módulos override por cuenta: array de ids habilitados, o null = heredar del tipo / todos.
+    if (modules                  !== undefined) { sets.push('modules=?');                   vals.push(Array.isArray(modules) ? JSON.stringify(modules) : null) }
     if (changeAgentLimitOverride !== undefined) { sets.push('change_agent_limit_override=?'); vals.push(changeAgentLimitOverride) }
     if (changeAgentTokenLimitsOverride !== undefined) {
       sets.push('change_agent_token_limits_override=?')

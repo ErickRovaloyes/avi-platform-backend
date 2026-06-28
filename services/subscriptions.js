@@ -18,7 +18,7 @@
  */
 const pool = require('../db')
 const socket = require('./socket')
-const { uid } = require('../utils')
+const { uid, parseJ } = require('../utils')
 
 const DAY = 24 * 60 * 60 * 1000
 
@@ -61,6 +61,20 @@ async function seedDefaults() {
       )
     }
   }
+  // Tipo "CRM" (idempotente, también en instalaciones ya existentes): solo da
+  // acceso a los módulos CRM, Canales y Bandeja. Requiere la columna modules.
+  try {
+    const [[{ n: crmCount }]] = await pool.query("SELECT COUNT(*) AS n FROM account_types WHERE name='CRM'")
+    if (!crmCount) {
+      await pool.query(
+        `INSERT INTO account_types
+          (id,name,max_webchat_channels,max_whatsapp_channels,max_test_channels,max_messenger_channels,max_instagram_channels,
+           is_demo,demo_days_duration,demo_max_conversations,demo_max_ai_responses_per_conversation,sort_order,modules,created_at,updated_at)
+         VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`,
+        ['atype_' + uid(), 'CRM', 1, 1, 1, 1, 1, 0, 0, 0, 0, 5, JSON.stringify(['crm', 'channels', 'inbox']), now, now]
+      )
+    }
+  } catch (e) { /* columna modules aún no migrada: se creará en el próximo arranque */ }
 }
 
 // ── Lecturas ──────────────────────────────────────────────────────────────────
@@ -81,6 +95,8 @@ const mapType = t => ({
   demoMaxConversations: t.demo_max_conversations,
   demoMaxAiResponsesPerConversation: t.demo_max_ai_responses_per_conversation,
   sortOrder: t.sort_order,
+  // Preset de módulos del tipo (null = todos). Espejo en services/modules.js.
+  modules: parseJ(t.modules, null),
 })
 const mapPlan = p => ({
   id: p.id, name: p.name, monthlyConversationLimit: p.monthly_conversation_limit,

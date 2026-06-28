@@ -2,6 +2,20 @@
 const pool   = require('../db')
 const socket = require('../services/socket')
 const { parseJ } = require('../utils')
+const modulesSvc = require('../services/modules')
+
+// Módulos efectivos de una cuenta: override de la cuenta → preset del tipo → todos.
+async function effectiveModules(accId, accModulesRaw) {
+  let typeModules = null
+  try {
+    const [[sub]] = await pool.query('SELECT account_type_id FROM account_subscriptions WHERE account_id=?', [accId])
+    if (sub?.account_type_id) {
+      const [[t]] = await pool.query('SELECT modules FROM account_types WHERE id=?', [sub.account_type_id])
+      typeModules = t?.modules ?? null
+    }
+  } catch { /* sin suscripción → solo override de cuenta o todos */ }
+  return modulesSvc.resolveModules(accModulesRaw, typeModules)
+}
 
 const mapAgent = a => ({
   id: a.id, name: a.name, status: a.status,
@@ -104,8 +118,10 @@ async function loadPublicAccount(accId) {
   const effDeepseek  = (acc.deepseek_key  && acc.deepseek_key.trim())  || pf?.deepseek_key  || ''
   const effAnthropic = (acc.anthropic_key && acc.anthropic_key.trim()) || pf?.anthropic_key || ''
   const schedulingCfg = await schedulingSvc.publicConfig(accId).catch(() => ({ connected: false }))
+  const modules = await effectiveModules(accId, acc.modules)
   return {
     id: acc.id, name: acc.name,
+    modules,
     openaiKey: effOpenai, deepseekKey: effDeepseek, anthropicKey: effAnthropic,
     agents: agents.map(mapAgent),
     variables: variables.map(v => ({ id: v.id, name: v.name, type: v.type, defaultValue: v.default_value, description: v.description, isSystem: !!v.is_system })),
@@ -165,8 +181,10 @@ const getAccount = async (req, res) => {
     const effDeepseek  = (acc.deepseek_key  && acc.deepseek_key.trim())  || pf?.deepseek_key  || ''
     const effAnthropic = (acc.anthropic_key && acc.anthropic_key.trim()) || pf?.anthropic_key || ''
     const schedulingCfg = await schedulingSvc.publicConfig(accId).catch(() => ({ connected: false }))
+    const modules = await effectiveModules(accId, acc.modules)
     res.json({
       id: acc.id, name: acc.name, email: acc.email, plan: acc.plan, status: acc.status, createdAt: acc.created_at,
+      modules,
       // Own keys (user-settable in Settings); read-only effective ones below
       openaiKeyOwn:    acc.openai_key    || '',
       deepseekKeyOwn:  acc.deepseek_key  || '',

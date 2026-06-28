@@ -167,6 +167,9 @@ app.use('/api',                webhookRoutes)
   const pool = require('./db')
   // ADD COLUMN IF NOT EXISTS only works in MySQL 8.0.29+ — use ADD COLUMN and swallow "duplicate column" errors
   const migrations = [
+    // Sistema de módulos por cuenta (gating de funcionalidades).
+    "ALTER TABLE accounts          ADD COLUMN modules JSON",
+    "ALTER TABLE account_types     ADD COLUMN modules JSON",
     "ALTER TABLE platform_settings ADD COLUMN meta_app_id VARCHAR(64) DEFAULT ''",
     "ALTER TABLE platform_settings ADD COLUMN change_agent_token_limits JSON",
     "ALTER TABLE platform_settings ADD COLUMN prompt_generator_model VARCHAR(50) DEFAULT 'gpt-4o'",
