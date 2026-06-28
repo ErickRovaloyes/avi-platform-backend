@@ -630,4 +630,8 @@ Genera ahora el system prompt completo siguiendo la estructura base, las condici
   }
 }
 
-module.exports = { generateFromDoc, classifyChange, extractFileText, generateAccountPrompt }
+module.exports = {
+  generateFromDoc, classifyChange, extractFileText, generateAccountPrompt,
+  // Helpers reutilizables para otros generadores con IA (p. ej. diseño de flujos).
+  callAI, detectProvider, resolveProviderKey, extractJson,
+}

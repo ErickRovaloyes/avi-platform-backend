@@ -2,6 +2,7 @@
 const pool   = require('../db')
 const socket = require('../services/socket')
 const { uid, parseJ } = require('../utils')
+const { callAI, detectProvider, resolveProviderKey, extractJson } = require('./promptGenerator.controller')
 
 // ── Variables ─────────────────────────────────────────────────────────────────
 
@@ -277,6 +278,101 @@ const deleteFlow = async (req, res) => {
   } catch (err) { res.status(500).json({ error: 'Error interno' }) }
 }
 
+// ── Diseño de flujos con IA ─────────────────────────────────────────────────
+// Recibe una descripción en lenguaje natural + el catálogo de nodos disponibles
+// (lo envía el frontend, que tiene el registro completo con sus campos) y pide a
+// la IA un flujo JSON listo para importar. Si no hay API Key o la IA falla,
+// devuelve { contact: true } para que el frontend ofrezca "contactar al equipo".
+
+// Normaliza la salida del modelo a la forma exacta que usa el canvas:
+// nodo = { id, type, x, y, data, connections:{success,error} }.
+function normalizeFlow(parsed, validTypes) {
+  const raw = (Array.isArray(parsed.nodes) ? parsed.nodes : []).filter(n => n && validTypes.has(n.type)).slice(0, 24)
+  const idMap = {}
+  raw.forEach(n => { n.__newId = 'n_' + uid(); if (n.id != null) idMap[String(n.id)] = n.__newId })
+  const ref = v => (v != null && idMap[String(v)]) || null
+  const nodes = raw.map((n, i) => {
+    const col = i % 3, row = Math.floor(i / 3)
+    return {
+      id: n.__newId, type: n.type,
+      x: 80 + col * 250, y: 80 + row * 200,
+      data: (n.data && typeof n.data === 'object' && !Array.isArray(n.data)) ? n.data : {},
+      connections: { success: ref(n.connections?.success), error: ref(n.connections?.error) },
+    }
+  })
+  return {
+    name: String(parsed.name || 'Flujo generado con IA').slice(0, 80),
+    trigger: ['manual', 'conversation_start', 'keyword'].includes(parsed.trigger) ? parsed.trigger : 'manual',
+    triggerKeyword: String(parsed.triggerKeyword || '').slice(0, 60),
+    startNodeId: ref(parsed.startNodeId) || nodes[0]?.id || null,
+    nodes,
+  }
+}
+
+const designFlow = async (req, res) => {
+  const { accId } = req.params
+  const description = String(req.body?.description || '').trim()
+  const catalog = Array.isArray(req.body?.catalog) ? req.body.catalog : []
+  if (!description) return res.status(400).json({ error: 'Describe el flujo que quieres crear' })
+  if (!catalog.length) return res.status(400).json({ error: 'Catálogo de nodos vacío' })
+
+  // Modelo configurado por el super admin para el generador (o gpt-4o por defecto).
+  let model = 'gpt-4o'
+  try { const [[s]] = await pool.query('SELECT prompt_generator_model FROM platform_settings WHERE id=1'); if (s?.prompt_generator_model) model = s.prompt_generator_model } catch {}
+  const provider = detectProvider(model)
+  const { key: apiKey } = await resolveProviderKey(accId, provider)
+  if (!apiKey) return res.status(503).json({ error: 'No hay API Key de IA disponible para generar el flujo.', contact: true })
+
+  const validTypes = new Set(catalog.map(n => n.type))
+  const catalogText = catalog.map(n => {
+    const fields = (n.fields || []).map(f => `${f.key}${f.type ? `:${f.type}` : ''}`).join(', ')
+    return `- ${n.type} (${n.category || '—'}) — ${n.label || ''}: ${n.description || ''}${fields ? ` | data: { ${fields} }` : ''}`
+  }).join('\n')
+
+  const sysPrompt = `Eres un DISEÑADOR EXPERTO de flujos conversacionales automatizados para la plataforma AVI Asistente. A partir de una descripción en lenguaje natural, diseñas un flujo completo y coherente usando ÚNICAMENTE los nodos del catálogo.
+
+CATÁLOGO DE NODOS DISPONIBLES (usa solo estos "type" y exactamente estas claves de "data"):
+${catalogText}
+
+FORMATO DE RESPUESTA — JSON ESTRICTO (sin texto antes ni después, sin markdown):
+{
+  "name": "nombre corto del flujo",
+  "trigger": "manual" | "conversation_start" | "keyword",
+  "triggerKeyword": "palabra clave (solo si trigger=keyword, si no \\"\\")",
+  "startNodeId": "id del primer nodo",
+  "nodes": [
+    { "id": "n1", "type": "<type del catálogo>", "data": { ...claves del catálogo... }, "connections": { "success": "n2", "error": null } }
+  ]
+}
+
+REGLAS:
+- Usa SOLO "type" presentes en el catálogo. En "data" usa exactamente las claves indicadas para ese nodo (omite las que no apliquen).
+- Encadena los nodos con connections.success (el siguiente nodo). Deja error en null salvo que tenga sentido una rama de error.
+- Para nodos de condición tipo "if": connections.success = rama VERDADERA, connections.error = rama FALSA.
+- ids cortos y únicos ("n1","n2",...). startNodeId debe ser el id del primer nodo. El último nodo termina con success=null.
+- Entre 4 y 12 nodos. Mensajes en español, claros y útiles. Usa variables con la sintaxis {{nombre}} cuando convenga.
+- NO inventes tipos de nodo ni claves de data que no estén en el catálogo.`
+
+  try {
+    const aiResult = await callAI({
+      provider, model, apiKey,
+      systemPrompt: sysPrompt,
+      userPrompt: `Diseña un flujo para lo siguiente:\n\n${description}`,
+      maxTokens: 3500, temperature: 0.5, jsonMode: provider !== 'anthropic',
+    })
+    const parsed = extractJson(aiResult.text || '')
+    if (!parsed || !Array.isArray(parsed.nodes) || !parsed.nodes.length) {
+      return res.status(502).json({ error: 'La IA no devolvió un flujo válido.', contact: true })
+    }
+    const flow = normalizeFlow(parsed, validTypes)
+    if (!flow.nodes.length) return res.status(502).json({ error: 'La IA no usó nodos válidos del catálogo.', contact: true })
+    res.json({ ok: true, flow })
+  } catch (err) {
+    console.error('[designFlow]', err.message)
+    res.status(502).json({ error: err.message || 'Error al generar el flujo.', contact: true })
+  }
+}
+
 module.exports = {
   createVariable, updateVariable, deleteVariable,
   createAITool, updateAITool, deleteAITool,
@@ -286,4 +382,5 @@ module.exports = {
   createCmsCategory, deleteCmsCategory,
   createSticker, deleteSticker,
   createFlow, updateFlow, deleteFlow,
+  designFlow,
 }

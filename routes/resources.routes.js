@@ -40,6 +40,7 @@ router.post('/accounts/:accId/flows',                   authMiddleware, ctrl.cre
 router.put('/accounts/:accId/flows/:flowId',            authMiddleware, ctrl.updateFlow)
 router.delete('/accounts/:accId/flows/:flowId',         authMiddleware, ctrl.deleteFlow)
 router.post('/flows/:accId',                            authMiddleware, ctrl.createFlow)
+router.post('/flows/:accId/ai-design',                  authMiddleware, ctrl.designFlow)
 router.put('/flows/:accId/:flowId',                     authMiddleware, ctrl.updateFlow)
 router.delete('/flows/:accId/:flowId',                  authMiddleware, ctrl.deleteFlow)
 
