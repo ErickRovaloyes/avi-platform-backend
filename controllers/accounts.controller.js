@@ -182,9 +182,12 @@ const getAccount = async (req, res) => {
     const effAnthropic = (acc.anthropic_key && acc.anthropic_key.trim()) || pf?.anthropic_key || ''
     const schedulingCfg = await schedulingSvc.publicConfig(accId).catch(() => ({ connected: false }))
     const modules = await effectiveModules(accId, acc.modules)
+    // Catálogo Meta: solo estado público (nunca el token).
+    const mc = parseJ(acc.meta_catalog, null)
+    const metaCatalog = mc?.catalogId ? { connected: true, catalogId: mc.catalogId, name: mc.name || mc.catalogId, connectedAt: mc.connectedAt || null } : { connected: false }
     res.json({
       id: acc.id, name: acc.name, email: acc.email, plan: acc.plan, status: acc.status, createdAt: acc.created_at,
-      modules,
+      modules, metaCatalog,
       // Own keys (user-settable in Settings); read-only effective ones below
       openaiKeyOwn:    acc.openai_key    || '',
       deepseekKeyOwn:  acc.deepseek_key  || '',

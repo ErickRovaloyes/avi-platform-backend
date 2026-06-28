@@ -95,6 +95,7 @@ const backupRoutes        = require('./routes/backups.routes')
 const inviteRoutes        = require('./routes/invites.routes')
 const platformRoutes      = require('./routes/platform.routes')
 const webhookRoutes       = require('./routes/webhooks.routes')
+const metaCatalogRoutes   = require('./routes/metaCatalog.routes')
 const promptGenRoutes     = require('./routes/promptGenerator.routes')
 const promptHistoryRoutes = require('./routes/promptHistory.routes')
 const mediaRoutes         = require('./routes/media.routes')
@@ -161,6 +162,7 @@ app.use('/api',                paymentsRoutes)
 app.use('/api',                pushRoutes)
 app.use('/api',                schedulingRoutes)
 app.use('/api',                webhookRoutes)
+app.use('/api',                metaCatalogRoutes)
 
 // ── Auto-migrate DB columns added after initial schema ────────────────────────
 ;(async () => {
@@ -170,6 +172,8 @@ app.use('/api',                webhookRoutes)
     // Sistema de módulos por cuenta (gating de funcionalidades).
     "ALTER TABLE accounts          ADD COLUMN modules JSON",
     "ALTER TABLE account_types     ADD COLUMN modules JSON",
+    // Catálogo de Meta (Commerce) conectado a la cuenta.
+    "ALTER TABLE accounts          ADD COLUMN meta_catalog JSON",
     "ALTER TABLE platform_settings ADD COLUMN meta_app_id VARCHAR(64) DEFAULT ''",
     "ALTER TABLE platform_settings ADD COLUMN change_agent_token_limits JSON",
     "ALTER TABLE platform_settings ADD COLUMN prompt_generator_model VARCHAR(50) DEFAULT 'gpt-4o'",
