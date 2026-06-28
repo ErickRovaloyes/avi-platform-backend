@@ -79,4 +79,4 @@ async function buildRagContext(query, accId, agId, apiKey, fileIds = null) {
   }
 }
 
-module.exports = { readRagChunks, searchRelevantChunks, buildRagContext }
+module.exports = { readRagChunks, searchRelevantChunks, buildRagContext, getEmbedding }

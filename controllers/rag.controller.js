@@ -59,4 +59,24 @@ const deleteRagFile = async (req, res) => {
   } catch (err) { res.status(500).json({ error: 'Error interno' }) }
 }
 
-module.exports = { getRag, putRag, deleteRagFile, getContext }
+// POST /api/rag/:accId/:agId/text  { fileName, content }
+// Agrega (append) un fragmento de conocimiento de texto: calcula su embedding en
+// el servidor y lo inserta sin tocar el resto (para usarlo desde la app móvil).
+const addText = async (req, res) => {
+  const { accId, agId } = req.params
+  const { fileName = 'Nota', content = '' } = req.body || {}
+  if (!String(content).trim()) return res.status(400).json({ error: 'content requerido' })
+  try {
+    const apiKey = await resolveOpenaiKey(accId)
+    if (!apiKey) return res.status(400).json({ error: 'Sin API Key de OpenAI para calcular el embedding' })
+    const embedding = await ragSvc.getEmbedding(String(content).slice(0, 8000), apiKey)
+    const fileId = 'note_' + uid()
+    await pool.query(
+      'INSERT INTO rag_chunks (id,account_id,agent_id,file_id,file_name,content,embedding) VALUES (?,?,?,?,?,?,?)',
+      ['rag_' + uid(), accId, agId, fileId, String(fileName || 'Nota').slice(0, 120), String(content), JSON.stringify(embedding)]
+    )
+    res.json({ ok: true, fileId })
+  } catch (err) { console.error('[RAG addText]', err.message); res.status(502).json({ error: err.message || 'Error al agregar conocimiento' }) }
+}
+
+module.exports = { getRag, putRag, deleteRagFile, getContext, addText }

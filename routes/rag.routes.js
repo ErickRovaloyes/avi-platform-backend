@@ -8,6 +8,7 @@ router.post('/context/:accId/:agId',    ctrl.getContext)
 
 router.get('/:accId/:agId',             authMiddleware, ctrl.getRag)
 router.put('/:accId/:agId',             authMiddleware, ctrl.putRag)
+router.post('/:accId/:agId/text',       authMiddleware, ctrl.addText)
 router.delete('/:accId/:agId/:fileId',  authMiddleware, ctrl.deleteRagFile)
 
 module.exports = router
