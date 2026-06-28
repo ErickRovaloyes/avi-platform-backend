@@ -128,4 +128,32 @@ const openDM = async (req, res) => {
   } catch (err) { console.error('[TC OPEN DM]', err); res.status(500).json({ error: 'Error interno' }) }
 }
 
-module.exports = { getMessages, postMessage, listChannels, createChannel, deleteChannel, openDM }
+// ── Supervisión (superadmin): resumen de los chats privados directos (DMs) ─────
+// Devuelve los DMs de una cuenta con los nombres de los participantes, el último
+// mensaje y el conteo, para que el superadmin pueda monitorearlos.
+const dmsOverview = async (req, res) => {
+  if (req.user.type !== 'superadmin') return res.status(403).json({ error: 'Solo superadmin' })
+  const { accId } = req.params
+  try {
+    const [chans] = await pool.query("SELECT * FROM team_channels WHERE account_id=? AND type='dm' ORDER BY updated_at DESC, created_at DESC", [accId])
+    if (!chans.length) return res.json({ dms: [] })
+    const [members] = await pool.query('SELECT id, name, email, avatar FROM members WHERE account_id=?', [accId])
+    const memById = Object.fromEntries(members.map(m => [m.id, m]))
+    const dms = []
+    for (const c of chans) {
+      const ids = parseJ(c.members, [])
+      const [[last]] = await pool.query('SELECT author_name, content, ts FROM team_chat WHERE channel=? ORDER BY ts DESC LIMIT 1', [c.id])
+      const [[cnt]]  = await pool.query('SELECT COUNT(*) AS n FROM team_chat WHERE channel=?', [c.id])
+      dms.push({
+        id: c.id,
+        participants: ids.map(id => ({ id, name: memById[id]?.name || id, email: memById[id]?.email || '' })),
+        lastMessage: last ? { authorName: last.author_name, content: last.content, ts: last.ts } : null,
+        messageCount: cnt?.n || 0,
+        updatedAt: c.updated_at || c.created_at,
+      })
+    }
+    res.json({ dms })
+  } catch (err) { console.error('[TC DMS OVERVIEW]', err); res.status(500).json({ error: 'Error interno' }) }
+}
+
+module.exports = { getMessages, postMessage, listChannels, createChannel, deleteChannel, openDM, dmsOverview }
