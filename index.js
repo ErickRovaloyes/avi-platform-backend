@@ -96,6 +96,7 @@ const inviteRoutes        = require('./routes/invites.routes')
 const platformRoutes      = require('./routes/platform.routes')
 const webhookRoutes       = require('./routes/webhooks.routes')
 const metaCatalogRoutes   = require('./routes/metaCatalog.routes')
+const metaPagesRoutes     = require('./routes/metaPages.routes')
 const promptGenRoutes     = require('./routes/promptGenerator.routes')
 const promptHistoryRoutes = require('./routes/promptHistory.routes')
 const mediaRoutes         = require('./routes/media.routes')
@@ -163,6 +164,7 @@ app.use('/api',                pushRoutes)
 app.use('/api',                schedulingRoutes)
 app.use('/api',                webhookRoutes)
 app.use('/api',                metaCatalogRoutes)
+app.use('/api',                metaPagesRoutes)
 
 // ── Auto-migrate DB columns added after initial schema ────────────────────────
 ;(async () => {
