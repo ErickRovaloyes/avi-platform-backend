@@ -23,10 +23,15 @@ const SCAN_LIMIT = 50
 const DEFAULT_STEP = { delayMinutes: 1440, mode: 'intelligent', flowId: null, rounds: { mode: 'every' } }
 
 // `rounds`: en qué VUELTAS (repeticiones de la secuencia) se ejecuta el paso.
-//   every      → en todas las vueltas
-//   only  + n  → solo en la vuelta n (1 = primera)
-//   from  + n  → desde la vuelta n en adelante
+//   every       → en todas las vueltas
+//   only  + n   → solo en la vuelta n (1 = primera)
+//   from  + n   → desde la vuelta n en adelante
+//   list  + [n] → solo en las vueltas indicadas (p. ej. [1,3,5])
 function normalizeRounds(r) {
+  if (r?.mode === 'list') {
+    const list = Array.from(new Set((Array.isArray(r.list) ? r.list : []).map(x => Math.max(1, Math.round(Number(x) || 0))).filter(n => n >= 1))).sort((a, b) => a - b).slice(0, 30)
+    return list.length ? { mode: 'list', list } : { mode: 'every' }
+  }
   const mode = (r?.mode === 'only' || r?.mode === 'from') ? r.mode : 'every'
   if (mode === 'every') return { mode: 'every' }
   return { mode, n: Math.max(1, Math.round(Number(r?.n) || 1)) }
@@ -47,6 +52,7 @@ function stepAppliesToRound(step, round0) {
   const r = step.rounds || { mode: 'every' }
   if (r.mode === 'only') return ur === r.n
   if (r.mode === 'from') return ur >= r.n
+  if (r.mode === 'list') return Array.isArray(r.list) && r.list.includes(ur)
   return true
 }
 
@@ -54,8 +60,10 @@ function stepAppliesToRound(step, round0) {
 // vueltas en que aplica cada paso, o null si la secuencia ya no produce más.
 function nthOccurrence(steps, repeat, k) {
   const hasOpenEnded = steps.some(s => { const m = s.rounds?.mode; return !m || m === 'every' || m === 'from' })
-  const maxOnly = Math.max(1, 0, ...steps.filter(s => s.rounds?.mode === 'only').map(s => s.rounds.n))
-  const roundLimit = repeat ? (hasOpenEnded ? 2000 : maxOnly) : 1
+  const boundedMax = Math.max(1, 0,
+    ...steps.filter(s => s.rounds?.mode === 'only').map(s => s.rounds.n),
+    ...steps.filter(s => s.rounds?.mode === 'list').flatMap(s => s.rounds.list || []))
+  const roundLimit = repeat ? (hasOpenEnded ? 2000 : boundedMax) : 1
   let idx = 0
   for (let round = 0; round < roundLimit; round++) {
     for (let s = 0; s < steps.length; s++) {
