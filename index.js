@@ -97,6 +97,7 @@ const platformRoutes      = require('./routes/platform.routes')
 const webhookRoutes       = require('./routes/webhooks.routes')
 const metaCatalogRoutes   = require('./routes/metaCatalog.routes')
 const metaPagesRoutes     = require('./routes/metaPages.routes')
+const optimizerRoutes     = require('./routes/promptOptimizer.routes')
 const promptGenRoutes     = require('./routes/promptGenerator.routes')
 const promptHistoryRoutes = require('./routes/promptHistory.routes')
 const mediaRoutes         = require('./routes/media.routes')
@@ -165,12 +166,79 @@ app.use('/api',                schedulingRoutes)
 app.use('/api',                webhookRoutes)
 app.use('/api',                metaCatalogRoutes)
 app.use('/api',                metaPagesRoutes)
+app.use('/api',                optimizerRoutes)
 
 // ── Auto-migrate DB columns added after initial schema ────────────────────────
 ;(async () => {
   const pool = require('./db')
   // ADD COLUMN IF NOT EXISTS only works in MySQL 8.0.29+ — use ADD COLUMN and swallow "duplicate column" errors
   const migrations = [
+    // Optimizador Inteligente del Prompt (análisis incremental de conversaciones).
+    "ALTER TABLE platform_settings ADD COLUMN optimizer_model VARCHAR(60) DEFAULT 'gpt-4o-mini'",
+    `CREATE TABLE IF NOT EXISTS optimizer_convo_index (
+       conversation_id VARCHAR(80) PRIMARY KEY,
+       account_id      VARCHAR(50) NOT NULL,
+       agent_id        VARCHAR(50) NOT NULL,
+       prompt_version  VARCHAR(40),
+       msg_count       INT DEFAULT 0,
+       last_msg_ts     BIGINT DEFAULT 0,
+       seen_updated_at BIGINT DEFAULT 0,
+       duration_ms     BIGINT DEFAULT 0,
+       topic           VARCHAR(60),
+       resolved        TINYINT(1) DEFAULT 0,
+       confidence      DECIMAL(3,2) DEFAULT 0,
+       used_rag        TINYINT(1) DEFAULT 0,
+       rag_hit         TINYINT(1) DEFAULT 0,
+       tools_used      JSON,
+       errors          JSON,
+       reformulations  INT DEFAULT 0,
+       asked_human     TINYINT(1) DEFAULT 0,
+       abandoned       TINYINT(1) DEFAULT 0,
+       fail_reason     VARCHAR(40),
+       embedding       JSON,
+       analyzed_at     BIGINT,
+       INDEX idx_oci_agent (account_id, agent_id),
+       INDEX idx_oci_candidate (account_id, agent_id, fail_reason)
+     )`,
+    `CREATE TABLE IF NOT EXISTS optimizer_suggestions (
+       id            VARCHAR(40) PRIMARY KEY,
+       account_id    VARCHAR(50) NOT NULL,
+       agent_id      VARCHAR(50) NOT NULL,
+       title         VARCHAR(200),
+       description   TEXT,
+       problem_type  VARCHAR(30),
+       severity      VARCHAR(20),
+       impact        VARCHAR(20),
+       frequency     INT DEFAULT 0,
+       conversations JSON,
+       evidence      JSON,
+       proposed_change JSON,
+       status        VARCHAR(20) DEFAULT 'new',
+       dedupe_key    VARCHAR(120),
+       applied_version VARCHAR(50),
+       created_at    BIGINT,
+       updated_at    BIGINT,
+       INDEX idx_osg_agent (account_id, agent_id, status),
+       INDEX idx_osg_dedupe (account_id, agent_id, dedupe_key)
+     )`,
+    `CREATE TABLE IF NOT EXISTS optimizer_runs (
+       id            VARCHAR(40) PRIMARY KEY,
+       account_id    VARCHAR(50) NOT NULL,
+       agent_id      VARCHAR(50) NOT NULL,
+       started_by    VARCHAR(100),
+       prompt_version VARCHAR(40),
+       convos_processed INT DEFAULT 0,
+       last_cursor_ts BIGINT DEFAULT 0,
+       suggestions_new INT DEFAULT 0,
+       suggestions_updated INT DEFAULT 0,
+       suggestions_resolved INT DEFAULT 0,
+       status        VARCHAR(20) DEFAULT 'running',
+       tokens_used   INT DEFAULT 0,
+       cost_usd      DECIMAL(12,6) DEFAULT 0,
+       started_at    BIGINT,
+       finished_at   BIGINT,
+       INDEX idx_orun_agent (account_id, agent_id, started_at)
+     )`,
     // Sistema de módulos por cuenta (gating de funcionalidades).
     "ALTER TABLE accounts          ADD COLUMN modules JSON",
     "ALTER TABLE account_types     ADD COLUMN modules JSON",
