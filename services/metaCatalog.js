@@ -87,4 +87,29 @@ async function saveStored(accId, cfg) {
   await pool.query('UPDATE accounts SET meta_catalog=? WHERE id=?', [cfg ? JSON.stringify(cfg) : null, accId])
 }
 
-module.exports = { discoverCatalogs, fetchProducts, getCatalogInfo, getStored, saveStored, listWhatsAppCreds }
+// ── Lectura para la herramienta IA del agente ───────────────────────────────
+// Productos del catálogo conectado de la cuenta (vacío si no hay conexión).
+async function getProducts(accId, { limit = 100 } = {}) {
+  const cfg = await getStored(accId)
+  if (!cfg?.catalogId || !cfg?.accessToken) return []
+  const { products } = await fetchProducts(cfg.catalogId, cfg.accessToken, { limit })
+  return products
+}
+
+// Búsqueda local por tokens sobre los productos del catálogo (nombre, descripción,
+// marca, categoría, retailer_id). Devuelve los que coinciden, ordenados por relevancia.
+async function searchProducts(accId, query, { limit = 100 } = {}) {
+  const products = await getProducts(accId, { limit })
+  const q = String(query || '').toLowerCase().trim()
+  if (!q) return products
+  const toks = q.split(/[^a-z0-9áéíóúñü]+/i).filter(w => w.length > 1)
+  if (!toks.length) return products
+  const scored = products.map(p => {
+    const hay = `${p.name || ''} ${p.description || ''} ${p.brand || ''} ${p.category || ''} ${p.retailer_id || ''}`.toLowerCase()
+    let sc = 0; for (const t of toks) if (hay.includes(t)) sc += t.length >= 4 ? 2 : 1
+    return { p, sc }
+  }).filter(x => x.sc > 0).sort((a, b) => b.sc - a.sc)
+  return scored.map(x => x.p)
+}
+
+module.exports = { discoverCatalogs, fetchProducts, getCatalogInfo, getStored, saveStored, listWhatsAppCreds, getProducts, searchProducts }

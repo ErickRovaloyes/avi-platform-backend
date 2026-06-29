@@ -51,10 +51,22 @@ const products = async (req, res) => {
   } catch (err) { console.error('[metaCatalog products]', err.message); res.status(502).json({ error: err.message || 'No se pudieron leer los productos' }) }
 }
 
+// POST /api/meta-catalog/:accId/search  { query, limit } → productos (proxy para
+// el motor del navegador/webchat, que no tiene sesión). El token queda en el
+// servidor; solo se devuelven los productos (que de todos modos se muestran al cliente).
+const publicSearch = async (req, res) => {
+  const { accId } = req.params
+  const { query = '', limit } = req.body || {}
+  try {
+    const products = await svc.searchProducts(accId, query, { limit: limit ? Number(limit) : 100 })
+    res.json({ products })
+  } catch (err) { console.error('[metaCatalog publicSearch]', err.message); res.status(502).json({ error: err.message || 'Error', products: [] }) }
+}
+
 // DELETE /api/accounts/:accId/meta-catalog
 const disconnect = async (req, res) => {
   try { await svc.saveStored(req.params.accId, null); socket.emit(req.params.accId, 'account:updated', { accId: req.params.accId }); res.json({ ok: true }) }
   catch { res.status(500).json({ error: 'Error interno' }) }
 }
 
-module.exports = { get, discover, connect, products, disconnect }
+module.exports = { get, discover, connect, products, publicSearch, disconnect }

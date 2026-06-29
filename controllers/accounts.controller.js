@@ -83,7 +83,19 @@ const SPECIAL_PAYMENT_TOOL = {
   actionType: 'payment',
   special: true,
 }
-const specialTools = () => [SPECIAL_WOO_TOOL, SPECIAL_AGENDA_TOOL, SPECIAL_PAYMENT_TOOL]
+// Herramienta IA Especial de CATÁLOGO DE META (siempre asignable; opera solo si
+// la cuenta conectó un catálogo en Configuración → Catálogo Meta). El asistente
+// puede responder sobre el catálogo, enviar productos con foto, enviar el catálogo
+// completo y generar pedidos (con link de pago si hay pasarela conectada).
+const SPECIAL_CATALOG_TOOL = {
+  id: 'meta_catalog',
+  name: 'catalogo',
+  description: 'Catálogo de Meta conectado: busca productos y responde sobre precios/características, envía productos con su foto, envía el catálogo completo y genera pedidos. Asígnala a un prompt para habilitarla.',
+  collectFields: [],
+  actionType: 'meta_catalog',
+  special: true,
+}
+const specialTools = () => [SPECIAL_WOO_TOOL, SPECIAL_AGENDA_TOOL, SPECIAL_PAYMENT_TOOL, SPECIAL_CATALOG_TOOL]
 
 const mapCmsAsset = c => ({
   id: c.id, name: c.name, description: c.description || '', tags: parseJ(c.tags, []),
@@ -119,9 +131,11 @@ async function loadPublicAccount(accId) {
   const effAnthropic = (acc.anthropic_key && acc.anthropic_key.trim()) || pf?.anthropic_key || ''
   const schedulingCfg = await schedulingSvc.publicConfig(accId).catch(() => ({ connected: false }))
   const modules = await effectiveModules(accId, acc.modules)
+  const _mc = parseJ(acc.meta_catalog, null)
   return {
     id: acc.id, name: acc.name,
     modules,
+    metaCatalog: _mc?.catalogId ? { connected: true, catalogId: _mc.catalogId, name: _mc.name || _mc.catalogId } : { connected: false },
     openaiKey: effOpenai, deepseekKey: effDeepseek, anthropicKey: effAnthropic,
     agents: agents.map(mapAgent),
     variables: variables.map(v => ({ id: v.id, name: v.name, type: v.type, defaultValue: v.default_value, description: v.description, isSystem: !!v.is_system })),
