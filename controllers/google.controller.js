@@ -101,4 +101,17 @@ const sheetsOp = async (req, res) => {
   }
 }
 
-module.exports = { status, authUrl, callback, disconnect, listSheets, addSheet, removeSheet, sheetsOp }
+// POST /api/google/calendar/webhook — Google envía aquí las notificaciones push.
+// Respondemos 200 de inmediato y procesamos el cambio en segundo plano.
+const calendarWebhook = (req, res) => {
+  res.sendStatus(200)
+  try {
+    const channelId = req.get('X-Goog-Channel-ID')
+    const channelToken = req.get('X-Goog-Channel-Token')
+    const state = req.get('X-Goog-Resource-State')
+    if (!channelId) return
+    require('../services/googleCalendarWatch').handleNotification(channelId, channelToken, state).catch(() => {})
+  } catch { /* ignorar */ }
+}
+
+module.exports = { status, authUrl, callback, disconnect, listSheets, addSheet, removeSheet, sheetsOp, calendarWebhook }

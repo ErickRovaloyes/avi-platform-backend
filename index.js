@@ -242,6 +242,19 @@ app.use('/api',                recontactRoutes)
        INDEX idx_orun_agent (account_id, agent_id, started_at)
      )`,
     "ALTER TABLE optimizer_suggestions ADD COLUMN code VARCHAR(20)",
+    // Webhook de Google Calendar en tiempo real (canales push events.watch).
+    `CREATE TABLE IF NOT EXISTS google_calendar_channels (
+       channel_id           VARCHAR(80) PRIMARY KEY,
+       account_id           VARCHAR(50) NOT NULL,
+       platform_calendar_id VARCHAR(50) NOT NULL,
+       google_calendar_id   VARCHAR(255),
+       resource_id          VARCHAR(255),
+       channel_token        VARCHAR(80),
+       sync_token           TEXT,
+       expiration           BIGINT,
+       created_at           BIGINT,
+       INDEX idx_gcc_acc (account_id, platform_calendar_id)
+     )`,
     // Recontactos inteligentes (re-enganche de conversaciones abandonadas).
     "ALTER TABLE accounts          ADD COLUMN recontact JSON",
     "ALTER TABLE conversations     ADD COLUMN recontact_at BIGINT",
@@ -975,6 +988,8 @@ app.use('/api',                recontactRoutes)
   } catch (e) { console.warn('[subscriptions] no iniciado:', e.message) }
   // Recontactos inteligentes: re-engancha conversaciones abandonadas.
   try { require('./services/recontact').startWorker() } catch (e) { console.warn('[recontact] worker no iniciado:', e.message) }
+  // Webhook de Google Calendar en tiempo real: registra/renueva canales push.
+  try { require('./services/googleCalendarWatch').startWorker() } catch (e) { console.warn('[gcal watch] worker no iniciado:', e.message) }
   // Bucle de recordatorios de citas por WhatsApp
   try { require('./services/calendarReminders').start() } catch (e) { console.warn('[reminders] no iniciado:', e.message) }
   // Recuperación de carritos / confirmación de pago de la tienda (Woo + Shopify)

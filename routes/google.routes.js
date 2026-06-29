@@ -5,6 +5,8 @@ const ctrl = require('../controllers/google.controller')
 
 // Callback de Google: SIN auth (Google redirige aquí con ?code&state)
 router.get('/google/callback', ctrl.callback)
+// Webhook de notificaciones push de Google Calendar (SIN auth; Google hace POST).
+router.post('/google/calendar/webhook', ctrl.calendarWebhook)
 
 // Resto: requieren sesión
 router.get('/accounts/:accId/google/status',        authMiddleware, ctrl.status)

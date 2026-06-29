@@ -334,10 +334,52 @@ async function freeBusy(token, calendarId, timeMinIso, timeMaxIso) {
   return data?.calendars?.[calendarId]?.busy || []
 }
 
+// ── Push (webhook en tiempo real) — events.watch / channels.stop / sync incremental ──
+// Registra un canal de notificaciones push: Google hará POST al `address` cuando el
+// calendario cambie. Devuelve { id, resourceId, expiration }.
+async function watchEvents(token, calendarId, { id, address, channelToken, ttlSeconds = 7 * 86400 }) {
+  return calApi(token, `calendars/${encodeURIComponent(calendarId)}/events/watch`, {
+    method: 'POST', body: { id, type: 'web_hook', address, token: channelToken, params: { ttl: String(ttlSeconds) } },
+  })
+}
+async function stopChannel(token, id, resourceId) {
+  try { await calApi(token, 'channels/stop', { method: 'POST', body: { id, resourceId } }) } catch { /* best-effort */ }
+}
+// Obtiene un syncToken base (solo eventos recientes/futuros, para no paginar todo el historial).
+async function getInitialSyncToken(token, calendarId) {
+  let pageToken, syncToken, guard = 0
+  do {
+    const qs = { singleEvents: 'true', showDeleted: 'true', maxResults: '2500', timeMin: new Date(Date.now() - 86400000).toISOString() }
+    if (pageToken) qs.pageToken = pageToken
+    const data = await calApi(token, `calendars/${encodeURIComponent(calendarId)}/events`, { qs })
+    syncToken = data.nextSyncToken || syncToken
+    pageToken = data.nextPageToken
+  } while (pageToken && ++guard < 25)
+  return syncToken || null
+}
+// Cambios desde el último syncToken. Si el token caducó (410) → { expired:true }.
+async function listChanges(token, calendarId, syncToken) {
+  if (!syncToken) return { items: [], nextSyncToken: null, expired: true }
+  const items = []
+  let pageToken, nextSyncToken, guard = 0
+  do {
+    const qs = { syncToken, maxResults: '2500' }
+    if (pageToken) qs.pageToken = pageToken
+    let data
+    try { data = await calApi(token, `calendars/${encodeURIComponent(calendarId)}/events`, { qs }) }
+    catch (e) { if (/410|sync token|expired|GONE/i.test(e.message)) return { items: [], nextSyncToken: null, expired: true }; throw e }
+    items.push(...(data.items || []))
+    nextSyncToken = data.nextSyncToken || nextSyncToken
+    pageToken = data.nextPageToken
+  } while (pageToken && ++guard < 25)
+  return { items, nextSyncToken, expired: false }
+}
+
 module.exports = {
   isConfigured, getAuthUrl, exchangeCode, refreshAccessToken, getUserEmail,
   saveIntegration, getValidAccessToken,
   readRows, appendRow, updateRange, clearRange, extractSpreadsheetId,
   rowsToRecords, filterSheetRows, runSheetsOperation,
   createCalendarEvent, updateCalendarEvent, deleteCalendarEvent, freeBusy,
+  watchEvents, stopChannel, getInitialSyncToken, listChanges,
 }
