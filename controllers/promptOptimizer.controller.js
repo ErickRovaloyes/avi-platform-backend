@@ -21,4 +21,11 @@ const suggestions = async (req, res) => {
   catch (e) { res.status(500).json({ error: 'Error interno' }) }
 }
 
-module.exports = { status, run, suggestions }
+const setSuggestionStatus = async (req, res) => {
+  const { accId, agId, sid } = req.params
+  const { status, appliedVersion } = req.body || {}
+  try { res.json(await svc.setSuggestionStatus(accId, agId, sid, status, appliedVersion)) }
+  catch (e) { res.status(400).json({ error: e.message || 'Error' }) }
+}
+
+module.exports = { status, run, suggestions, setSuggestionStatus }

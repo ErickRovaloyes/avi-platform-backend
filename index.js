@@ -239,6 +239,7 @@ app.use('/api',                optimizerRoutes)
        finished_at   BIGINT,
        INDEX idx_orun_agent (account_id, agent_id, started_at)
      )`,
+    "ALTER TABLE optimizer_suggestions ADD COLUMN code VARCHAR(20)",
     // Sistema de módulos por cuenta (gating de funcionalidades).
     "ALTER TABLE accounts          ADD COLUMN modules JSON",
     "ALTER TABLE account_types     ADD COLUMN modules JSON",

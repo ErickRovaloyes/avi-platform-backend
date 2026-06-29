@@ -10,8 +10,11 @@
 const crypto = require('crypto')
 const pool = require('../db')
 const { uid, parseJ } = require('../utils')
+// Helpers IA reutilizables (mismo patrón que el generador de prompts).
+const { callAI, detectProvider, resolveProviderKey, extractJson } = require('../controllers/promptGenerator.controller')
 
-const RUN_CAP = 3000 // máx. conversaciones procesadas por ejecución (acota cada run)
+const RUN_CAP = 3000  // máx. conversaciones procesadas por ejecución (acota cada run)
+const SAMPLE_PER_GROUP = 5 // ejemplos representativos por grupo enviados al LLM
 
 function hashContent(s) { return 'v' + crypto.createHash('sha1').update(String(s || '')).digest('hex').slice(0, 8) }
 
@@ -162,6 +165,7 @@ async function run(accId, agId, startedBy) {
   // Procesa en background; el endpoint ya devolvió el runId.
   ;(async () => {
     let processed = 0, maxCursor = cursor
+    const candidates = []   // convos con motivo de fallo → entran al análisis IA
     try {
       const [convos] = await pool.query(
         'SELECT id, created_at, updated_at, debug_log FROM conversations WHERE account_id=? AND agent_id=? AND updated_at > ? ORDER BY updated_at ASC LIMIT ?',
@@ -178,9 +182,14 @@ async function run(accId, agId, startedBy) {
           [conv.id, accId, agId, f.promptVersion, f.msgCount, f.lastMsgTs, conv.updated_at || 0, f.durationMs, f.topic, f.resolved, f.confidence, f.usedRag, f.ragHit, JSON.stringify(f.toolsUsed), JSON.stringify(f.errors), f.reformulations, f.askedHuman, f.abandoned, f.failReason, Date.now()]
         )
         processed++
+        if (f.failReason) candidates.push({ convId: conv.id, ficha: f })
         if ((conv.updated_at || 0) > maxCursor) maxCursor = conv.updated_at
       }
-      await pool.query('UPDATE optimizer_runs SET convos_processed=?, last_cursor_ts=?, status=?, finished_at=? WHERE id=?', [processed, maxCursor, 'done', Date.now(), runId])
+      // Etapas 2-5: análisis con IA (solo si hay candidatas y modelo/clave disponibles).
+      let res = { newCount: 0, updatedCount: 0, tokens: 0, cost: 0 }
+      if (candidates.length) res = await analyzeCandidates(accId, agId, candidates)
+      await pool.query('UPDATE optimizer_runs SET convos_processed=?, last_cursor_ts=?, suggestions_new=?, suggestions_updated=?, tokens_used=?, status=?, finished_at=? WHERE id=?',
+        [processed, maxCursor, res.newCount, res.updatedCount, res.tokens, 'done', Date.now(), runId])
     } catch (err) {
       console.error('[optimizer run]', err.message)
       await pool.query('UPDATE optimizer_runs SET convos_processed=?, status=?, finished_at=? WHERE id=?', [processed, 'error', Date.now(), runId]).catch(() => {})
@@ -189,15 +198,113 @@ async function run(accId, agId, startedBy) {
   return { runId, promptVersion }
 }
 
+// ── Etapas 2-5: agrupación + muestreo + análisis IA + dedup de sugerencias ──────
+const OPTIMIZER_SYS = `Eres un analista experto en prompt engineering para agentes de IA de atención al cliente.
+Recibes un GRUPO de conversaciones donde el agente tuvo el MISMO tipo de problema. Detecta la causa raíz y propón UNA mejora concreta.
+Determina si el problema pertenece al prompt, al RAG/base de conocimiento, a las herramientas, al flujo conversacional o a una limitación del modelo.
+Responde ÚNICAMENTE con un objeto JSON válido (sin texto fuera de él):
+{
+ "title": "título corto del problema",
+ "description": "1-3 frases explicando la causa raíz",
+ "problem_type": "prompt|rag|knowledge|tools|flow|model",
+ "severity": "baja|media|alta",
+ "impact": "bajo|medio|alto",
+ "proposed_change": { "section": "sección del prompt a tocar", "add": "texto a agregar (o \\"\\")", "remove": "texto a quitar (o \\"\\")", "replace": "texto a reemplazar (o \\"\\")", "justification": "por qué", "expected_impact": "mejora esperada" },
+ "evidence": "1-2 frases con la evidencia observada"
+}`
+
+// Resumen COMPACTO de una conversación (no se envía completa): primer mensaje del
+// cliente + última respuesta del agente. Minimiza tokens.
+async function summarizeConvo(convId) {
+  try {
+    const [msgs] = await pool.query('SELECT sender, content FROM messages WHERE conversation_id=? ORDER BY ts ASC', [convId])
+    const firstUser = (msgs.find(m => m.sender === 'user')?.content || '').slice(0, 200)
+    const lastBot = ([...msgs].reverse().find(m => m.sender === 'ai' || m.sender === 'human')?.content || '').slice(0, 200)
+    return `Cliente: "${firstUser}" → Agente: "${lastBot}"`
+  } catch { return '' }
+}
+
+async function analyzeCandidates(accId, agId, candidates) {
+  const [[ps]] = await pool.query('SELECT optimizer_model FROM platform_settings WHERE id=1')
+  const model = ps?.optimizer_model || 'gpt-4o-mini'
+  const provider = detectProvider(model)
+  const { key: apiKey } = await resolveProviderKey(accId, provider)
+  if (!apiKey) return { newCount: 0, updatedCount: 0, tokens: 0, cost: 0 } // sin clave → no se gasta IA
+
+  // Etapa 3: agrupar por (tema, motivo de fallo) — determinista, sin tokens.
+  const groups = new Map()
+  for (const c of candidates) {
+    const key = `${c.ficha.topic}|${c.ficha.failReason}`
+    if (!groups.has(key)) groups.set(key, [])
+    groups.get(key).push(c)
+  }
+
+  let newCount = 0, updatedCount = 0, tokens = 0
+  for (const [key, group] of groups) {
+    const [topic, failReason] = key.split('|')
+    const sample = group.slice(0, SAMPLE_PER_GROUP)           // Etapa 4: muestreo
+    const summaries = []
+    for (const c of sample) summaries.push(await summarizeConvo(c.convId))
+    const avgConf = (group.reduce((s, c) => s + (c.ficha.confidence || 0), 0) / group.length).toFixed(2)
+    const userMsg = `GRUPO: tema="${topic}", tipo_de_fallo="${failReason}", conversaciones=${group.length}, confianza_promedio=${avgConf}\n\nEJEMPLOS REPRESENTATIVOS:\n${summaries.map((s, i) => `${i + 1}. ${s}`).join('\n')}`
+    let parsed = null
+    try {
+      const r = await callAI({ provider, model, apiKey, systemPrompt: OPTIMIZER_SYS, userPrompt: userMsg, maxTokens: 800, temperature: 0.3, jsonMode: provider !== 'anthropic' })
+      tokens += (r.usage?.promptTokens || 0) + (r.usage?.completionTokens || 0)
+      try { require('../controllers/analytics.controller').recordUsageInternal({ accId, agentId: agId, conversationId: null, provider, model, promptTokens: r.usage?.promptTokens || 0, completionTokens: r.usage?.completionTokens || 0, source: 'optimizer' }) } catch {}
+      parsed = extractJson(r.text || '')
+    } catch (e) { console.warn('[optimizer LLM]', e.message); continue }
+    if (!parsed?.title) continue
+    const dedupeKey = `${String(parsed.problem_type || 'prompt')}:${topic}:${failReason}`.toLowerCase().slice(0, 120)
+    const kind = await upsertSuggestion(accId, agId, { parsed, dedupeKey, groupSize: group.length, evidence: sample.map(c => c.convId) })
+    if (kind === 'new') newCount++; else updatedCount++
+  }
+  return { newCount, updatedCount, tokens, cost: 0 }
+}
+
+async function upsertSuggestion(accId, agId, { parsed, dedupeKey, groupSize, evidence }) {
+  const now = Date.now()
+  const [[existing]] = await pool.query('SELECT id, conversations, status FROM optimizer_suggestions WHERE account_id=? AND agent_id=? AND dedupe_key=? LIMIT 1', [accId, agId, dedupeKey])
+  if (existing) {
+    const merged = Array.from(new Set([...parseJ(existing.conversations, []), ...evidence])).slice(0, 30)
+    // Si estaba "resuelta" pero reaparece → vuelve a "activa". "Descartada" se respeta.
+    const status = existing.status === 'resolved' ? 'active' : existing.status
+    await pool.query(
+      'UPDATE optimizer_suggestions SET frequency=frequency+?, conversations=?, description=?, severity=?, impact=?, proposed_change=?, status=?, updated_at=? WHERE id=?',
+      [groupSize, JSON.stringify(merged), parsed.description || '', parsed.severity || 'media', parsed.impact || 'medio', JSON.stringify(parsed.proposed_change || null), status, now, existing.id]
+    )
+    return 'updated'
+  }
+  const [[cnt]] = await pool.query('SELECT COUNT(*) AS n FROM optimizer_suggestions WHERE account_id=? AND agent_id=?', [accId, agId])
+  const code = 'SUG-' + String((cnt?.n || 0) + 1).padStart(3, '0')
+  const id = 'sug_' + uid()
+  await pool.query(
+    `INSERT INTO optimizer_suggestions (id,code,account_id,agent_id,title,description,problem_type,severity,impact,frequency,conversations,evidence,proposed_change,status,dedupe_key,created_at,updated_at)
+     VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`,
+    [id, code, accId, agId, String(parsed.title || '').slice(0, 200), parsed.description || '', String(parsed.problem_type || 'prompt'), parsed.severity || 'media', parsed.impact || 'medio', groupSize, JSON.stringify(evidence), JSON.stringify(parsed.evidence || ''), JSON.stringify(parsed.proposed_change || null), 'new', dedupeKey, now, now]
+  )
+  return 'new'
+}
+
+const VALID_STATUS = new Set(['new', 'active', 'in_review', 'applied', 'discarded', 'resolved'])
+async function setSuggestionStatus(accId, agId, sid, status, appliedVersion) {
+  if (!VALID_STATUS.has(status)) throw new Error('Estado no válido')
+  const sets = ['status=?', 'updated_at=?']; const vals = [status, Date.now()]
+  if (appliedVersion !== undefined) { sets.push('applied_version=?'); vals.push(appliedVersion) }
+  vals.push(sid, accId, agId)
+  await pool.query(`UPDATE optimizer_suggestions SET ${sets.join(',')} WHERE id=? AND account_id=? AND agent_id=?`, vals)
+  return { ok: true }
+}
+
 async function getSuggestions(accId, agId) {
   const [rows] = await pool.query('SELECT * FROM optimizer_suggestions WHERE account_id=? AND agent_id=? ORDER BY frequency DESC, updated_at DESC', [accId, agId])
   return rows.map(r => ({
-    id: r.id, title: r.title, description: r.description, problemType: r.problem_type,
+    id: r.id, code: r.code || r.id, title: r.title, description: r.description, problemType: r.problem_type,
     severity: r.severity, impact: r.impact, frequency: r.frequency,
-    conversations: parseJ(r.conversations, []), evidence: parseJ(r.evidence, []),
+    conversations: parseJ(r.conversations, []), evidence: parseJ(r.evidence, ''),
     proposedChange: parseJ(r.proposed_change, null), status: r.status,
     appliedVersion: r.applied_version, createdAt: r.created_at, updatedAt: r.updated_at,
   }))
 }
 
-module.exports = { run, getStatus, getSuggestions, activePromptVersion }
+module.exports = { run, getStatus, getSuggestions, setSuggestionStatus, activePromptVersion }

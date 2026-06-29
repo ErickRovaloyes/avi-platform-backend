@@ -71,6 +71,7 @@ const getSettings = async (req, res) => {
           transcriptionModel: r.transcription_model || 'whisper-1',
           defaultPromptProvider: r.default_prompt_provider || 'deepseek',
           defaultPromptModel: r.default_prompt_model || 'deepseek-v4-flash',
+          optimizerModel: r.optimizer_model || 'gpt-4o-mini',
         }
       : {
           changeAgentModel: 'gpt-4o-mini',
@@ -93,6 +94,7 @@ const getSettings = async (req, res) => {
           transcriptionModel: 'whisper-1',
           defaultPromptProvider: 'deepseek',
           defaultPromptModel: 'deepseek-v4-flash',
+          optimizerModel: 'gpt-4o-mini',
         })
   } catch (err) { res.status(500).json({ error: 'Error interno' }) }
 }
@@ -108,7 +110,7 @@ const updateSettings = async (req, res) => {
     promptGeneratorMaxFileMb,
     platformOpenaiKey, platformDeepseekKey, platformAnthropicKey,
     mediaMaxSizeMb, transcriptionModel,
-    defaultPromptProvider, defaultPromptModel,
+    defaultPromptProvider, defaultPromptModel, optimizerModel,
   } = req.body
   try {
     const sets = []; const vals = []
@@ -134,6 +136,7 @@ const updateSettings = async (req, res) => {
     }
     if (defaultPromptProvider     !== undefined) { sets.push('default_prompt_provider=?');      vals.push(String(defaultPromptProvider || 'deepseek')) }
     if (defaultPromptModel        !== undefined) { sets.push('default_prompt_model=?');         vals.push(String(defaultPromptModel || 'deepseek-v4-flash')) }
+    if (optimizerModel            !== undefined) { sets.push('optimizer_model=?');               vals.push(String(optimizerModel || 'gpt-4o-mini')) }
     if (platformOpenaiKey         !== undefined) { sets.push('openai_key=?');                   vals.push(platformOpenaiKey) }
     if (platformDeepseekKey       !== undefined) { sets.push('deepseek_key=?');                 vals.push(platformDeepseekKey) }
     if (platformAnthropicKey      !== undefined) { sets.push('anthropic_key=?');                vals.push(platformAnthropicKey) }
