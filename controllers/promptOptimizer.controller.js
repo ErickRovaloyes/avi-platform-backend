@@ -28,4 +28,10 @@ const setSuggestionStatus = async (req, res) => {
   catch (e) { res.status(400).json({ error: e.message || 'Error' }) }
 }
 
-module.exports = { status, run, suggestions, setSuggestionStatus }
+const dashboard = async (req, res) => {
+  const { accId, agId } = req.params
+  try { res.json(await svc.getDashboard(accId, agId)) }
+  catch (e) { console.error('[optimizer dashboard]', e.message); res.status(500).json({ error: 'Error interno' }) }
+}
+
+module.exports = { status, run, suggestions, setSuggestionStatus, dashboard }

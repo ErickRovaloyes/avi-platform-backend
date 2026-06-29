@@ -307,4 +307,31 @@ async function getSuggestions(accId, agId) {
   }))
 }
 
-module.exports = { run, getStatus, getSuggestions, setSuggestionStatus, activePromptVersion }
+// ── Dashboard de indicadores (Fase 4) ──────────────────────────────────────────
+async function getDashboard(accId, agId) {
+  const where = 'account_id=? AND agent_id=?'; const p = [accId, agId]
+  const [[tot]] = await pool.query(`SELECT COUNT(*) AS total, SUM(resolved) AS resolved, AVG(confidence) AS avgConf, SUM(abandoned) AS abandoned, SUM(CASE WHEN fail_reason IS NOT NULL THEN 1 ELSE 0 END) AS failed FROM optimizer_convo_index WHERE ${where}`, p)
+  const [byTopic] = await pool.query(`SELECT topic, COUNT(*) AS total, SUM(resolved) AS resolved, SUM(abandoned) AS abandoned, SUM(CASE WHEN fail_reason IS NOT NULL THEN 1 ELSE 0 END) AS failed FROM optimizer_convo_index WHERE ${where} GROUP BY topic ORDER BY failed DESC, total DESC LIMIT 12`, p)
+  const [byFail] = await pool.query(`SELECT fail_reason AS reason, COUNT(*) AS n FROM optimizer_convo_index WHERE ${where} AND fail_reason IS NOT NULL GROUP BY fail_reason ORDER BY n DESC`, p)
+  const [byVersion] = await pool.query(`SELECT prompt_version AS version, COUNT(*) AS total, SUM(CASE WHEN fail_reason IS NOT NULL THEN 1 ELSE 0 END) AS failed FROM optimizer_convo_index WHERE ${where} GROUP BY prompt_version ORDER BY total DESC LIMIT 8`, p)
+  const [sugTop] = await pool.query(`SELECT code, title, frequency, severity, status, problem_type FROM optimizer_suggestions WHERE ${where} ORDER BY frequency DESC LIMIT 8`, p)
+  const [sugByStatus] = await pool.query(`SELECT status, COUNT(*) AS n FROM optimizer_suggestions WHERE ${where} GROUP BY status`, p)
+  const [runs] = await pool.query(`SELECT started_at, finished_at, convos_processed, suggestions_new FROM optimizer_runs WHERE ${where} AND status='done' ORDER BY started_at DESC LIMIT 10`, p)
+  const sugStatus = {}; for (const r of sugByStatus) sugStatus[r.status] = r.n
+  const n = v => Number(v) || 0
+  return {
+    kpis: {
+      total: n(tot?.total), resolved: n(tot?.resolved), failed: n(tot?.failed), abandoned: n(tot?.abandoned),
+      resolutionRate: tot?.total ? Math.round((n(tot.resolved) / n(tot.total)) * 100) : 0,
+      avgConfidence: tot?.avgConf != null ? Number(Number(tot.avgConf).toFixed(2)) : null,
+    },
+    byTopic: byTopic.map(t => ({ topic: t.topic || 'general', total: n(t.total), resolved: n(t.resolved), failed: n(t.failed), abandoned: n(t.abandoned) })),
+    byFail: byFail.map(f => ({ reason: f.reason, n: n(f.n) })),
+    byVersion: byVersion.map(v => ({ version: v.version, total: n(v.total), failed: n(v.failed) })),
+    suggestionsTop: sugTop,
+    suggestionsByStatus: sugStatus,
+    runs: runs.reverse().map(r => ({ at: r.finished_at || r.started_at, convos: n(r.convos_processed), newSug: n(r.suggestions_new) })),
+  }
+}
+
+module.exports = { run, getStatus, getSuggestions, setSuggestionStatus, getDashboard, activePromptVersion }
