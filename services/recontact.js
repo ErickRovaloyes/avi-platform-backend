@@ -17,26 +17,47 @@ const { callAI, detectProvider, resolveProviderKey } = require('../controllers/p
 
 const SCAN_LIMIT = 50
 
-const DEFAULTS = { enabled: false, delayMinutes: 1440, mode: 'intelligent', flowId: null, maxRecontacts: 1 }
+// La config es una SECUENCIA de pasos: cada paso tiene su tiempo de espera (desde
+// la última actividad) y su tipo (IA o flujo). `repeat` = al terminar la secuencia
+// vuelve a empezar; `maxPerConversation` = tope total de recontactos por conversación.
+const DEFAULT_STEP = { delayMinutes: 1440, mode: 'intelligent', flowId: null }
+
+function normalizeStep(s) {
+  return {
+    delayMinutes: Math.max(5, Math.round(Number(s?.delayMinutes) || 1440)),
+    mode: s?.mode === 'flow' ? 'flow' : 'intelligent',
+    flowId: s?.flowId || null,
+  }
+}
+function normalize(c) {
+  if (Array.isArray(c?.steps)) {
+    const steps = c.steps.map(normalizeStep).slice(0, 10)
+    return {
+      enabled: !!c.enabled,
+      steps: steps.length ? steps : [{ ...DEFAULT_STEP }],
+      repeat: !!c.repeat,
+      maxPerConversation: Math.max(1, Math.min(50, Math.round(Number(c.maxPerConversation) || steps.length || 1))),
+    }
+  }
+  // Compatibilidad con el formato antiguo (un solo recontacto).
+  if (c && (c.delayMinutes || c.mode)) {
+    return { enabled: !!c.enabled, steps: [normalizeStep({ delayMinutes: c.delayMinutes, mode: c.mode, flowId: c.flowId })], repeat: false, maxPerConversation: Math.max(1, Math.round(Number(c.maxRecontacts) || 1)) }
+  }
+  return { enabled: false, steps: [{ ...DEFAULT_STEP }], repeat: false, maxPerConversation: 3 }
+}
 
 async function getConfig(accId) {
   const [[a]] = await pool.query('SELECT recontact FROM accounts WHERE id=?', [accId])
-  return { ...DEFAULTS, ...(parseJ(a?.recontact, null) || {}) }
+  return normalize(parseJ(a?.recontact, null))
 }
 async function saveConfig(accId, cfg) {
-  const clean = {
-    enabled: !!cfg.enabled,
-    delayMinutes: Math.max(5, Number(cfg.delayMinutes) || 1440),
-    mode: cfg.mode === 'flow' ? 'flow' : 'intelligent',
-    flowId: cfg.flowId || null,
-    maxRecontacts: Math.max(1, Math.min(5, Number(cfg.maxRecontacts) || 1)),
-  }
+  const clean = normalize(cfg)
   await pool.query('UPDATE accounts SET recontact=? WHERE id=?', [JSON.stringify(clean), accId])
   return clean
 }
 function publicConfig(raw) {
-  const c = parseJ(raw, null)
-  return c ? { enabled: !!c.enabled, mode: c.mode, delayMinutes: c.delayMinutes, maxRecontacts: c.maxRecontacts } : { enabled: false }
+  const c = normalize(parseJ(raw, null))
+  return { enabled: c.enabled, steps: c.steps.length, repeat: c.repeat, maxPerConversation: c.maxPerConversation }
 }
 
 // Genera, con IA, un mensaje de recontacto analizando dónde quedó la conversación.
@@ -57,7 +78,7 @@ async function generateRecontactMessage(accId, agId, convId, account) {
   } catch (e) { console.warn('[recontact LLM]', e.message); return null }
 }
 
-async function processConversation(accId, conv, cfg, account) {
+async function processConversation(accId, conv, step, account) {
   const agId = conv.agent_id
   const agent = account.agents?.find(a => a.id === agId)
   if (!agent) return
@@ -65,8 +86,8 @@ async function processConversation(accId, conv, cfg, account) {
   const outbound = buildOutbound(agent, conv.channel_type, conv.channel_id, to)
   if (!outbound) return  // canal no disponible para enviar
 
-  if (cfg.mode === 'flow' && cfg.flowId) {
-    await executeFlow({ flowId: cfg.flowId, accId, agId, convId: conv.id, triggerContext: { recontact: true, motivo: 'recontacto_automatico' }, outbound })
+  if (step.mode === 'flow' && step.flowId) {
+    await executeFlow({ flowId: step.flowId, accId, agId, convId: conv.id, triggerContext: { recontact: true, motivo: 'recontacto_automatico' }, outbound })
   } else {
     const text = await generateRecontactMessage(accId, agId, conv.id, account)
     if (!text) return
@@ -80,25 +101,41 @@ async function tick() {
     const [accs] = await pool.query('SELECT id, recontact FROM accounts WHERE recontact IS NOT NULL')
     const now = Date.now()
     for (const a of accs) {
-      const cfg = parseJ(a.recontact, null)
-      if (!cfg?.enabled) continue
-      const cutoff = now - (cfg.delayMinutes || 1440) * 60000
-      const max = cfg.maxRecontacts || 1
+      const cfg = normalize(parseJ(a.recontact, null))
+      if (!cfg.enabled || !cfg.steps.length) continue
+      const minDelay = Math.min(...cfg.steps.map(s => s.delayMinutes))
+      const cutoff = now - minDelay * 60000
+      // Prefiltro: inactivas más que el paso más corto, y que aún no llegaron al tope
+      // O donde el cliente respondió tras el último recontacto (recontact_at < updated_at → reinicio).
       const [convos] = await pool.query(
-        `SELECT id, agent_id, channel_type, channel_id, wa_from, messenger_from, ig_from FROM conversations
+        `SELECT id, agent_id, channel_type, channel_id, wa_from, messenger_from, ig_from, updated_at, recontact_at, recontact_count FROM conversations
          WHERE account_id=? AND ai_enabled=1 AND channel_type IN ('whatsapp','messenger','instagram')
-           AND updated_at <= ? AND recontact_count < ? AND (recontact_at IS NULL OR recontact_at < updated_at)
+           AND updated_at <= ? AND (recontact_count < ? OR recontact_at IS NULL OR recontact_at < updated_at)
          ORDER BY updated_at ASC LIMIT ?`,
-        [a.id, cutoff, max, SCAN_LIMIT]
+        [a.id, cutoff, cfg.maxPerConversation, SCAN_LIMIT]
       )
       if (!convos.length) continue
       const account = await store.loadAccount(a.id)
       if (!account) continue
       for (const conv of convos) {
-        // Solo si el cliente fue quien dejó de responder (el último mensaje es del agente/IA).
+        // Solo si el cliente fue quien dejó de responder (último mensaje del agente/IA).
         const [[last]] = await pool.query('SELECT sender FROM messages WHERE conversation_id=? ORDER BY ts DESC LIMIT 1', [conv.id])
         if (!last || last.sender === 'user') continue
-        try { await processConversation(a.id, conv, cfg, account) } catch (e) { console.warn('[recontact conv]', e.message) }
+
+        let count = conv.recontact_count || 0
+        // Reinicio de la secuencia si el cliente respondió DESPUÉS del último recontacto.
+        if (count > 0 && conv.recontact_at) {
+          const [[lu]] = await pool.query("SELECT ts FROM messages WHERE conversation_id=? AND sender='user' ORDER BY ts DESC LIMIT 1", [conv.id])
+          if (lu && lu.ts > conv.recontact_at) { count = 0; await pool.query('UPDATE conversations SET recontact_count=0, recontact_at=NULL WHERE id=?', [conv.id]) }
+        }
+        if (count >= cfg.maxPerConversation) continue
+        // Paso actual de la secuencia (repite o termina según config).
+        const stepIndex = cfg.repeat ? (count % cfg.steps.length) : count
+        if (stepIndex >= cfg.steps.length) continue   // secuencia terminada sin repetición
+        const step = cfg.steps[stepIndex]
+        if ((conv.updated_at || 0) > now - step.delayMinutes * 60000) continue  // aún no toca este paso
+
+        try { await processConversation(a.id, conv, step, account) } catch (e) { console.warn('[recontact conv]', e.message) }
       }
     }
   } catch (e) { console.warn('[recontact tick]', e.message) }
