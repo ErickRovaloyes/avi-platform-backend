@@ -98,6 +98,7 @@ const webhookRoutes       = require('./routes/webhooks.routes')
 const metaCatalogRoutes   = require('./routes/metaCatalog.routes')
 const metaPagesRoutes     = require('./routes/metaPages.routes')
 const optimizerRoutes     = require('./routes/promptOptimizer.routes')
+const recontactRoutes     = require('./routes/recontact.routes')
 const promptGenRoutes     = require('./routes/promptGenerator.routes')
 const promptHistoryRoutes = require('./routes/promptHistory.routes')
 const mediaRoutes         = require('./routes/media.routes')
@@ -167,6 +168,7 @@ app.use('/api',                webhookRoutes)
 app.use('/api',                metaCatalogRoutes)
 app.use('/api',                metaPagesRoutes)
 app.use('/api',                optimizerRoutes)
+app.use('/api',                recontactRoutes)
 
 // ── Auto-migrate DB columns added after initial schema ────────────────────────
 ;(async () => {
@@ -240,6 +242,10 @@ app.use('/api',                optimizerRoutes)
        INDEX idx_orun_agent (account_id, agent_id, started_at)
      )`,
     "ALTER TABLE optimizer_suggestions ADD COLUMN code VARCHAR(20)",
+    // Recontactos inteligentes (re-enganche de conversaciones abandonadas).
+    "ALTER TABLE accounts          ADD COLUMN recontact JSON",
+    "ALTER TABLE conversations     ADD COLUMN recontact_at BIGINT",
+    "ALTER TABLE conversations     ADD COLUMN recontact_count INT DEFAULT 0",
     // Sistema de módulos por cuenta (gating de funcionalidades).
     "ALTER TABLE accounts          ADD COLUMN modules JSON",
     "ALTER TABLE account_types     ADD COLUMN modules JSON",
@@ -967,6 +973,8 @@ app.use('/api',                optimizerRoutes)
     await subs.seedDefaults()
     subs.startWorker()
   } catch (e) { console.warn('[subscriptions] no iniciado:', e.message) }
+  // Recontactos inteligentes: re-engancha conversaciones abandonadas.
+  try { require('./services/recontact').startWorker() } catch (e) { console.warn('[recontact] worker no iniciado:', e.message) }
   // Bucle de recordatorios de citas por WhatsApp
   try { require('./services/calendarReminders').start() } catch (e) { console.warn('[reminders] no iniciado:', e.message) }
   // Recuperación de carritos / confirmación de pago de la tienda (Woo + Shopify)
