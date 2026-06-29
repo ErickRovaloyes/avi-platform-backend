@@ -20,14 +20,52 @@ const SCAN_LIMIT = 50
 // La config es una SECUENCIA de pasos: cada paso tiene su tiempo de espera (desde
 // la última actividad) y su tipo (IA o flujo). `repeat` = al terminar la secuencia
 // vuelve a empezar; `maxPerConversation` = tope total de recontactos por conversación.
-const DEFAULT_STEP = { delayMinutes: 1440, mode: 'intelligent', flowId: null }
+const DEFAULT_STEP = { delayMinutes: 1440, mode: 'intelligent', flowId: null, rounds: { mode: 'every' } }
 
+// `rounds`: en qué VUELTAS (repeticiones de la secuencia) se ejecuta el paso.
+//   every      → en todas las vueltas
+//   only  + n  → solo en la vuelta n (1 = primera)
+//   from  + n  → desde la vuelta n en adelante
+function normalizeRounds(r) {
+  const mode = (r?.mode === 'only' || r?.mode === 'from') ? r.mode : 'every'
+  if (mode === 'every') return { mode: 'every' }
+  return { mode, n: Math.max(1, Math.round(Number(r?.n) || 1)) }
+}
 function normalizeStep(s) {
   return {
     delayMinutes: Math.max(5, Math.round(Number(s?.delayMinutes) || 1440)),
     mode: s?.mode === 'flow' ? 'flow' : 'intelligent',
     flowId: s?.flowId || null,
+    instructions: String(s?.instructions || '').slice(0, 600),  // instrucciones extra opcionales para la IA
+    rounds: normalizeRounds(s?.rounds),
   }
+}
+
+// ¿El paso aplica en esta vuelta (round 0-index)?
+function stepAppliesToRound(step, round0) {
+  const ur = round0 + 1
+  const r = step.rounds || { mode: 'every' }
+  if (r.mode === 'only') return ur === r.n
+  if (r.mode === 'from') return ur >= r.n
+  return true
+}
+
+// Devuelve la k-ésima ocurrencia (0-index) de la secuencia teniendo en cuenta las
+// vueltas en que aplica cada paso, o null si la secuencia ya no produce más.
+function nthOccurrence(steps, repeat, k) {
+  const hasOpenEnded = steps.some(s => { const m = s.rounds?.mode; return !m || m === 'every' || m === 'from' })
+  const maxOnly = Math.max(1, 0, ...steps.filter(s => s.rounds?.mode === 'only').map(s => s.rounds.n))
+  const roundLimit = repeat ? (hasOpenEnded ? 2000 : maxOnly) : 1
+  let idx = 0
+  for (let round = 0; round < roundLimit; round++) {
+    for (let s = 0; s < steps.length; s++) {
+      if (stepAppliesToRound(steps[s], round)) {
+        if (idx === k) return { step: steps[s], round, stepIndex: s }
+        idx++
+      }
+    }
+  }
+  return null
 }
 function normalize(c) {
   if (Array.isArray(c?.steps)) {
@@ -61,7 +99,7 @@ function publicConfig(raw) {
 }
 
 // Genera, con IA, un mensaje de recontacto analizando dónde quedó la conversación.
-async function generateRecontactMessage(accId, agId, convId, account) {
+async function generateRecontactMessage(accId, agId, convId, account, extraInstructions) {
   const agent = account.agents?.find(a => a.id === agId)
   const active = agent?.prompts?.find(p => p.isActive) || agent?.prompts?.[0]
   const model = active?.model || 'gpt-4o-mini'
@@ -70,7 +108,8 @@ async function generateRecontactMessage(accId, agId, convId, account) {
   if (!key) return null
   const [rows] = await pool.query('SELECT sender, content FROM messages WHERE conversation_id=? ORDER BY ts DESC LIMIT 8', [convId])
   const history = rows.reverse().map(m => `${m.sender === 'user' ? 'Cliente' : 'Agente'}: ${(m.content || '').slice(0, 300)}`).join('\n')
-  const sys = `Eres ${agent?.name || 'un asistente'} de atención al cliente. El cliente dejó de responder hace un rato. Redacta UN solo mensaje breve, cálido y natural para retomar la conversación EXACTAMENTE donde quedó (haz referencia a lo último que se habló) e invítalo a continuar. No te disculpes en exceso, no inventes datos ni precios. Máximo 2 frases. Responde SOLO con el mensaje, sin comillas.`
+  const extra = String(extraInstructions || '').trim()
+  const sys = `Eres ${agent?.name || 'un asistente'} de atención al cliente. El cliente dejó de responder hace un rato. Redacta UN solo mensaje breve, cálido y natural para retomar la conversación EXACTAMENTE donde quedó (haz referencia a lo último que se habló) e invítalo a continuar. No te disculpes en exceso, no inventes datos ni precios. Máximo 2 frases. Responde SOLO con el mensaje, sin comillas.${extra ? `\n\nINSTRUCCIONES ADICIONALES (tienen prioridad): ${extra}` : ''}`
   try {
     const r = await callAI({ provider, model, apiKey: key, systemPrompt: sys, userPrompt: `Conversación hasta ahora:\n${history}\n\nMensaje de recontacto:`, maxTokens: 160, temperature: 0.6 })
     try { require('../controllers/analytics.controller').recordUsageInternal({ accId, agentId: agId, conversationId: convId, provider, model, promptTokens: r.usage?.promptTokens || 0, completionTokens: r.usage?.completionTokens || 0, source: 'recontact' }) } catch {}
@@ -89,7 +128,7 @@ async function processConversation(accId, conv, step, account) {
   if (step.mode === 'flow' && step.flowId) {
     await executeFlow({ flowId: step.flowId, accId, agId, convId: conv.id, triggerContext: { recontact: true, motivo: 'recontacto_automatico' }, outbound })
   } else {
-    const text = await generateRecontactMessage(accId, agId, conv.id, account)
+    const text = await generateRecontactMessage(accId, agId, conv.id, account, step.instructions)
     if (!text) return
     await sendBotMsg({ accId, agId, convId: conv.id, _outbound: outbound }, text, { recontact: true })
   }
@@ -129,10 +168,10 @@ async function tick() {
           if (lu && lu.ts > conv.recontact_at) { count = 0; await pool.query('UPDATE conversations SET recontact_count=0, recontact_at=NULL WHERE id=?', [conv.id]) }
         }
         if (count >= cfg.maxPerConversation) continue
-        // Paso actual de la secuencia (repite o termina según config).
-        const stepIndex = cfg.repeat ? (count % cfg.steps.length) : count
-        if (stepIndex >= cfg.steps.length) continue   // secuencia terminada sin repetición
-        const step = cfg.steps[stepIndex]
+        // Paso actual según las vueltas en que aplica cada paso (repite o termina).
+        const occ = nthOccurrence(cfg.steps, cfg.repeat, count)
+        if (!occ) continue   // secuencia terminada (no hay más ocurrencias)
+        const step = occ.step
         if ((conv.updated_at || 0) > now - step.delayMinutes * 60000) continue  // aún no toca este paso
 
         try { await processConversation(a.id, conv, step, account) } catch (e) { console.warn('[recontact conv]', e.message) }
