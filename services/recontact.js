@@ -20,7 +20,11 @@ const SCAN_LIMIT = 50
 // La config es una SECUENCIA de pasos: cada paso tiene su tiempo de espera (desde
 // la última actividad) y su tipo (IA o flujo). `repeat` = al terminar la secuencia
 // vuelve a empezar; `maxPerConversation` = tope total de recontactos por conversación.
-const DEFAULT_STEP = { delayMinutes: 1440, mode: 'intelligent', flowId: null, rounds: { mode: 'every' } }
+// Por defecto el recontacto dispara el Flujo de entrada principal del agente
+// (flowId null = usar el flujo de entrada principal); el texto libre de IA no se
+// puede entregar en WhatsApp fuera de la ventana de 24 h, así que un flujo (que
+// puede usar plantilla) es el mecanismo fiable para re-enganchar.
+const DEFAULT_STEP = { delayMinutes: 1440, mode: 'flow', flowId: null, instructions: '', rounds: { mode: 'every' } }
 
 // `rounds`: en qué VUELTAS (repeticiones de la secuencia) se ejecuta el paso.
 //   every       → en todas las vueltas
@@ -39,9 +43,9 @@ function normalizeRounds(r) {
 function normalizeStep(s) {
   return {
     delayMinutes: Math.max(5, Math.round(Number(s?.delayMinutes) || 1440)),
-    mode: s?.mode === 'flow' ? 'flow' : 'intelligent',
-    flowId: s?.flowId || null,
-    instructions: String(s?.instructions || '').slice(0, 600),  // instrucciones extra opcionales para la IA
+    mode: s?.mode === 'intelligent' ? 'intelligent' : 'flow',  // por defecto: flujo
+    flowId: s?.flowId || null,  // null en modo flujo = Flujo de entrada principal
+    instructions: String(s?.instructions || '').slice(0, 600),  // IA: instrucciones extra · flujo: nota opcional
     rounds: normalizeRounds(s?.rounds),
   }
 }
@@ -133,8 +137,16 @@ async function processConversation(accId, conv, step, account) {
   const outbound = buildOutbound(agent, conv.channel_type, conv.channel_id, to)
   if (!outbound) return  // canal no disponible para enviar
 
-  if (step.mode === 'flow' && step.flowId) {
-    await executeFlow({ flowId: step.flowId, accId, agId, convId: conv.id, triggerContext: { recontact: true, motivo: 'recontacto_automatico' }, outbound })
+  if (step.mode === 'flow') {
+    // flowId explícito o, por defecto, el Flujo de entrada principal del agente.
+    const flowId = step.flowId || agent.fallbackFlowId || null
+    if (!flowId) return  // no hay flujo de entrada principal configurado
+    const nota = String(step.instructions || '').trim()
+    await executeFlow({
+      flowId, accId, agId, convId: conv.id,
+      triggerContext: { recontact: true, motivo: 'recontacto_automatico', nota, message: nota, _lastUserMessage: '' },
+      outbound,
+    })
   } else {
     const text = await generateRecontactMessage(accId, agId, conv.id, account, step.instructions)
     if (!text) return
