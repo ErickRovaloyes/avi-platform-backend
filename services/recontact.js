@@ -42,7 +42,7 @@ function normalizeRounds(r) {
 }
 function normalizeStep(s) {
   return {
-    delayMinutes: Math.max(5, Math.round(Number(s?.delayMinutes) || 1440)),
+    delayMinutes: Math.max(1, Math.round(Number(s?.delayMinutes) || 1440)),
     mode: s?.mode === 'intelligent' ? 'intelligent' : 'flow',  // por defecto: flujo
     flowId: s?.flowId || null,  // null en modo flujo = Flujo de entrada principal
     instructions: String(s?.instructions || '').slice(0, 600),  // IA: instrucciones extra · flujo: nota opcional
@@ -203,7 +203,10 @@ async function tick() {
 let _timer = null
 function startWorker() {
   if (_timer) return
-  _timer = setInterval(() => tick().catch(() => {}), 10 * 60 * 1000) // cada 10 min
+  // Cada minuto: el mínimo de espera de un paso es 1 min, así que el escaneo debe
+  // ser igual de fino para no retrasar los recontactos cortos. El prefiltro es
+  // selectivo (solo cuentas con recontact y convos ya vencidas), así que es barato.
+  _timer = setInterval(() => tick().catch(() => {}), 60 * 1000)
   _timer.unref?.()
   setTimeout(() => tick().catch(() => {}), 30000) // primer pase a los 30s
 }
