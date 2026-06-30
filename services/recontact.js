@@ -17,6 +17,13 @@ const { callAI, detectProvider, resolveProviderKey } = require('../controllers/p
 
 const SCAN_LIMIT = 50
 
+// Canales sobre los que aplican los recontactos. Los EXTERNAL se entregan por la
+// API del proveedor (Meta) y requieren credenciales + destino; webchat y test son
+// internos: el mensaje se persiste y llega al navegador por socket (sin API).
+const RECONTACT_CHANNELS = ['whatsapp', 'messenger', 'instagram', 'webchat', 'test']
+const EXTERNAL_CHANNELS = new Set(['whatsapp', 'messenger', 'instagram'])
+const CH_IN = RECONTACT_CHANNELS.map(() => '?').join(',')  // placeholders para el IN (...)
+
 // La config es una SECUENCIA de pasos: cada paso tiene su tiempo de espera (desde
 // la última actividad) y su tipo (IA o flujo). `repeat` = al terminar la secuencia
 // vuelve a empezar; `maxPerConversation` = tope total de recontactos por conversación.
@@ -133,9 +140,12 @@ async function processConversation(accId, conv, step, account) {
   const agId = conv.agent_id
   const agent = account.agents?.find(a => a.id === agId)
   if (!agent) return
+  const isExternal = EXTERNAL_CHANNELS.has(conv.channel_type)
   const to = conv.wa_from || conv.messenger_from || conv.ig_from
-  const outbound = buildOutbound(agent, conv.channel_type, conv.channel_id, to)
-  if (!outbound) return  // canal no disponible para enviar
+  // Externos (WhatsApp/Messenger/IG): se entregan por API → necesitan outbound.
+  // Webchat/test: outbound null; el mensaje se persiste y llega por socket.
+  const outbound = isExternal ? buildOutbound(agent, conv.channel_type, conv.channel_id, to) : null
+  if (isExternal && !outbound) return  // canal externo sin credenciales/destino
 
   if (step.mode === 'flow') {
     // flowId explícito o, por defecto, el Flujo de entrada principal del agente.
@@ -166,10 +176,10 @@ async function diagnose(accId) {
   out.minDelayMin = minDelay
   // Conversaciones de los canales soportados, recientes, para explicar su estado.
   const [convos] = await pool.query(
-    "SELECT id, agent_id, channel_type, channel_id, wa_from, messenger_from, ig_from, guest_name, ai_enabled, updated_at, recontact_at, recontact_count FROM conversations WHERE account_id=? AND channel_type IN ('whatsapp','messenger','instagram') ORDER BY updated_at DESC LIMIT 15",
-    [accId]
+    `SELECT id, agent_id, channel_type, channel_id, wa_from, messenger_from, ig_from, guest_name, ai_enabled, updated_at, recontact_at, recontact_count FROM conversations WHERE account_id=? AND channel_type IN (${CH_IN}) ORDER BY updated_at DESC LIMIT 15`,
+    [accId, ...RECONTACT_CHANNELS]
   )
-  if (!convos.length) { out.note = 'No hay conversaciones de WhatsApp/Messenger/Instagram en esta cuenta.'; return out }
+  if (!convos.length) { out.note = 'No hay conversaciones recontactables (WhatsApp, Messenger, Instagram, webchat o pruebas) en esta cuenta.'; return out }
   const account = await store.loadAccount(accId)
   for (const conv of convos) {
     const label = `${conv.guest_name || conv.id} · ${conv.channel_type}`
@@ -184,8 +194,12 @@ async function diagnose(accId) {
     const agent = account?.agents?.find(a => a.id === conv.agent_id)
     if (!agent) reasons.push('agente no encontrado')
     else {
-      const to = conv.wa_from || conv.messenger_from || conv.ig_from
-      if (!buildOutbound(agent, conv.channel_type, conv.channel_id, to)) reasons.push(`canal "${conv.channel_type}" no enviable (faltan credenciales del canal o identificador del cliente)`)
+      // Solo los canales externos (Meta) requieren credenciales/destino; webchat y
+      // test se entregan por socket sin API.
+      if (EXTERNAL_CHANNELS.has(conv.channel_type)) {
+        const to = conv.wa_from || conv.messenger_from || conv.ig_from
+        if (!buildOutbound(agent, conv.channel_type, conv.channel_id, to)) reasons.push(`canal "${conv.channel_type}" no enviable (faltan credenciales del canal o identificador del cliente)`)
+      }
       const step0 = cfg.steps[0]
       if (step0?.mode === 'flow' && !step0.flowId && !agent.fallbackFlowId) reasons.push('paso por defecto = Flujo de entrada principal, pero el agente NO tiene flujo de entrada configurado')
     }
@@ -205,25 +219,28 @@ async function testNow(accId, convId) {
     const [[c]] = await pool.query('SELECT id, agent_id, channel_type, channel_id, wa_from, messenger_from, ig_from, guest_name FROM conversations WHERE id=? AND account_id=?', [convId, accId])
     conv = c
   } else {
-    const [[c]] = await pool.query("SELECT id, agent_id, channel_type, channel_id, wa_from, messenger_from, ig_from, guest_name FROM conversations WHERE account_id=? AND channel_type IN ('whatsapp','messenger','instagram') ORDER BY updated_at DESC LIMIT 1", [accId])
+    const [[c]] = await pool.query(`SELECT id, agent_id, channel_type, channel_id, wa_from, messenger_from, ig_from, guest_name FROM conversations WHERE account_id=? AND channel_type IN (${CH_IN}) ORDER BY updated_at DESC LIMIT 1`, [accId, ...RECONTACT_CHANNELS])
     conv = c
   }
-  if (!conv) return { ok: false, reason: 'No hay conversaciones de WhatsApp/Messenger/Instagram para probar.' }
+  if (!conv) return { ok: false, reason: 'No hay conversaciones recontactables (WhatsApp, Messenger, Instagram, webchat o pruebas) para probar.' }
   const label = `${conv.guest_name || conv.id} · ${conv.channel_type}`
   const agent = account.agents?.find(a => a.id === conv.agent_id)
   if (!agent) return { ok: false, conv: label, reason: 'No se encontró el agente de la conversación.' }
+  const isExternal = EXTERNAL_CHANNELS.has(conv.channel_type)
   const to = conv.wa_from || conv.messenger_from || conv.ig_from
-  const outbound = buildOutbound(agent, conv.channel_type, conv.channel_id, to)
-  if (!outbound) return { ok: false, conv: label, reason: `Canal "${conv.channel_type}" no enviable: el agente no tiene ese canal conectado con credenciales (token/ID) o falta el identificador del cliente (${to || 'vacío'}).` }
+  // Externos: requieren outbound (API). Webchat/test: se entregan por socket (outbound null).
+  const outbound = isExternal ? buildOutbound(agent, conv.channel_type, conv.channel_id, to) : null
+  if (isExternal && !outbound) return { ok: false, conv: label, reason: `Canal "${conv.channel_type}" no enviable: el agente no tiene ese canal conectado con credenciales (token/ID) o falta el identificador del cliente (${to || 'vacío'}).` }
   const step = cfg.steps[0] || { mode: 'flow', flowId: null, instructions: '' }
 
   if (step.mode === 'flow') {
     const flowId = step.flowId || agent.fallbackFlowId || null
     if (!flowId) return { ok: false, conv: label, mode: 'flow', reason: 'El paso usa "Flujo de entrada principal" pero el agente no tiene un flujo de entrada configurado, ni elegiste un flujo específico. Configura el flujo de entrada del agente o elige un flujo en el paso.' }
     const nota = String(step.instructions || '').trim()
+    const waNote = conv.channel_type === 'whatsapp' ? ' ⚠ En WhatsApp, si pasaron 24 h sin respuesta del cliente, el mensaje solo se ENTREGA si el flujo envía una PLANTILLA aprobada (el texto libre lo bloquea Meta).' : ''
     try {
       await executeFlow({ flowId, accId, agId: conv.agent_id, convId: conv.id, triggerContext: { recontact: true, motivo: 'prueba_recontacto', nota, message: nota, _lastUserMessage: '' }, outbound })
-      return { ok: true, conv: label, mode: 'flow', flowId, note: `Flujo ejecutado en "${label}". Revisa el chat. ⚠ En WhatsApp, si pasaron 24 h sin respuesta del cliente, el mensaje solo se ENTREGA si el flujo envía una PLANTILLA aprobada (el texto libre lo bloquea Meta).` }
+      return { ok: true, conv: label, mode: 'flow', flowId, note: `Flujo ejecutado en "${label}". Revisa el chat.${waNote}` }
     } catch (e) {
       return { ok: false, conv: label, mode: 'flow', flowId, reason: `El flujo falló al ejecutarse: ${e.message}` }
     }
@@ -232,8 +249,11 @@ async function testNow(accId, convId) {
   const text = await generateRecontactMessage(accId, conv.agent_id, conv.id, account, step.instructions)
   if (!text) return { ok: false, conv: label, mode: 'ia', reason: 'La IA no generó texto. Suele faltar la API key del proveedor del modelo del prompt activo (configúrala en la cuenta o en el Super Panel).' }
   const res = await sendBotMsg({ accId, agId: conv.agent_id, convId: conv.id, _outbound: outbound }, text, { recontact: true })
-  if (res?.status === 'failed') return { ok: false, conv: label, mode: 'ia', text, reason: `El canal rechazó el envío: ${res.sendError}. ⚠ En WhatsApp, fuera de la ventana de 24 h solo se permiten PLANTILLAS, no texto libre — usa el modo "flujo" con una plantilla.` }
-  return { ok: true, conv: label, mode: 'ia', text, note: `Mensaje enviado a "${label}".` }
+  if (res?.status === 'failed') {
+    const waNote = conv.channel_type === 'whatsapp' ? ' ⚠ En WhatsApp, fuera de la ventana de 24 h solo se permiten PLANTILLAS, no texto libre — usa el modo "flujo" con una plantilla.' : ''
+    return { ok: false, conv: label, mode: 'ia', text, reason: `El canal rechazó el envío: ${res.sendError}.${waNote}` }
+  }
+  return { ok: true, conv: label, mode: 'ia', text, note: `Mensaje enviado a "${label}"${isExternal ? '' : ' (se mostrará en el chat web cuando el visitante lo tenga abierto o regrese)'}.` }
 }
 
 async function tick() {
@@ -249,10 +269,10 @@ async function tick() {
       // O donde el cliente respondió tras el último recontacto (recontact_at < updated_at → reinicio).
       const [convos] = await pool.query(
         `SELECT id, agent_id, channel_type, channel_id, wa_from, messenger_from, ig_from, updated_at, recontact_at, recontact_count FROM conversations
-         WHERE account_id=? AND ai_enabled=1 AND channel_type IN ('whatsapp','messenger','instagram')
+         WHERE account_id=? AND ai_enabled=1 AND channel_type IN (${CH_IN})
            AND updated_at <= ? AND (recontact_count < ? OR recontact_at IS NULL OR recontact_at < updated_at)
          ORDER BY updated_at ASC LIMIT ?`,
-        [a.id, cutoff, cfg.maxPerConversation, SCAN_LIMIT]
+        [a.id, ...RECONTACT_CHANNELS, cutoff, cfg.maxPerConversation, SCAN_LIMIT]
       )
       if (!convos.length) continue
       const account = await store.loadAccount(a.id)
