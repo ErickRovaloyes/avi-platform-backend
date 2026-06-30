@@ -155,6 +155,87 @@ async function processConversation(accId, conv, step, account) {
   await pool.query('UPDATE conversations SET recontact_at=?, recontact_count=recontact_count+1 WHERE id=?', [Date.now(), conv.id])
 }
 
+// ── Diagnóstico: ¿por qué (no) se recontacta? Dry-run, no envía nada. ─────────
+async function diagnose(accId) {
+  const cfg = await getConfig(accId)
+  const now = Date.now()
+  const out = { enabled: cfg.enabled, steps: cfg.steps.length, repeat: cfg.repeat, maxPerConversation: cfg.maxPerConversation, candidates: [] }
+  if (!cfg.enabled) { out.note = 'Los recontactos están DESACTIVADOS. Actívalos para que el worker los procese.'; return out }
+  const minDelay = Math.min(...cfg.steps.map(s => s.delayMinutes))
+  const cutoff = now - minDelay * 60000
+  out.minDelayMin = minDelay
+  // Conversaciones de los canales soportados, recientes, para explicar su estado.
+  const [convos] = await pool.query(
+    "SELECT id, agent_id, channel_type, channel_id, wa_from, messenger_from, ig_from, guest_name, ai_enabled, updated_at, recontact_at, recontact_count FROM conversations WHERE account_id=? AND channel_type IN ('whatsapp','messenger','instagram') ORDER BY updated_at DESC LIMIT 15",
+    [accId]
+  )
+  if (!convos.length) { out.note = 'No hay conversaciones de WhatsApp/Messenger/Instagram en esta cuenta.'; return out }
+  const account = await store.loadAccount(accId)
+  for (const conv of convos) {
+    const label = `${conv.guest_name || conv.id} · ${conv.channel_type}`
+    const reasons = []
+    if (!conv.ai_enabled) reasons.push('IA del chat APAGADA (ai_enabled=0)')
+    const [[last]] = await pool.query('SELECT sender FROM messages WHERE conversation_id=? ORDER BY ts DESC LIMIT 1', [conv.id])
+    if (!last) reasons.push('sin mensajes')
+    else if (last.sender === 'user') reasons.push('el ÚLTIMO mensaje es del cliente (solo se recontacta cuando el último fue del agente/IA)')
+    if ((conv.updated_at || 0) > cutoff) reasons.push(`aún no cumple la espera mínima (${minDelay} min desde la última actividad)`)
+    const count = conv.recontact_count || 0
+    if (count >= cfg.maxPerConversation && conv.recontact_at && conv.recontact_at >= (conv.updated_at || 0)) reasons.push(`alcanzó el máximo de recontactos (${cfg.maxPerConversation})`)
+    const agent = account?.agents?.find(a => a.id === conv.agent_id)
+    if (!agent) reasons.push('agente no encontrado')
+    else {
+      const to = conv.wa_from || conv.messenger_from || conv.ig_from
+      if (!buildOutbound(agent, conv.channel_type, conv.channel_id, to)) reasons.push(`canal "${conv.channel_type}" no enviable (faltan credenciales del canal o identificador del cliente)`)
+      const step0 = cfg.steps[0]
+      if (step0?.mode === 'flow' && !step0.flowId && !agent.fallbackFlowId) reasons.push('paso por defecto = Flujo de entrada principal, pero el agente NO tiene flujo de entrada configurado')
+    }
+    out.candidates.push({ conv: label, recontactCount: count, eligible: reasons.length === 0, reasons })
+  }
+  return out
+}
+
+// ── Prueba manual: fuerza un recontacto AHORA en una conversación (ignora la
+//    espera y la regla de "último mensaje del agente"), y reporta qué pasó. ────
+async function testNow(accId, convId) {
+  const cfg = await getConfig(accId)
+  const account = await store.loadAccount(accId)
+  if (!account) return { ok: false, reason: 'No se pudo cargar la cuenta.' }
+  let conv
+  if (convId) {
+    const [[c]] = await pool.query('SELECT id, agent_id, channel_type, channel_id, wa_from, messenger_from, ig_from, guest_name FROM conversations WHERE id=? AND account_id=?', [convId, accId])
+    conv = c
+  } else {
+    const [[c]] = await pool.query("SELECT id, agent_id, channel_type, channel_id, wa_from, messenger_from, ig_from, guest_name FROM conversations WHERE account_id=? AND channel_type IN ('whatsapp','messenger','instagram') ORDER BY updated_at DESC LIMIT 1", [accId])
+    conv = c
+  }
+  if (!conv) return { ok: false, reason: 'No hay conversaciones de WhatsApp/Messenger/Instagram para probar.' }
+  const label = `${conv.guest_name || conv.id} · ${conv.channel_type}`
+  const agent = account.agents?.find(a => a.id === conv.agent_id)
+  if (!agent) return { ok: false, conv: label, reason: 'No se encontró el agente de la conversación.' }
+  const to = conv.wa_from || conv.messenger_from || conv.ig_from
+  const outbound = buildOutbound(agent, conv.channel_type, conv.channel_id, to)
+  if (!outbound) return { ok: false, conv: label, reason: `Canal "${conv.channel_type}" no enviable: el agente no tiene ese canal conectado con credenciales (token/ID) o falta el identificador del cliente (${to || 'vacío'}).` }
+  const step = cfg.steps[0] || { mode: 'flow', flowId: null, instructions: '' }
+
+  if (step.mode === 'flow') {
+    const flowId = step.flowId || agent.fallbackFlowId || null
+    if (!flowId) return { ok: false, conv: label, mode: 'flow', reason: 'El paso usa "Flujo de entrada principal" pero el agente no tiene un flujo de entrada configurado, ni elegiste un flujo específico. Configura el flujo de entrada del agente o elige un flujo en el paso.' }
+    const nota = String(step.instructions || '').trim()
+    try {
+      await executeFlow({ flowId, accId, agId: conv.agent_id, convId: conv.id, triggerContext: { recontact: true, motivo: 'prueba_recontacto', nota, message: nota, _lastUserMessage: '' }, outbound })
+      return { ok: true, conv: label, mode: 'flow', flowId, note: `Flujo ejecutado en "${label}". Revisa el chat. ⚠ En WhatsApp, si pasaron 24 h sin respuesta del cliente, el mensaje solo se ENTREGA si el flujo envía una PLANTILLA aprobada (el texto libre lo bloquea Meta).` }
+    } catch (e) {
+      return { ok: false, conv: label, mode: 'flow', flowId, reason: `El flujo falló al ejecutarse: ${e.message}` }
+    }
+  }
+  // Modo IA
+  const text = await generateRecontactMessage(accId, conv.agent_id, conv.id, account, step.instructions)
+  if (!text) return { ok: false, conv: label, mode: 'ia', reason: 'La IA no generó texto. Suele faltar la API key del proveedor del modelo del prompt activo (configúrala en la cuenta o en el Super Panel).' }
+  const res = await sendBotMsg({ accId, agId: conv.agent_id, convId: conv.id, _outbound: outbound }, text, { recontact: true })
+  if (res?.status === 'failed') return { ok: false, conv: label, mode: 'ia', text, reason: `El canal rechazó el envío: ${res.sendError}. ⚠ En WhatsApp, fuera de la ventana de 24 h solo se permiten PLANTILLAS, no texto libre — usa el modo "flujo" con una plantilla.` }
+  return { ok: true, conv: label, mode: 'ia', text, note: `Mensaje enviado a "${label}".` }
+}
+
 async function tick() {
   try {
     const [accs] = await pool.query('SELECT id, recontact FROM accounts WHERE recontact IS NOT NULL')
@@ -211,4 +292,4 @@ function startWorker() {
   setTimeout(() => tick().catch(() => {}), 30000) // primer pase a los 30s
 }
 
-module.exports = { getConfig, saveConfig, publicConfig, tick, startWorker }
+module.exports = { getConfig, saveConfig, publicConfig, tick, startWorker, diagnose, testNow }

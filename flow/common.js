@@ -61,6 +61,7 @@ async function sendBotMsg(ctx, content, metadata = {}) {
   const mediaKind = media?.kind
   const dbgText = text || (mediaKind ? `[${mediaKind}]` : '')
   if (dbgText) logDebug(ctx, status === 'failed' ? 'error' : 'message_sent', dbgText, { text: dbgText, status: status || 'enviado', sendError })
+  return { status, sendError, providerMsgId }
 }
 
 function getVars(ctx) { return ctx?.variables || {} }
