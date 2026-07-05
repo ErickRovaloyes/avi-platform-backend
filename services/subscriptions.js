@@ -94,6 +94,7 @@ const mapType = t => ({
   isDemo: !!t.is_demo, demoDaysDuration: t.demo_days_duration,
   demoMaxConversations: t.demo_max_conversations,
   demoMaxAiResponsesPerConversation: t.demo_max_ai_responses_per_conversation,
+  cmsStorageMb: t.cms_storage_mb != null ? t.cms_storage_mb : 500,
   sortOrder: t.sort_order,
   // Preset de módulos del tipo (null = todos). Espejo en services/modules.js.
   modules: parseJ(t.modules, null),

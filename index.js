@@ -183,6 +183,10 @@ app.use('/api',                recontactRoutes)
     // Optimizador más descriptivo: por qué del cambio + ejemplos reales.
     "ALTER TABLE optimizer_suggestions ADD COLUMN why TEXT",
     "ALTER TABLE optimizer_suggestions ADD COLUMN examples JSON",
+    // Almacenamiento del CMS por plan: cuota (MB) en el tipo de cuenta + override
+    // por cuenta (plan "personalizado" que define el super admin). NULL = usa el plan.
+    "ALTER TABLE account_types ADD COLUMN cms_storage_mb INT DEFAULT 500",
+    "ALTER TABLE accounts ADD COLUMN cms_storage_quota_mb INT",
     // Optimizador Inteligente del Prompt (análisis incremental de conversaciones).
     "ALTER TABLE platform_settings ADD COLUMN optimizer_model VARCHAR(60) DEFAULT 'gpt-4o-mini'",
     `CREATE TABLE IF NOT EXISTS optimizer_convo_index (

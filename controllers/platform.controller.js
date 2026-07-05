@@ -267,6 +267,7 @@ const listAccounts = async (req, res) => {
     res.json(accounts.map(a => ({
       id: a.id, name: a.name, email: a.email, plan: a.plan, status: a.status,
       modules: parseJ(a.modules, null),
+      cmsStorageQuotaMb: a.cms_storage_quota_mb ?? null,
       channelLimitsOverride: parseJ(a.channel_limits_override, {}),
       changeAgentLimitOverride: a.change_agent_limit_override ?? null,
       changeAgentTokenLimitsOverride: parseJ(a.change_agent_token_limits_override, null),
@@ -324,11 +325,13 @@ const createAccount = async (req, res) => {
 const updateSAAccount = async (req, res) => {
   if (req.user.type !== 'superadmin') return res.status(403).json({ error: 'Solo super admin' })
   const { accId } = req.params
-  const { plan, status, channelLimitsOverride, changeAgentLimitOverride, changeAgentTokenLimitsOverride, modules } = req.body
+  const { plan, status, channelLimitsOverride, changeAgentLimitOverride, changeAgentTokenLimitsOverride, modules, cmsStorageQuotaMb } = req.body
   try {
     const sets = []; const vals = []
     if (plan                     !== undefined) { sets.push('plan=?');                      vals.push(plan) }
     if (status                   !== undefined) { sets.push('status=?');                    vals.push(status) }
+    // Override de almacenamiento del CMS (plan "personalizado"): MB, o null = usar el plan.
+    if (cmsStorageQuotaMb        !== undefined) { sets.push('cms_storage_quota_mb=?');      vals.push(cmsStorageQuotaMb === null || cmsStorageQuotaMb === '' ? null : Number(cmsStorageQuotaMb)) }
     if (channelLimitsOverride    !== undefined) { sets.push('channel_limits_override=?');   vals.push(JSON.stringify(channelLimitsOverride)) }
     // Módulos override por cuenta: array de ids habilitados, o null = heredar del tipo / todos.
     if (modules                  !== undefined) { sets.push('modules=?');                   vals.push(Array.isArray(modules) ? JSON.stringify(modules) : null) }

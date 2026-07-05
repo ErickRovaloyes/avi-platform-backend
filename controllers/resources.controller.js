@@ -90,6 +90,32 @@ const deleteAITool = async (req, res) => {
 // El binario ya se subió vía POST /api/media/:accId/upload (devuelve mediaId);
 // aquí sólo se registra la ficha del recurso (nombre, descripción, etiquetas).
 
+// Cuota de almacenamiento del CMS (bytes): override por cuenta > plan (tipo de
+// cuenta) > 500 MB por defecto.
+async function cmsQuotaBytes(accId) {
+  try {
+    const [[acc]] = await pool.query('SELECT cms_storage_quota_mb FROM accounts WHERE id=?', [accId])
+    if (acc && acc.cms_storage_quota_mb != null) return Number(acc.cms_storage_quota_mb) * 1048576
+    const [[sub]] = await pool.query('SELECT account_type_id FROM account_subscriptions WHERE account_id=? LIMIT 1', [accId])
+    if (sub?.account_type_id) {
+      const [[t]] = await pool.query('SELECT cms_storage_mb FROM account_types WHERE id=?', [sub.account_type_id])
+      if (t && t.cms_storage_mb != null) return Number(t.cms_storage_mb) * 1048576
+    }
+  } catch {}
+  return 500 * 1048576
+}
+async function cmsUsageBytes(accId) {
+  try { const [[r]] = await pool.query('SELECT COALESCE(SUM(size_bytes),0) AS used FROM cms_assets WHERE account_id=?', [accId]); return Number(r?.used || 0) }
+  catch { return 0 }
+}
+const getCmsUsage = async (req, res) => {
+  const { accId } = req.params
+  try {
+    const [quota, used] = await Promise.all([cmsQuotaBytes(accId), cmsUsageBytes(accId)])
+    res.json({ usedBytes: used, quotaBytes: quota, quotaMb: Math.round(quota / 1048576), usedMb: +(used / 1048576).toFixed(1) })
+  } catch { res.status(500).json({ error: 'Error interno' }) }
+}
+
 const createCmsAsset = async (req, res) => {
   const { accId } = req.params
   const { id: gId, name, description = '', tags = [], kind = 'file', mediaId = null,
@@ -98,6 +124,11 @@ const createCmsAsset = async (req, res) => {
   if (!name || !mediaId) return res.status(400).json({ error: 'Nombre y archivo son obligatorios' })
   const id = gId || ('cms_' + uid())
   try {
+    // Enforcement de cuota: no permitir superar el espacio del plan.
+    const [quota, used] = await Promise.all([cmsQuotaBytes(accId), cmsUsageBytes(accId)])
+    if (used + Number(sizeBytes || 0) > quota) {
+      return res.status(413).json({ error: `Sin espacio en el CMS: tu plan permite ${Math.round(quota / 1048576)} MB y ya usas ${(used / 1048576).toFixed(1)} MB. Elimina archivos o mejora tu plan.`, usedBytes: used, quotaBytes: quota })
+    }
     await pool.query(
       'INSERT INTO cms_assets (id,account_id,name,description,tags,kind,media_id,filename,mime,size_bytes,folder_id,category,rag_file_id,rag_agent_id,created_at) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)',
       [id, accId, name, description, JSON.stringify(tags || []), kind, mediaId, filename, mime, sizeBytes, folderId || null, category || '', ragFileId, ragAgentId, Date.now()]
@@ -376,7 +407,7 @@ REGLAS:
 module.exports = {
   createVariable, updateVariable, deleteVariable,
   createAITool, updateAITool, deleteAITool,
-  createCmsAsset, updateCmsAsset, deleteCmsAsset,
+  createCmsAsset, updateCmsAsset, deleteCmsAsset, getCmsUsage,
   createCmsFolder, updateCmsFolder, deleteCmsFolder,
   createCmsTag, deleteCmsTag,
   createCmsCategory, deleteCmsCategory,

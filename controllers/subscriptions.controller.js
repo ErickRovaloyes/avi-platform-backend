@@ -22,12 +22,12 @@ const createType = async (req, res) => {
     await pool.query(
       `INSERT INTO account_types
         (id,name,max_webchat_channels,max_whatsapp_channels,max_test_channels,max_messenger_channels,max_instagram_channels,
-         is_demo,demo_days_duration,demo_max_conversations,demo_max_ai_responses_per_conversation,sort_order,modules,created_at,updated_at)
-       VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`,
+         is_demo,demo_days_duration,demo_max_conversations,demo_max_ai_responses_per_conversation,cms_storage_mb,sort_order,modules,created_at,updated_at)
+       VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`,
       [id, b.name || 'Nuevo tipo', n(b.maxWebchatChannels, 1), n(b.maxWhatsappChannels, 1), n(b.maxTestChannels, 1),
        n(b.maxMessengerChannels, 0), n(b.maxInstagramChannels, 0), b.isDemo ? 1 : 0,
        n(b.demoDaysDuration, 7), n(b.demoMaxConversations, 100), n(b.demoMaxAiResponsesPerConversation, 30),
-       n(b.sortOrder, 0), modulesVal, now, now]
+       n(b.cmsStorageMb, 500), n(b.sortOrder, 0), modulesVal, now, now]
     )
     res.json({ id })
   } catch (err) { console.error('[createType]', err); res.status(500).json({ error: 'Error interno' }) }
@@ -40,7 +40,7 @@ const updateType = async (req, res) => {
     maxTestChannels: 'max_test_channels', maxMessengerChannels: 'max_messenger_channels',
     maxInstagramChannels: 'max_instagram_channels', isDemo: 'is_demo', demoDaysDuration: 'demo_days_duration',
     demoMaxConversations: 'demo_max_conversations', demoMaxAiResponsesPerConversation: 'demo_max_ai_responses_per_conversation',
-    sortOrder: 'sort_order',
+    cmsStorageMb: 'cms_storage_mb', sortOrder: 'sort_order',
   }
   const sets = [], vals = []
   for (const [k, col] of Object.entries(map)) {
