@@ -190,6 +190,9 @@ app.use('/api',                recontactRoutes)
     // Estado de conversaciones: archivada / bloqueada.
     "ALTER TABLE conversations ADD COLUMN archived TINYINT(1) DEFAULT 0",
     "ALTER TABLE conversations ADD COLUMN blocked TINYINT(1) DEFAULT 0",
+    // Publicidad en cuentas Demo: código de anuncio (embed) gestionado por el super admin.
+    "ALTER TABLE platform_settings ADD COLUMN demo_ads_enabled TINYINT(1) DEFAULT 0",
+    "ALTER TABLE platform_settings ADD COLUMN demo_ads_html MEDIUMTEXT",
     // Agente de Cambios: UN solo cupo de tokens totales (sin tipos). Default de
     // plataforma + override por cuenta + consumo total mensual.
     "ALTER TABLE platform_settings ADD COLUMN change_agent_token_limit INT DEFAULT 95000",
