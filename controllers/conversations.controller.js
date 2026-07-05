@@ -56,6 +56,7 @@ const mapConvo = (c, messages = []) => ({
   initials: c.initials, preview: c.preview,
   unread: !!c.unread, unreadCount: Number(c.unread_count) || 0, aiEnabled: !!c.ai_enabled,
   aiDisabledReason: c.ai_disabled_reason || null,
+  archived: !!c.archived, blocked: !!c.blocked,
   origin:        parseJ(c.origin, null),
   labels:        parseJ(c.labels, []),
   pipelineCards: parseJ(c.pipeline_cards, []),
@@ -150,7 +151,7 @@ const createConvo = async (req, res) => {
 const updateConvo = async (req, res) => {
   const { accId, agId, convId } = req.params
   try {
-    const map = { guestName:'guest_name', preview:'preview', unread:'unread', aiEnabled:'ai_enabled', labels:'labels', pipelineCards:'pipeline_cards', localVars:'local_vars', debugLog:'debug_log', assignedTo:'assigned_to', origin:'origin' }
+    const map = { guestName:'guest_name', preview:'preview', unread:'unread', aiEnabled:'ai_enabled', labels:'labels', pipelineCards:'pipeline_cards', localVars:'local_vars', debugLog:'debug_log', assignedTo:'assigned_to', origin:'origin', archived:'archived', blocked:'blocked' }
     const sets = []
     const vals = []
     for (const [key, col] of Object.entries(map)) {
@@ -195,6 +196,18 @@ const updateConvo = async (req, res) => {
     console.error('[PUT CONVO]', err)
     res.status(500).json({ error: 'Error interno' })
   }
+}
+
+// Elimina una conversación y sus mensajes/media asociados.
+const deleteConvo = async (req, res) => {
+  const { accId, agId, convId } = req.params
+  try {
+    await pool.query('DELETE FROM messages WHERE conversation_id=?', [convId]).catch(() => {})
+    await pool.query('DELETE FROM media WHERE conversation_id=? AND account_id=?', [convId, accId]).catch(() => {})
+    await pool.query('DELETE FROM conversations WHERE id=? AND account_id=?', [convId, accId])
+    socket.emit(accId, 'convos:updated', { accId, agId })
+    res.json({ ok: true })
+  } catch (err) { console.error('[DELETE CONVO]', err); res.status(500).json({ error: 'Error interno' }) }
 }
 
 // Marking as read MUST NOT reorder the list; just clear the unread flag.
@@ -503,7 +516,7 @@ const updateMemory = async (req, res) => {
 }
 
 module.exports = {
-  listConvos, getConvo, createConvo, updateConvo, markRead,
+  listConvos, getConvo, createConvo, updateConvo, deleteConvo, markRead,
   appendMessage, sendManual, appendDebug, patchVars, getGuest, updateMemory,
   createWhatsApp, createMessenger, createInstagram, createSocial,
   // Reusable cores for the server-side flow engine

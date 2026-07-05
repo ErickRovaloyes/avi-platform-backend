@@ -187,6 +187,9 @@ app.use('/api',                recontactRoutes)
     // por cuenta (plan "personalizado" que define el super admin). NULL = usa el plan.
     "ALTER TABLE account_types ADD COLUMN cms_storage_mb INT DEFAULT 500",
     "ALTER TABLE accounts ADD COLUMN cms_storage_quota_mb INT",
+    // Estado de conversaciones: archivada / bloqueada.
+    "ALTER TABLE conversations ADD COLUMN archived TINYINT(1) DEFAULT 0",
+    "ALTER TABLE conversations ADD COLUMN blocked TINYINT(1) DEFAULT 0",
     // Optimizador Inteligente del Prompt (análisis incremental de conversaciones).
     "ALTER TABLE platform_settings ADD COLUMN optimizer_model VARCHAR(60) DEFAULT 'gpt-4o-mini'",
     `CREATE TABLE IF NOT EXISTS optimizer_convo_index (

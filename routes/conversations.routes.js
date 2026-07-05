@@ -18,5 +18,6 @@ router.post('/:accId/:agId/whatsapp',                   optionalAuth, ctrl.creat
 router.post('/:accId/:agId/messenger',                  optionalAuth, ctrl.createMessenger)
 router.post('/:accId/:agId/instagram',                  optionalAuth, ctrl.createInstagram)
 router.post('/:accId/:agId/social',                     optionalAuth, ctrl.createSocial)
+router.delete('/:accId/:agId/:convId',                  optionalAuth, ctrl.deleteConvo)
 
 module.exports = router
