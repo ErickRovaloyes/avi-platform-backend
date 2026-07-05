@@ -175,6 +175,9 @@ app.use('/api',                recontactRoutes)
   const pool = require('./db')
   // ADD COLUMN IF NOT EXISTS only works in MySQL 8.0.29+ — use ADD COLUMN and swallow "duplicate column" errors
   const migrations = [
+    // Perfil de usuario: foto propia (data URL o enlace) por miembro y super admin.
+    "ALTER TABLE members ADD COLUMN photo MEDIUMTEXT",
+    "ALTER TABLE super_admins ADD COLUMN photo MEDIUMTEXT",
     // Optimizador Inteligente del Prompt (análisis incremental de conversaciones).
     "ALTER TABLE platform_settings ADD COLUMN optimizer_model VARCHAR(60) DEFAULT 'gpt-4o-mini'",
     `CREATE TABLE IF NOT EXISTS optimizer_convo_index (

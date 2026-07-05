@@ -724,6 +724,14 @@ const aiNodes = [
         sysWithRag = `${sysWithRag}\n\n📅 HOY es ${hoy} (zona horaria ${_sch.timezone || 'America/Lima'}). Para citas usa SIEMPRE la herramienta de agenda (ver_disponibilidad / recomendar_citas / agendar_cita / mover_cita / cancelar_cita); NO inventes horarios ni confirmes citas sin la herramienta.`
       }
 
+      // Recontacto: si el flujo se disparó como recontacto inteligente, inyecta la
+      // instrucción para que el agente RETOME la conversación donde quedó (en vez de
+      // saludar desde cero), usando su prompt/conocimiento/herramientas reales.
+      const _recon = ctx.variables?._recontactInstruction
+      if (_recon && String(_recon).trim()) {
+        sysWithRag = `${sysWithRag}\n\n---\n[RECONTACTO] ${String(_recon).trim()}\n---`
+      }
+
       const history = await loadHistory(ctx)
       const toolDefs = buildToolDefs(assignedTools, ctx.account)
 

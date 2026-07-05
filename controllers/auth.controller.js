@@ -10,7 +10,7 @@ const login = async (req, res) => {
     const [sas] = await pool.query('SELECT * FROM super_admins WHERE email=? AND password=?', [email, password])
     if (sas.length) {
       const sa = sas[0]
-      const session = { type: 'superadmin', id: sa.id, name: sa.name, email: sa.email }
+      const session = { type: 'superadmin', id: sa.id, name: sa.name, email: sa.email, photo: sa.photo || null }
       return res.json({ token: sign(session), session })
     }
     const [rows] = await pool.query(
@@ -25,7 +25,7 @@ const login = async (req, res) => {
     const [roleRows]    = await pool.query('SELECT * FROM roles WHERE id=?', [first.role_id])
     const role          = roleRows[0]
     const session = {
-      type: 'member', id: first.id, name: first.name, email: first.email,
+      type: 'member', id: first.id, name: first.name, email: first.email, photo: first.photo || null,
       accountId: first.accId, accountName: first.accountName,
       allAccountIds,
       roleId: first.role_id, permissions: parseJ(role?.permissions, {}),
@@ -104,7 +104,7 @@ const refreshSession = async (req, res) => {
     const active = rows.find(r => r.accId === keepActive) || rows[0]
     const [[role]] = await pool.query('SELECT * FROM roles WHERE id=?', [active.role_id])
     const session = {
-      type: 'member', id: active.id, name: active.name, email: active.email,
+      type: 'member', id: active.id, name: active.name, email: active.email, photo: active.photo || null,
       accountId: active.accId, accountName: active.accountName,
       allAccountIds,
       roleId: active.role_id, permissions: parseJ(role?.permissions, {}),
@@ -117,4 +117,57 @@ const refreshSession = async (req, res) => {
   }
 }
 
-module.exports = { login, switchAccount, impersonate, refreshSession }
+// Autoservicio: el usuario edita su PROPIO perfil (nombre, foto, correo,
+// contraseña). La identidad de un miembro es su email (puede pertenecer a varias
+// cuentas), así que los cambios se aplican a todas sus filas.
+const updateMyProfile = async (req, res) => {
+  if (!req.user) return res.status(401).json({ error: 'No autenticado' })
+  const { name, email, photo, currentPassword, newPassword } = req.body || {}
+  const isSA = req.user.type === 'superadmin'
+  const table = isSA ? 'super_admins' : 'members'
+  try {
+    // Fila(s) actuales del usuario
+    const [rows] = isSA
+      ? await pool.query('SELECT * FROM super_admins WHERE id=?', [req.user.id])
+      : await pool.query('SELECT * FROM members WHERE email=?', [req.user.email])
+    if (!rows.length) return res.status(404).json({ error: 'Usuario no encontrado' })
+    const me = rows[0]
+
+    // Cambio de contraseña: exige la actual
+    if (newPassword) {
+      if ((currentPassword || '') !== (me.password || '')) return res.status(400).json({ error: 'La contraseña actual no coincide' })
+      if (String(newPassword).length < 4) return res.status(400).json({ error: 'La nueva contraseña es muy corta' })
+    }
+    // Cambio de email: único (no debe existir en members ni super_admins salvo yo)
+    const newEmail = (email || '').trim().toLowerCase()
+    if (newEmail && newEmail !== (me.email || '').toLowerCase()) {
+      const [[dupM]] = await pool.query('SELECT id FROM members WHERE email=? LIMIT 1', [newEmail])
+      const [[dupS]] = await pool.query('SELECT id FROM super_admins WHERE email=? LIMIT 1', [newEmail])
+      if ((dupM && !isSA) || (dupS && isSA) || (dupM && isSA) || (dupS && !isSA)) return res.status(409).json({ error: 'Ese correo ya está en uso' })
+    }
+
+    const sets = [], vals = []
+    if (name !== undefined) { sets.push('name=?'); vals.push(name) }
+    if (photo !== undefined) { sets.push('photo=?'); vals.push(photo || null) }
+    if (newEmail) { sets.push('email=?'); vals.push(newEmail) }
+    if (newPassword) { sets.push('password=?'); vals.push(newPassword) }
+    if (sets.length) {
+      if (isSA) await pool.query(`UPDATE super_admins SET ${sets.join(',')} WHERE id=?`, [...vals, req.user.id])
+      else await pool.query(`UPDATE members SET ${sets.join(',')} WHERE email=?`, [...vals, req.user.email])
+    }
+
+    // Re-firma la sesión con los datos nuevos (mantiene cuenta/rol/permisos)
+    const session = {
+      ...req.user,
+      name: name !== undefined ? name : req.user.name,
+      email: newEmail || req.user.email,
+      photo: photo !== undefined ? (photo || null) : (req.user.photo || null),
+    }
+    res.json({ token: sign(session), session })
+  } catch (err) {
+    console.error('[PROFILE]', err)
+    res.status(500).json({ error: 'Error interno' })
+  }
+}
+
+module.exports = { login, switchAccount, impersonate, refreshSession, updateMyProfile }
