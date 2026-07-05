@@ -143,6 +143,10 @@ async function loadPublicAccount(accId) {
     aiTools:   [SPECIAL_CMS_TOOL, ...specialTools(), ...aiTools.map(t => ({ id: t.id, name: t.name, description: t.description, collectFields: parseJ(t.collect_fields, []), flowId: t.flow_id, actionType: t.action_type || 'variable' }))],
     woocommerce: storeSvc.publicConfig(parseJ(acc.woocommerce, null)),
     scheduling: schedulingCfg,
+    // Conciencia temporal de la IA (zona horaria + fecha/hora base opcional).
+    aiTimezone: acc.ai_timezone || 'America/Lima',
+    aiDatetimeEnabled: acc.ai_datetime_enabled == null ? true : !!acc.ai_datetime_enabled,
+    aiBaseDatetime: acc.ai_base_datetime || '',
     payments: paymentsSvc.publicConfig(parseJ(acc.payments, null)),
     cmsAssets: cmsAssets.map(mapCmsAsset),
     cmsFolders: cmsFolders.map(mapCmsFolder),
@@ -234,6 +238,9 @@ const getAccount = async (req, res) => {
       aiTools:   [SPECIAL_CMS_TOOL, ...specialTools(), ...aiTools.map(t => ({ id: t.id, name: t.name, description: t.description, collectFields: parseJ(t.collect_fields, []), flowId: t.flow_id, actionType: t.action_type || 'variable', createdAt: t.created_at }))],
       woocommerce: storeSvc.publicConfig(parseJ(acc.woocommerce, null)),
       scheduling: schedulingCfg,
+      aiTimezone: acc.ai_timezone || 'America/Lima',
+      aiDatetimeEnabled: acc.ai_datetime_enabled == null ? true : !!acc.ai_datetime_enabled,
+      aiBaseDatetime: acc.ai_base_datetime || '',
       payments: paymentsSvc.publicConfig(parseJ(acc.payments, null)),
       // Modelo por defecto para prompts nuevos (lo fija el super admin). El owner
       // y demás usuarios no pueden cambiar el modelo; solo lo ve/edita el super admin.
@@ -265,10 +272,13 @@ const getAccount = async (req, res) => {
 
 const updateAccount = async (req, res) => {
   const { accId } = req.params
-  const { openaiKey, deepseekKey, anthropicKey, name, email, plan, status, channelLimitsOverride, changeAgentLimitOverride, changeAgentTokenLimitsOverride, chatTheme } = req.body
+  const { openaiKey, deepseekKey, anthropicKey, name, email, plan, status, channelLimitsOverride, changeAgentLimitOverride, changeAgentTokenLimitsOverride, chatTheme, aiTimezone, aiDatetimeEnabled, aiBaseDatetime } = req.body
   try {
     const sets = []; const vals = []
     if (chatTheme               !== undefined) { sets.push('chat_theme=?');                vals.push(chatTheme === null ? null : JSON.stringify(chatTheme)) }
+    if (aiTimezone              !== undefined) { sets.push('ai_timezone=?');               vals.push(String(aiTimezone || 'America/Lima').slice(0, 64)) }
+    if (aiDatetimeEnabled       !== undefined) { sets.push('ai_datetime_enabled=?');       vals.push(aiDatetimeEnabled ? 1 : 0) }
+    if (aiBaseDatetime          !== undefined) { sets.push('ai_base_datetime=?');          vals.push(aiBaseDatetime ? String(aiBaseDatetime).slice(0, 40) : null) }
     if (openaiKey               !== undefined) { sets.push('openai_key=?');                vals.push(openaiKey) }
     if (deepseekKey             !== undefined) { sets.push('deepseek_key=?');              vals.push(deepseekKey) }
     if (anthropicKey            !== undefined) { sets.push('anthropic_key=?');             vals.push(anthropicKey) }

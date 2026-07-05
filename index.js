@@ -204,6 +204,10 @@ app.use('/api',                recontactRoutes)
     // Agente de Cambios: capacidades globales activables por el super admin
     // (qué puede modificar: prompt / herramientas / flujos / agendas).
     "ALTER TABLE platform_settings ADD COLUMN change_agent_caps TEXT",
+    // Conciencia temporal de la IA: zona horaria local + (opcional) fecha/hora base fija.
+    "ALTER TABLE accounts ADD COLUMN ai_timezone VARCHAR(64) DEFAULT 'America/Lima'",
+    "ALTER TABLE accounts ADD COLUMN ai_datetime_enabled TINYINT(1) DEFAULT 1",
+    "ALTER TABLE accounts ADD COLUMN ai_base_datetime VARCHAR(40)",
     // Correo transaccional (Resend/SendGrid vía API HTTP) + verificación de registro
     // y 2FA en login. Todo opt-in: sin proveedor configurado, nada cambia.
     "ALTER TABLE platform_settings ADD COLUMN email_provider VARCHAR(20) DEFAULT 'none'",
