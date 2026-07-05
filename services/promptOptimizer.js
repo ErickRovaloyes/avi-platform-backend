@@ -12,6 +12,7 @@ const pool = require('../db')
 const { uid, parseJ } = require('../utils')
 // Helpers IA reutilizables (mismo patrón que el generador de prompts).
 const { callAI, detectProvider, resolveProviderKey, extractJson } = require('../controllers/promptGenerator.controller')
+const { getPricingMap, computeCost } = require('../controllers/analytics.controller')
 
 const RUN_CAP = 3000  // máx. conversaciones procesadas por ejecución (acota cada run)
 const SAMPLE_PER_GROUP = 5 // ejemplos representativos por grupo enviados al LLM
@@ -133,14 +134,28 @@ async function getStatus(accId, agId) {
   const [sugRows] = await pool.query('SELECT status, COUNT(*) AS n FROM optimizer_suggestions WHERE account_id=? AND agent_id=? GROUP BY status', [accId, agId])
   const sug = {}; for (const r of sugRows) sug[r.status] = r.n
   const promptVersion = await activePromptVersion(accId, agId)
+  // Historial de análisis recientes (id + fecha + tokens + costo) para la sección de métricas.
+  const [runRows] = await pool.query(
+    'SELECT id, started_at, finished_at, status, convos_processed, suggestions_new, suggestions_updated, tokens_used, cost_usd, prompt_version FROM optimizer_runs WHERE account_id=? AND agent_id=? ORDER BY started_at DESC LIMIT 12',
+    [accId, agId]
+  )
+  const runs = runRows.map(r => ({
+    id: r.id, at: r.finished_at || r.started_at, status: r.status,
+    convosProcessed: r.convos_processed || 0, suggestionsNew: r.suggestions_new || 0,
+    suggestionsUpdated: r.suggestions_updated || 0, tokens: r.tokens_used || 0,
+    costUsd: Number(r.cost_usd) || 0, promptVersion: r.prompt_version,
+  }))
   return {
     promptVersion,
     running: !!running,
     lastRun: lastRun ? {
+      id: lastRun.id,
       at: lastRun.finished_at || lastRun.started_at, startedBy: lastRun.started_by,
       promptVersion: lastRun.prompt_version, convosProcessed: lastRun.convos_processed,
       status: lastRun.status, suggestionsNew: lastRun.suggestions_new,
+      tokens: lastRun.tokens_used || 0, costUsd: Number(lastRun.cost_usd) || 0,
     } : null,
+    runs,
     totalIndexed: idx?.n || 0,
     pending,                                   // nuevas + modificadas sin analizar
     suggestions: {
@@ -188,8 +203,8 @@ async function run(accId, agId, startedBy) {
       // Etapas 2-5: análisis con IA (solo si hay candidatas y modelo/clave disponibles).
       let res = { newCount: 0, updatedCount: 0, tokens: 0, cost: 0 }
       if (candidates.length) res = await analyzeCandidates(accId, agId, candidates)
-      await pool.query('UPDATE optimizer_runs SET convos_processed=?, last_cursor_ts=?, suggestions_new=?, suggestions_updated=?, tokens_used=?, status=?, finished_at=? WHERE id=?',
-        [processed, maxCursor, res.newCount, res.updatedCount, res.tokens, 'done', Date.now(), runId])
+      await pool.query('UPDATE optimizer_runs SET convos_processed=?, last_cursor_ts=?, suggestions_new=?, suggestions_updated=?, tokens_used=?, cost_usd=?, status=?, finished_at=? WHERE id=?',
+        [processed, maxCursor, res.newCount, res.updatedCount, res.tokens, res.cost || 0, 'done', Date.now(), runId])
     } catch (err) {
       console.error('[optimizer run]', err.message)
       await pool.query('UPDATE optimizer_runs SET convos_processed=?, status=?, finished_at=? WHERE id=?', [processed, 'error', Date.now(), runId]).catch(() => {})
@@ -234,6 +249,7 @@ async function analyzeCandidates(accId, agId, candidates) {
   const provider = detectProvider(model)
   const { key: apiKey } = await resolveProviderKey(accId, provider)
   if (!apiKey) return { newCount: 0, updatedCount: 0, tokens: 0, cost: 0 } // sin clave → no se gasta IA
+  const pricing = await getPricingMap().catch(() => ({}))
 
   // Etapa 3: agrupar por (tema, motivo de fallo) — determinista, sin tokens.
   const groups = new Map()
@@ -243,7 +259,7 @@ async function analyzeCandidates(accId, agId, candidates) {
     groups.get(key).push(c)
   }
 
-  let newCount = 0, updatedCount = 0, tokens = 0
+  let newCount = 0, updatedCount = 0, tokens = 0, cost = 0
   for (const [key, group] of groups) {
     const [topic, failReason] = key.split('|')
     const sample = group.slice(0, SAMPLE_PER_GROUP)           // Etapa 4: muestreo
@@ -255,18 +271,23 @@ async function analyzeCandidates(accId, agId, candidates) {
     let parsed = null
     try {
       const r = await callAI({ provider, model, apiKey, systemPrompt: OPTIMIZER_SYS, userPrompt: userMsg, maxTokens: 1200, temperature: 0.3, jsonMode: provider !== 'anthropic' })
-      tokens += (r.usage?.promptTokens || 0) + (r.usage?.completionTokens || 0)
-      try { require('../controllers/analytics.controller').recordUsageInternal({ accId, agentId: agId, conversationId: null, provider, model, promptTokens: r.usage?.promptTokens || 0, completionTokens: r.usage?.completionTokens || 0, source: 'optimizer' }) } catch {}
+      const pt = r.usage?.promptTokens || 0, ct = r.usage?.completionTokens || 0
+      tokens += pt + ct
+      cost += computeCost(model, pt, ct, pricing) || 0
+      try { require('../controllers/analytics.controller').recordUsageInternal({ accId, agentId: agId, conversationId: null, provider, model, promptTokens: pt, completionTokens: ct, source: 'optimizer' }) } catch {}
       parsed = extractJson(r.text || '')
     } catch (e) { console.warn('[optimizer LLM]', e.message); continue }
     if (!parsed?.title) continue
     const dedupeKey = `${String(parsed.problem_type || 'prompt')}:${topic}:${failReason}`.toLowerCase().slice(0, 120)
-    // Ejemplos REALES (extractos verificables) que se muestran en la UI.
-    const examples = samples.filter(s => s.excerpt).map(s => ({ convId: s.convId, excerpt: s.excerpt }))
+    // Ejemplos REALES (extractos verificables) que se muestran en la UI, con el
+    // convId + el ts del último mensaje (para enlazar al chat en el momento del error).
+    const examples = samples
+      .map((s, i) => ({ convId: s.convId, excerpt: s.excerpt, ts: sample[i]?.ficha?.lastMsgTs || 0 }))
+      .filter(e => e.excerpt)
     const kind = await upsertSuggestion(accId, agId, { parsed, dedupeKey, groupSize: group.length, evidence: sample.map(c => c.convId), examples })
     if (kind === 'new') newCount++; else updatedCount++
   }
-  return { newCount, updatedCount, tokens, cost: 0 }
+  return { newCount, updatedCount, tokens, cost }
 }
 
 async function upsertSuggestion(accId, agId, { parsed, dedupeKey, groupSize, evidence, examples }) {
