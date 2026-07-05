@@ -180,6 +180,9 @@ app.use('/api',                recontactRoutes)
     "ALTER TABLE super_admins ADD COLUMN photo MEDIUMTEXT",
     // Tema de chat predeterminado de la cuenta (aplica a todos sus usuarios).
     "ALTER TABLE accounts ADD COLUMN chat_theme JSON",
+    // Optimizador más descriptivo: por qué del cambio + ejemplos reales.
+    "ALTER TABLE optimizer_suggestions ADD COLUMN why TEXT",
+    "ALTER TABLE optimizer_suggestions ADD COLUMN examples JSON",
     // Optimizador Inteligente del Prompt (análisis incremental de conversaciones).
     "ALTER TABLE platform_settings ADD COLUMN optimizer_model VARCHAR(60) DEFAULT 'gpt-4o-mini'",
     `CREATE TABLE IF NOT EXISTS optimizer_convo_index (

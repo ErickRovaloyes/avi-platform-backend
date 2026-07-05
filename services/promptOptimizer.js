@@ -199,29 +199,33 @@ async function run(accId, agId, startedBy) {
 }
 
 // ── Etapas 2-5: agrupación + muestreo + análisis IA + dedup de sugerencias ──────
-const OPTIMIZER_SYS = `Eres un analista experto en prompt engineering para agentes de IA de atención al cliente.
-Recibes un GRUPO de conversaciones donde el agente tuvo el MISMO tipo de problema. Detecta la causa raíz y propón UNA mejora concreta.
+const OPTIMIZER_SYS = `Eres un analista senior en prompt engineering para agentes de IA de atención al cliente.
+Recibes un GRUPO de conversaciones REALES donde el agente tuvo el MISMO tipo de problema. Detecta la causa raíz y propón UNA mejora concreta.
 Determina si el problema pertenece al prompt, al RAG/base de conocimiento, a las herramientas, al flujo conversacional o a una limitación del modelo.
+Sé MUY DESCRIPTIVO y didáctico: apóyate en lo que ocurre en los ejemplos (puedes citar frases textuales entre comillas) para que quien lo lea entienda exactamente qué pasó y por qué tu cambio lo soluciona. Escribe para una persona no técnica.
 Responde ÚNICAMENTE con un objeto JSON válido (sin texto fuera de él):
 {
- "title": "título corto del problema",
- "description": "1-3 frases explicando la causa raíz",
+ "title": "título corto y claro del problema",
+ "description": "3-5 frases: QUÉ está pasando en las conversaciones y cuál es la CAUSA RAÍZ. Cita frases textuales de los ejemplos cuando ayude.",
+ "why": "3-5 frases: POR QUÉ este cambio soluciona el problema y qué mejora en la práctica (menos transferencias, más ventas, respuestas correctas, etc.).",
  "problem_type": "prompt|rag|knowledge|tools|flow|model",
  "severity": "baja|media|alta",
  "impact": "bajo|medio|alto",
- "proposed_change": { "section": "sección del prompt a tocar", "add": "texto a agregar (o \\"\\")", "remove": "texto a quitar (o \\"\\")", "replace": "texto a reemplazar (o \\"\\")", "justification": "por qué", "expected_impact": "mejora esperada" },
- "evidence": "1-2 frases con la evidencia observada"
+ "proposed_change": { "section": "sección del prompt a tocar", "add": "texto a agregar (o \\"\\")", "remove": "texto a quitar (o \\"\\")", "replace": "texto a reemplazar (o \\"\\")", "justification": "justificación DETALLADA basada en los ejemplos", "expected_impact": "impacto concreto esperado" },
+ "evidence": "1-2 frases resumiendo la evidencia observada en los ejemplos"
 }`
 
-// Resumen COMPACTO de una conversación (no se envía completa): primer mensaje del
-// cliente + última respuesta del agente. Minimiza tokens.
-async function summarizeConvo(convId) {
+// Muestra de una conversación: una línea compacta para el LLM + un EXTRACTO real
+// (varios turnos) que se guarda para mostrarlo como evidencia verificable.
+async function sampleConvo(convId) {
   try {
     const [msgs] = await pool.query('SELECT sender, content FROM messages WHERE conversation_id=? ORDER BY ts ASC', [convId])
-    const firstUser = (msgs.find(m => m.sender === 'user')?.content || '').slice(0, 200)
-    const lastBot = ([...msgs].reverse().find(m => m.sender === 'ai' || m.sender === 'human')?.content || '').slice(0, 200)
-    return `Cliente: "${firstUser}" → Agente: "${lastBot}"`
-  } catch { return '' }
+    const turns = msgs.filter(m => (m.content || '').trim())
+    const excerpt = turns.slice(0, 8).map(m => `${m.sender === 'user' ? 'Cliente' : 'Agente'}: ${(m.content || '').replace(/\s+/g, ' ').slice(0, 240)}`).join('\n')
+    const firstUser = (turns.find(m => m.sender === 'user')?.content || '').slice(0, 200)
+    const lastBot = ([...turns].reverse().find(m => m.sender === 'ai' || m.sender === 'human')?.content || '').slice(0, 200)
+    return { convId, line: `Cliente: "${firstUser}" → Agente: "${lastBot}"`, excerpt }
+  } catch { return { convId, line: '', excerpt: '' } }
 }
 
 async function analyzeCandidates(accId, agId, candidates) {
@@ -243,35 +247,40 @@ async function analyzeCandidates(accId, agId, candidates) {
   for (const [key, group] of groups) {
     const [topic, failReason] = key.split('|')
     const sample = group.slice(0, SAMPLE_PER_GROUP)           // Etapa 4: muestreo
-    const summaries = []
-    for (const c of sample) summaries.push(await summarizeConvo(c.convId))
+    const samples = []
+    for (const c of sample) samples.push(await sampleConvo(c.convId))
     const avgConf = (group.reduce((s, c) => s + (c.ficha.confidence || 0), 0) / group.length).toFixed(2)
-    const userMsg = `GRUPO: tema="${topic}", tipo_de_fallo="${failReason}", conversaciones=${group.length}, confianza_promedio=${avgConf}\n\nEJEMPLOS REPRESENTATIVOS:\n${summaries.map((s, i) => `${i + 1}. ${s}`).join('\n')}`
+    // Al LLM: extractos con varios turnos (para que razone y cite lo real).
+    const userMsg = `GRUPO: tema="${topic}", tipo_de_fallo="${failReason}", conversaciones=${group.length}, confianza_promedio=${avgConf}\n\nEJEMPLOS REALES (extractos):\n${samples.map((s, i) => `--- Ejemplo ${i + 1} ---\n${s.excerpt || s.line}`).join('\n\n')}`
     let parsed = null
     try {
-      const r = await callAI({ provider, model, apiKey, systemPrompt: OPTIMIZER_SYS, userPrompt: userMsg, maxTokens: 800, temperature: 0.3, jsonMode: provider !== 'anthropic' })
+      const r = await callAI({ provider, model, apiKey, systemPrompt: OPTIMIZER_SYS, userPrompt: userMsg, maxTokens: 1200, temperature: 0.3, jsonMode: provider !== 'anthropic' })
       tokens += (r.usage?.promptTokens || 0) + (r.usage?.completionTokens || 0)
       try { require('../controllers/analytics.controller').recordUsageInternal({ accId, agentId: agId, conversationId: null, provider, model, promptTokens: r.usage?.promptTokens || 0, completionTokens: r.usage?.completionTokens || 0, source: 'optimizer' }) } catch {}
       parsed = extractJson(r.text || '')
     } catch (e) { console.warn('[optimizer LLM]', e.message); continue }
     if (!parsed?.title) continue
     const dedupeKey = `${String(parsed.problem_type || 'prompt')}:${topic}:${failReason}`.toLowerCase().slice(0, 120)
-    const kind = await upsertSuggestion(accId, agId, { parsed, dedupeKey, groupSize: group.length, evidence: sample.map(c => c.convId) })
+    // Ejemplos REALES (extractos verificables) que se muestran en la UI.
+    const examples = samples.filter(s => s.excerpt).map(s => ({ convId: s.convId, excerpt: s.excerpt }))
+    const kind = await upsertSuggestion(accId, agId, { parsed, dedupeKey, groupSize: group.length, evidence: sample.map(c => c.convId), examples })
     if (kind === 'new') newCount++; else updatedCount++
   }
   return { newCount, updatedCount, tokens, cost: 0 }
 }
 
-async function upsertSuggestion(accId, agId, { parsed, dedupeKey, groupSize, evidence }) {
+async function upsertSuggestion(accId, agId, { parsed, dedupeKey, groupSize, evidence, examples }) {
   const now = Date.now()
+  const why = String(parsed.why || '').slice(0, 1500)
+  const exJson = JSON.stringify((examples || []).slice(0, 4))
   const [[existing]] = await pool.query('SELECT id, conversations, status FROM optimizer_suggestions WHERE account_id=? AND agent_id=? AND dedupe_key=? LIMIT 1', [accId, agId, dedupeKey])
   if (existing) {
     const merged = Array.from(new Set([...parseJ(existing.conversations, []), ...evidence])).slice(0, 30)
     // Si estaba "resuelta" pero reaparece → vuelve a "activa". "Descartada" se respeta.
     const status = existing.status === 'resolved' ? 'active' : existing.status
     await pool.query(
-      'UPDATE optimizer_suggestions SET frequency=frequency+?, conversations=?, description=?, severity=?, impact=?, proposed_change=?, status=?, updated_at=? WHERE id=?',
-      [groupSize, JSON.stringify(merged), parsed.description || '', parsed.severity || 'media', parsed.impact || 'medio', JSON.stringify(parsed.proposed_change || null), status, now, existing.id]
+      'UPDATE optimizer_suggestions SET frequency=frequency+?, conversations=?, description=?, why=?, examples=?, severity=?, impact=?, proposed_change=?, status=?, updated_at=? WHERE id=?',
+      [groupSize, JSON.stringify(merged), parsed.description || '', why, exJson, parsed.severity || 'media', parsed.impact || 'medio', JSON.stringify(parsed.proposed_change || null), status, now, existing.id]
     )
     return 'updated'
   }
@@ -279,9 +288,9 @@ async function upsertSuggestion(accId, agId, { parsed, dedupeKey, groupSize, evi
   const code = 'SUG-' + String((cnt?.n || 0) + 1).padStart(3, '0')
   const id = 'sug_' + uid()
   await pool.query(
-    `INSERT INTO optimizer_suggestions (id,code,account_id,agent_id,title,description,problem_type,severity,impact,frequency,conversations,evidence,proposed_change,status,dedupe_key,created_at,updated_at)
-     VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`,
-    [id, code, accId, agId, String(parsed.title || '').slice(0, 200), parsed.description || '', String(parsed.problem_type || 'prompt'), parsed.severity || 'media', parsed.impact || 'medio', groupSize, JSON.stringify(evidence), JSON.stringify(parsed.evidence || ''), JSON.stringify(parsed.proposed_change || null), 'new', dedupeKey, now, now]
+    `INSERT INTO optimizer_suggestions (id,code,account_id,agent_id,title,description,why,examples,problem_type,severity,impact,frequency,conversations,evidence,proposed_change,status,dedupe_key,created_at,updated_at)
+     VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`,
+    [id, code, accId, agId, String(parsed.title || '').slice(0, 200), parsed.description || '', why, exJson, String(parsed.problem_type || 'prompt'), parsed.severity || 'media', parsed.impact || 'medio', groupSize, JSON.stringify(evidence), JSON.stringify(parsed.evidence || ''), JSON.stringify(parsed.proposed_change || null), 'new', dedupeKey, now, now]
   )
   return 'new'
 }
@@ -299,9 +308,9 @@ async function setSuggestionStatus(accId, agId, sid, status, appliedVersion) {
 async function getSuggestions(accId, agId) {
   const [rows] = await pool.query('SELECT * FROM optimizer_suggestions WHERE account_id=? AND agent_id=? ORDER BY frequency DESC, updated_at DESC', [accId, agId])
   return rows.map(r => ({
-    id: r.id, code: r.code || r.id, title: r.title, description: r.description, problemType: r.problem_type,
+    id: r.id, code: r.code || r.id, title: r.title, description: r.description, why: r.why || '', problemType: r.problem_type,
     severity: r.severity, impact: r.impact, frequency: r.frequency,
-    conversations: parseJ(r.conversations, []), evidence: parseJ(r.evidence, ''),
+    conversations: parseJ(r.conversations, []), evidence: parseJ(r.evidence, ''), examples: parseJ(r.examples, []),
     proposedChange: parseJ(r.proposed_change, null), status: r.status,
     appliedVersion: r.applied_version, createdAt: r.created_at, updatedAt: r.updated_at,
   }))
