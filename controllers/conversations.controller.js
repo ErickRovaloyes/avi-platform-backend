@@ -56,7 +56,7 @@ const mapConvo = (c, messages = []) => ({
   initials: c.initials, preview: c.preview,
   unread: !!c.unread, unreadCount: Number(c.unread_count) || 0, aiEnabled: !!c.ai_enabled,
   aiDisabledReason: c.ai_disabled_reason || null,
-  archived: !!c.archived, blocked: !!c.blocked,
+  archived: !!c.archived, blocked: !!c.blocked, followup: !!c.followup,
   origin:        parseJ(c.origin, null),
   labels:        parseJ(c.labels, []),
   pipelineCards: parseJ(c.pipeline_cards, []),
@@ -151,7 +151,7 @@ const createConvo = async (req, res) => {
 const updateConvo = async (req, res) => {
   const { accId, agId, convId } = req.params
   try {
-    const map = { guestName:'guest_name', preview:'preview', unread:'unread', aiEnabled:'ai_enabled', labels:'labels', pipelineCards:'pipeline_cards', localVars:'local_vars', debugLog:'debug_log', assignedTo:'assigned_to', origin:'origin', archived:'archived', blocked:'blocked' }
+    const map = { guestName:'guest_name', preview:'preview', unread:'unread', aiEnabled:'ai_enabled', labels:'labels', pipelineCards:'pipeline_cards', localVars:'local_vars', debugLog:'debug_log', assignedTo:'assigned_to', origin:'origin', archived:'archived', blocked:'blocked', followup:'followup' }
     const sets = []
     const vals = []
     for (const [key, col] of Object.entries(map)) {

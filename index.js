@@ -190,6 +190,8 @@ app.use('/api',                recontactRoutes)
     // Estado de conversaciones: archivada / bloqueada.
     "ALTER TABLE conversations ADD COLUMN archived TINYINT(1) DEFAULT 0",
     "ALTER TABLE conversations ADD COLUMN blocked TINYINT(1) DEFAULT 0",
+    // Chats en seguimiento: marcados con estrella + avatar con animación de respiración.
+    "ALTER TABLE conversations ADD COLUMN followup TINYINT(1) DEFAULT 0",
     // Publicidad en cuentas Demo: código de anuncio (embed) gestionado por el super admin.
     "ALTER TABLE platform_settings ADD COLUMN demo_ads_enabled TINYINT(1) DEFAULT 0",
     "ALTER TABLE platform_settings ADD COLUMN demo_ads_html MEDIUMTEXT",
