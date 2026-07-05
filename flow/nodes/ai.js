@@ -718,17 +718,25 @@ const aiNodes = [
 
       // Conciencia temporal GENERAL de la IA: siempre que esté activada, el modelo
       // conoce la fecha y hora local REAL (zona configurable) y puede razonar sobre
-      // cualquier zona horaria del mundo.
+      // cualquier zona horaria del mundo. La instrucción es IMPERATIVA porque algunos
+      // modelos (p. ej. DeepSeek) niegan por reflejo tener acceso a la hora aunque
+      // esté en el contexto. Se antepone al prompt para máxima prominencia.
       if (ctx.account?.aiDatetimeEnabled !== false) {
         const tz = ctx.account?.aiTimezone || ctx.account?.scheduling?.timezone || 'America/Lima'
         const now = new Date()
         let localStr = '', utcStr = ''
         try { localStr = now.toLocaleString('es', { timeZone: tz, weekday: 'long', year: 'numeric', month: 'long', day: 'numeric', hour: '2-digit', minute: '2-digit' }) } catch { localStr = now.toISOString() }
         try { utcStr = now.toISOString().replace('T', ' ').slice(0, 16) + ' UTC' } catch { utcStr = '' }
-        sysWithRag = `${sysWithRag}\n\n---\n🕐 CONTEXTO TEMPORAL\n` +
-          `Fecha y hora local actual: ${localStr} (zona ${tz}).\n` +
-          `Referencia UTC: ${utcStr}.\n` +
-          `Puedes calcular la fecha, la hora y el día de la semana en CUALQUIER zona horaria del mundo a partir de esta referencia (ej. otro país o ciudad que te pida el cliente). Usa esta información para responder sobre fechas, horarios, "hoy/mañana/ayer", plazos y diferencias horarias.\n---`
+        const temporalBlock = `🕐 FECHA Y HORA ACTUALES (dato en tiempo real que SÍ conoces):\n` +
+          `• Ahora mismo es: ${localStr} (zona horaria ${tz}).\n` +
+          `• Referencia UTC: ${utcStr}.\n` +
+          `INSTRUCCIÓN OBLIGATORIA: SÍ tienes acceso a la fecha y la hora actuales (son las de arriba). ` +
+          `Si te preguntan qué día es, la fecha o la hora —aquí o en cualquier ciudad/país del mundo— respóndela usando estos datos ` +
+          `(calcula la diferencia horaria cuando pregunten por otra zona). ` +
+          `NUNCA digas que no tienes acceso a la fecha o la hora, ni que no puedes saber la hora actual: SÍ la sabes.`
+        // Se antepone (más saliente para el modelo) y también se mantiene el flujo normal.
+        sysWithRag = `${temporalBlock}\n\n---\n\n${sysWithRag}`
+        logDebug(ctx, 'flow_run', '🕐 Contexto temporal inyectado en el prompt', { timezone: tz, now: localStr })
       }
 
       // Conciencia temporal para la agenda: el modelo necesita saber qué día es hoy.
