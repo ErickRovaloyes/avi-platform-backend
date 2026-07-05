@@ -16,6 +16,7 @@ const withUpload = (mw) => (req, res, next) => mw(req, res, (err) => {
 // Público: estado del registro + descarga de la plantilla activa + alta de Demo.
 router.get('/public/demo-status',     ctrl.publicStatus)
 router.get('/public/demo-template',   ctrl.downloadActiveTemplate)
+router.post('/public/demo-signup/request-code', ctrl.requestSignupCode)
 router.post('/public/demo-signup',    withUpload(upload.single('document')), ctrl.signup)
 
 // Superadmin: dashboard de Demos.

@@ -2,40 +2,95 @@
 const pool = require('../db')
 const { sign } = require('../auth')
 const { parseJ } = require('../utils')
+const { loadEmailConfig, isConfigured } = require('../services/email')
+const { issueCode, verifyCode } = require('../services/verifyCodes')
+
+// Valida credenciales y arma la sesión (super admin o miembro). Devuelve la
+// sesión o null si las credenciales no son válidas. Reutilizado por login + 2FA.
+async function buildSessionFor(email, password) {
+  const [sas] = await pool.query('SELECT * FROM super_admins WHERE email=? AND password=?', [email, password])
+  if (sas.length) {
+    const sa = sas[0]
+    return { type: 'superadmin', id: sa.id, name: sa.name, email: sa.email, photo: sa.photo || null }
+  }
+  const [rows] = await pool.query(
+    `SELECT m.*, a.name AS accountName, a.id AS accId
+     FROM members m JOIN accounts a ON m.account_id = a.id
+     WHERE m.email=? AND m.password=? AND m.status='active'`,
+    [email, password]
+  )
+  if (!rows.length) return null
+  const allAccountIds = [...new Set(rows.map(r => r.accId))]
+  const first         = rows[0]
+  const [roleRows]    = await pool.query('SELECT * FROM roles WHERE id=?', [first.role_id])
+  const role          = roleRows[0]
+  return {
+    type: 'member', id: first.id, name: first.name, email: first.email, photo: first.photo || null,
+    accountId: first.accId, accountName: first.accountName,
+    allAccountIds,
+    roleId: first.role_id, permissions: parseJ(role?.permissions, {}),
+    agentAccess: parseJ(first.agent_access, []),
+  }
+}
+
+// ¿Está activo el 2FA de login? Solo si el super admin lo activó Y hay correo configurado.
+async function twoFactorActive() {
+  try {
+    const [[s]] = await pool.query('SELECT login_2fa_enabled FROM platform_settings WHERE id=1')
+    if (!s || !s.login_2fa_enabled) return false
+    return isConfigured(await loadEmailConfig())
+  } catch { return false }
+}
 
 const login = async (req, res) => {
   const { email, password } = req.body
   if (!email || !password) return res.status(400).json({ error: 'Email y contraseña requeridos' })
   try {
-    const [sas] = await pool.query('SELECT * FROM super_admins WHERE email=? AND password=?', [email, password])
-    if (sas.length) {
-      const sa = sas[0]
-      const session = { type: 'superadmin', id: sa.id, name: sa.name, email: sa.email, photo: sa.photo || null }
-      return res.json({ token: sign(session), session })
-    }
-    const [rows] = await pool.query(
-      `SELECT m.*, a.name AS accountName, a.id AS accId
-       FROM members m JOIN accounts a ON m.account_id = a.id
-       WHERE m.email=? AND m.password=? AND m.status='active'`,
-      [email, password]
-    )
-    if (!rows.length) return res.status(401).json({ error: 'Credenciales inválidas' })
-    const allAccountIds = [...new Set(rows.map(r => r.accId))]
-    const first         = rows[0]
-    const [roleRows]    = await pool.query('SELECT * FROM roles WHERE id=?', [first.role_id])
-    const role          = roleRows[0]
-    const session = {
-      type: 'member', id: first.id, name: first.name, email: first.email, photo: first.photo || null,
-      accountId: first.accId, accountName: first.accountName,
-      allAccountIds,
-      roleId: first.role_id, permissions: parseJ(role?.permissions, {}),
-      agentAccess: parseJ(first.agent_access, []),
+    const session = await buildSessionFor(email, password)
+    if (!session) return res.status(401).json({ error: 'Credenciales inválidas' })
+
+    // 2FA opt-in: si está activo y la identidad tiene correo, se envía un código y
+    // NO se entrega el token hasta verificarlo. Si el envío falla, se hace fail-open
+    // (se entrega el token igual) para no dejar a nadie fuera por un problema de correo.
+    if (session.email && await twoFactorActive()) {
+      const r = await issueCode(session.email, 'login')
+      if (r.ok) return res.json({ twoFactorRequired: true, email: session.email })
+      console.error('[LOGIN 2FA] envío falló, fail-open:', r.error)
     }
     res.json({ token: sign(session), session })
   } catch (err) {
     console.error('[LOGIN]', err)
     res.status(500).json({ error: 'Error interno' })
   }
+}
+
+// Segundo paso del 2FA: revalida credenciales + verifica el código → entrega token.
+const verify2fa = async (req, res) => {
+  const { email, password, code } = req.body
+  if (!email || !password || !code) return res.status(400).json({ error: 'Faltan datos' })
+  try {
+    const session = await buildSessionFor(email, password)
+    if (!session) return res.status(401).json({ error: 'Credenciales inválidas' })
+    const v = await verifyCode(session.email, 'login', code)
+    if (!v.ok) return res.status(401).json({ error: v.error })
+    res.json({ token: sign(session), session })
+  } catch (err) {
+    console.error('[VERIFY 2FA]', err)
+    res.status(500).json({ error: 'Error interno' })
+  }
+}
+
+// Reenvía el código de login (mismo correo).
+const resend2fa = async (req, res) => {
+  const { email, password } = req.body
+  if (!email || !password) return res.status(400).json({ error: 'Faltan datos' })
+  try {
+    const session = await buildSessionFor(email, password)
+    if (!session) return res.status(401).json({ error: 'Credenciales inválidas' })
+    const r = await issueCode(session.email, 'login')
+    if (!r.ok) return res.status(503).json({ error: r.error })
+    res.json({ ok: true })
+  } catch (err) { res.status(500).json({ error: 'Error interno' }) }
 }
 
 const switchAccount = async (req, res) => {
@@ -170,4 +225,4 @@ const updateMyProfile = async (req, res) => {
   }
 }
 
-module.exports = { login, switchAccount, impersonate, refreshSession, updateMyProfile }
+module.exports = { login, verify2fa, resend2fa, switchAccount, impersonate, refreshSession, updateMyProfile }

@@ -5,6 +5,17 @@ const { sign } = require('../auth')
 const guard = require('../services/demoGuard')
 const subs = require('../services/subscriptions')
 const provision = require('../services/demoProvision')
+const { loadEmailConfig, isConfigured } = require('../services/email')
+const { issueCode, verifyCode } = require('../services/verifyCodes')
+
+// ¿Verificación de correo activa en el registro? Solo si el super admin la activó Y hay correo configurado.
+async function signupVerifyActive() {
+  try {
+    const [[s]] = await pool.query('SELECT signup_verify_enabled FROM platform_settings WHERE id=1')
+    if (!s || !s.signup_verify_enabled) return false
+    return isConfigured(await loadEmailConfig())
+  } catch { return false }
+}
 
 const requireSA = (req, res) => {
   if (req.user?.type !== 'superadmin') { res.status(403).json({ error: 'Solo superadmin' }); return false }
@@ -41,6 +52,12 @@ const signup = async (req, res) => {
     // ¿Correo ya registrado como miembro? (no relacionado con el antifraude Demo, pero evita choque)
     const [[dupe]] = await pool.query('SELECT 1 AS x FROM members WHERE email=? LIMIT 1', [email.trim().toLowerCase()])
     if (dupe) return res.status(409).json({ error: 'Ya existe una cuenta con este correo. Inicia sesión.' })
+
+    // Verificación de correo (opt-in): exige un código válido antes de crear la cuenta.
+    if (await signupVerifyActive()) {
+      const v = await verifyCode(email.trim().toLowerCase(), 'signup', b.code || '')
+      if (!v.ok) return res.status(401).json({ error: v.error, needCode: true })
+    }
 
     // Validación antifraude (correo / IP / fingerprint / teléfono)
     const v = await guard.validate({ email, ip, fingerprint, phone })
@@ -118,6 +135,22 @@ const signup = async (req, res) => {
       token: sign(session), session,
     })
   } catch (err) { console.error('[demo signup]', err); res.status(500).json({ error: 'No se pudo crear la cuenta Demo' }) }
+}
+
+// Solicita un código de verificación de correo para el registro Demo (público).
+// Solo hace algo si la verificación está activa; si no, responde { skip:true }.
+const requestSignupCode = async (req, res) => {
+  const email = String(req.body?.email || '').trim().toLowerCase()
+  if (!email || !/.+@.+\..+/.test(email)) return res.status(400).json({ error: 'Correo inválido' })
+  try {
+    if (!await registrationEnabled()) return res.status(403).json({ error: 'El registro está deshabilitado temporalmente.' })
+    if (!await signupVerifyActive()) return res.json({ skip: true })
+    const [[dupe]] = await pool.query('SELECT 1 AS x FROM members WHERE email=? LIMIT 1', [email])
+    if (dupe) return res.status(409).json({ error: 'Ya existe una cuenta con este correo. Inicia sesión.' })
+    const r = await issueCode(email, 'signup')
+    if (!r.ok) return res.status(503).json({ error: r.error })
+    res.json({ ok: true, sent: true })
+  } catch (err) { console.error('[demo requestSignupCode]', err); res.status(500).json({ error: 'Error interno' }) }
 }
 
 // ── Gestión (superadmin) ───────────────────────────────────────────────────────
@@ -319,7 +352,7 @@ const setRegistration = async (req, res) => {
 }
 
 module.exports = {
-  signup, listRegistrations, listOverrides, allow, removeOverride, setIpRestriction,
+  signup, requestSignupCode, listRegistrations, listOverrides, allow, removeOverride, setIpRestriction,
   publicStatus, downloadActiveTemplate, listTemplates, uploadTemplate, activateTemplate, deleteTemplate, downloadTemplate,
   getRegistration, setRegistration, getDashboard,
 }

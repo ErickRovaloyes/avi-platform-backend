@@ -3,6 +3,7 @@ const pool = require('../db')
 const { uid, parseJ } = require('../utils')
 const { provisionDefaultAgent } = require('../services/accountProvision')
 const { extractFileText } = require('./promptGenerator.controller')
+const { sendEmail } = require('../services/email')
 
 // ── Platform settings ─────────────────────────────────────────────────────────
 
@@ -79,6 +80,13 @@ const getSettings = async (req, res) => {
           optimizerModel: r.optimizer_model || 'gpt-4o-mini',
           demoAdsEnabled: !!r.demo_ads_enabled,
           demoAdsHtml: r.demo_ads_html || '',
+          emailProvider: r.email_provider || 'none',
+          emailApiKey: maskKey(r.email_api_key || ''),
+          hasEmailApiKey: !!r.email_api_key,
+          emailFrom: r.email_from || '',
+          emailFromName: r.email_from_name || 'AVI Asistente',
+          signupVerifyEnabled: !!r.signup_verify_enabled,
+          login2faEnabled: !!r.login_2fa_enabled,
         }
       : {
           changeAgentModel: 'gpt-4o-mini',
@@ -106,6 +114,13 @@ const getSettings = async (req, res) => {
           optimizerModel: 'gpt-4o-mini',
           demoAdsEnabled: false,
           demoAdsHtml: '',
+          emailProvider: 'none',
+          emailApiKey: '',
+          hasEmailApiKey: false,
+          emailFrom: '',
+          emailFromName: 'AVI Asistente',
+          signupVerifyEnabled: false,
+          login2faEnabled: false,
         })
   } catch (err) { res.status(500).json({ error: 'Error interno' }) }
 }
@@ -123,6 +138,7 @@ const updateSettings = async (req, res) => {
     mediaMaxSizeMb, transcriptionModel,
     defaultPromptProvider, defaultPromptModel, optimizerModel,
     demoAdsEnabled, demoAdsHtml,
+    emailProvider, emailApiKey, emailFrom, emailFromName, signupVerifyEnabled, login2faEnabled,
   } = req.body
   try {
     const sets = []; const vals = []
@@ -153,6 +169,13 @@ const updateSettings = async (req, res) => {
     if (optimizerModel            !== undefined) { sets.push('optimizer_model=?');               vals.push(String(optimizerModel || 'gpt-4o-mini')) }
     if (demoAdsEnabled            !== undefined) { sets.push('demo_ads_enabled=?');              vals.push(demoAdsEnabled ? 1 : 0) }
     if (demoAdsHtml               !== undefined) { sets.push('demo_ads_html=?');                 vals.push(demoAdsHtml || null) }
+    if (emailProvider             !== undefined) { sets.push('email_provider=?');                vals.push(String(emailProvider || 'none')) }
+    // Solo se actualiza la API key si llega un valor no vacío y sin enmascarar (evita borrarla al guardar el placeholder).
+    if (emailApiKey               !== undefined && emailApiKey !== '' && !emailApiKey.includes('***')) { sets.push('email_api_key=?'); vals.push(emailApiKey) }
+    if (emailFrom                 !== undefined) { sets.push('email_from=?');                     vals.push(emailFrom || null) }
+    if (emailFromName             !== undefined) { sets.push('email_from_name=?');                vals.push(emailFromName || 'AVI Asistente') }
+    if (signupVerifyEnabled       !== undefined) { sets.push('signup_verify_enabled=?');         vals.push(signupVerifyEnabled ? 1 : 0) }
+    if (login2faEnabled           !== undefined) { sets.push('login_2fa_enabled=?');             vals.push(login2faEnabled ? 1 : 0) }
     if (platformOpenaiKey         !== undefined) { sets.push('openai_key=?');                   vals.push(platformOpenaiKey) }
     if (platformDeepseekKey       !== undefined) { sets.push('deepseek_key=?');                 vals.push(platformDeepseekKey) }
     if (platformAnthropicKey      !== undefined) { sets.push('anthropic_key=?');                vals.push(platformAnthropicKey) }
@@ -395,4 +418,21 @@ const getAccountNameHistory = async (req, res) => {
   } catch (err) { res.status(500).json({ error: 'Error interno' }) }
 }
 
-module.exports = { getSettings, updateSettings, getPublicIntegrations, listSuperAdmins, createSuperAdmin, updateSuperAdmin, deleteSuperAdmin, listAllUsers, listAccounts, createAccount, updateSAAccount, deleteAccount, getAccountNameHistory }
+// Envía un correo de prueba con la configuración GUARDADA (solo super admin).
+const testEmail = async (req, res) => {
+  if (req.user.type !== 'superadmin') return res.status(403).json({ error: 'Solo super admin' })
+  const to = String(req.body?.to || '').trim()
+  if (!to || !/.+@.+\..+/.test(to)) return res.status(400).json({ error: 'Correo destino inválido' })
+  try {
+    const r = await sendEmail({
+      to,
+      subject: 'Correo de prueba — AVI Asistente',
+      html: '<div style="font-family:Segoe UI,Arial,sans-serif;padding:20px;"><h2 style="color:#0b8a4f;">✓ Configuración de correo correcta</h2><p>Si recibes este mensaje, el proveedor de correo de AVI está configurado y funcionando.</p></div>',
+      text: 'Configuración de correo correcta. El proveedor de correo de AVI funciona.',
+    })
+    if (!r.ok) return res.status(502).json({ error: r.error || 'No se pudo enviar' })
+    res.json({ ok: true })
+  } catch (err) { res.status(500).json({ error: 'Error interno' }) }
+}
+
+module.exports = { getSettings, updateSettings, getPublicIntegrations, listSuperAdmins, createSuperAdmin, updateSuperAdmin, deleteSuperAdmin, listAllUsers, listAccounts, createAccount, updateSAAccount, deleteAccount, getAccountNameHistory, testEmail }

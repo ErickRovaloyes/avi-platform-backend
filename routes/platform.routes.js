@@ -22,6 +22,7 @@ router.post('/whatsapp/coexistence/exchange', authMiddleware, coex.exchange)
 // Platform settings — /api/platform/settings (called by SuperAdminShell)
 router.get('/platform/settings',        authMiddleware, ctrl.getSettings)
 router.put('/platform/settings',        authMiddleware, ctrl.updateSettings)
+router.post('/platform/test-email',     authMiddleware, ctrl.testEmail)
 
 // Superadmin aliases — /api/superadmin/settings (called by AccountContext)
 router.get('/superadmin/settings',                      authMiddleware, ctrl.getSettings)

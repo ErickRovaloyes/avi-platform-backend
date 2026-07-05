@@ -204,6 +204,25 @@ app.use('/api',                recontactRoutes)
     // Agente de Cambios: capacidades globales activables por el super admin
     // (qué puede modificar: prompt / herramientas / flujos / agendas).
     "ALTER TABLE platform_settings ADD COLUMN change_agent_caps TEXT",
+    // Correo transaccional (Resend/SendGrid vía API HTTP) + verificación de registro
+    // y 2FA en login. Todo opt-in: sin proveedor configurado, nada cambia.
+    "ALTER TABLE platform_settings ADD COLUMN email_provider VARCHAR(20) DEFAULT 'none'",
+    "ALTER TABLE platform_settings ADD COLUMN email_api_key TEXT",
+    "ALTER TABLE platform_settings ADD COLUMN email_from VARCHAR(200)",
+    "ALTER TABLE platform_settings ADD COLUMN email_from_name VARCHAR(160)",
+    "ALTER TABLE platform_settings ADD COLUMN signup_verify_enabled TINYINT(1) DEFAULT 0",
+    "ALTER TABLE platform_settings ADD COLUMN login_2fa_enabled TINYINT(1) DEFAULT 0",
+    `CREATE TABLE IF NOT EXISTS email_codes (
+       id         VARCHAR(50) PRIMARY KEY,
+       email      VARCHAR(200) NOT NULL,
+       code       VARCHAR(10)  NOT NULL,
+       purpose    VARCHAR(20)  NOT NULL,
+       expires_at BIGINT       NOT NULL,
+       consumed   TINYINT(1)   DEFAULT 0,
+       attempts   INT          DEFAULT 0,
+       created_at BIGINT,
+       INDEX idx_ec_email (email, purpose)
+     )`,
     // Apodo interno de la cuenta (identificador estable, no cambia con el nombre)
     // + historial de cambios de nombre.
     "ALTER TABLE accounts ADD COLUMN nickname VARCHAR(120)",
