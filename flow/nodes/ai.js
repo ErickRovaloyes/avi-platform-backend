@@ -494,6 +494,28 @@ async function callAI(ctx, { systemPrompt, userPrompt, model, provider, maxToken
   // Esto corrige el caso en que la IA "cree" que activó un trigger y solo responde
   // texto (frecuente en DeepSeek). Se combina con tool_choice:'auto' del cliente.
   let effSystem = systemPrompt
+
+  // ── Conciencia temporal: se antepone a TODA respuesta conversacional (no en las
+  // llamadas de utilidad en jsonMode: clasificar/enrutar/resumir). Así cualquier nodo
+  // de IA (ai_agent, ai_chat, …) conoce la fecha y hora reales. La instrucción es
+  // imperativa porque algunos modelos niegan por reflejo tener acceso a la hora.
+  if (!jsonMode && ctx.account?.aiDatetimeEnabled !== false) {
+    const tz = ctx.account?.aiTimezone || ctx.account?.scheduling?.timezone || 'America/Lima'
+    const now = new Date()
+    let localStr = '', utcStr = ''
+    try { localStr = now.toLocaleString('es', { timeZone: tz, weekday: 'long', year: 'numeric', month: 'long', day: 'numeric', hour: '2-digit', minute: '2-digit' }) } catch { localStr = now.toISOString() }
+    try { utcStr = now.toISOString().replace('T', ' ').slice(0, 16) + ' UTC' } catch { utcStr = '' }
+    const temporalBlock = `🕐 FECHA Y HORA ACTUALES (dato en tiempo real que SÍ conoces):\n` +
+      `• Ahora mismo es: ${localStr} (zona horaria ${tz}).\n` +
+      `• Referencia UTC: ${utcStr}.\n` +
+      `INSTRUCCIÓN OBLIGATORIA: SÍ tienes acceso a la fecha y la hora actuales (son las de arriba). ` +
+      `Si te preguntan qué día es, la fecha o la hora —aquí o en cualquier ciudad/país del mundo— respóndela usando estos datos ` +
+      `(calcula la diferencia horaria cuando pregunten por otra zona). ` +
+      `NUNCA digas que no tienes acceso a la fecha o la hora, ni que no puedes saber la hora actual: SÍ la sabes.`
+    effSystem = `${temporalBlock}\n\n---\n\n${effSystem || ''}`
+    try { logDebug(ctx, 'flow_run', '🕐 Contexto temporal inyectado en el prompt', { timezone: tz, now: localStr }) } catch {}
+  }
+
   if (tools.length > 0) {
     const toolNames = tools.map(t => t.function?.name).filter(Boolean).join(', ')
     effSystem = `${systemPrompt || ''}\n\n` +
@@ -716,28 +738,8 @@ const aiNodes = [
         sysWithRag = `${sysWithRag}\n\n---\n[MEMORIA DEL CLIENTE — resumen permanente de lo hablado y datos importantes; úsala para personalizar y no volver a preguntar lo que ya sabes]\n${String(_mem).trim()}\n---`
       }
 
-      // Conciencia temporal GENERAL de la IA: siempre que esté activada, el modelo
-      // conoce la fecha y hora local REAL (zona configurable) y puede razonar sobre
-      // cualquier zona horaria del mundo. La instrucción es IMPERATIVA porque algunos
-      // modelos (p. ej. DeepSeek) niegan por reflejo tener acceso a la hora aunque
-      // esté en el contexto. Se antepone al prompt para máxima prominencia.
-      if (ctx.account?.aiDatetimeEnabled !== false) {
-        const tz = ctx.account?.aiTimezone || ctx.account?.scheduling?.timezone || 'America/Lima'
-        const now = new Date()
-        let localStr = '', utcStr = ''
-        try { localStr = now.toLocaleString('es', { timeZone: tz, weekday: 'long', year: 'numeric', month: 'long', day: 'numeric', hour: '2-digit', minute: '2-digit' }) } catch { localStr = now.toISOString() }
-        try { utcStr = now.toISOString().replace('T', ' ').slice(0, 16) + ' UTC' } catch { utcStr = '' }
-        const temporalBlock = `🕐 FECHA Y HORA ACTUALES (dato en tiempo real que SÍ conoces):\n` +
-          `• Ahora mismo es: ${localStr} (zona horaria ${tz}).\n` +
-          `• Referencia UTC: ${utcStr}.\n` +
-          `INSTRUCCIÓN OBLIGATORIA: SÍ tienes acceso a la fecha y la hora actuales (son las de arriba). ` +
-          `Si te preguntan qué día es, la fecha o la hora —aquí o en cualquier ciudad/país del mundo— respóndela usando estos datos ` +
-          `(calcula la diferencia horaria cuando pregunten por otra zona). ` +
-          `NUNCA digas que no tienes acceso a la fecha o la hora, ni que no puedes saber la hora actual: SÍ la sabes.`
-        // Se antepone (más saliente para el modelo) y también se mantiene el flujo normal.
-        sysWithRag = `${temporalBlock}\n\n---\n\n${sysWithRag}`
-        logDebug(ctx, 'flow_run', '🕐 Contexto temporal inyectado en el prompt', { timezone: tz, now: localStr })
-      }
+      // (La conciencia temporal general se inyecta ahora dentro de callAI, para que
+      //  la reciba CUALQUIER nodo de IA conversacional, no solo este.)
 
       // Conciencia temporal para la agenda: el modelo necesita saber qué día es hoy.
       const _sch = ctx.account?.scheduling
