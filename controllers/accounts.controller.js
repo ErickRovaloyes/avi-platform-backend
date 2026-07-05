@@ -134,6 +134,7 @@ async function loadPublicAccount(accId) {
   const _mc = parseJ(acc.meta_catalog, null)
   return {
     id: acc.id, name: acc.name,
+    chatTheme: parseJ(acc.chat_theme, null),
     modules,
     metaCatalog: _mc?.catalogId ? { connected: true, catalogId: _mc.catalogId, name: _mc.name || _mc.catalogId } : { connected: false },
     openaiKey: effOpenai, deepseekKey: effDeepseek, anthropicKey: effAnthropic,
@@ -262,9 +263,10 @@ const getAccount = async (req, res) => {
 
 const updateAccount = async (req, res) => {
   const { accId } = req.params
-  const { openaiKey, deepseekKey, anthropicKey, name, email, plan, status, channelLimitsOverride, changeAgentLimitOverride, changeAgentTokenLimitsOverride } = req.body
+  const { openaiKey, deepseekKey, anthropicKey, name, email, plan, status, channelLimitsOverride, changeAgentLimitOverride, changeAgentTokenLimitsOverride, chatTheme } = req.body
   try {
     const sets = []; const vals = []
+    if (chatTheme               !== undefined) { sets.push('chat_theme=?');                vals.push(chatTheme === null ? null : JSON.stringify(chatTheme)) }
     if (openaiKey               !== undefined) { sets.push('openai_key=?');                vals.push(openaiKey) }
     if (deepseekKey             !== undefined) { sets.push('deepseek_key=?');              vals.push(deepseekKey) }
     if (anthropicKey            !== undefined) { sets.push('anthropic_key=?');             vals.push(anthropicKey) }
