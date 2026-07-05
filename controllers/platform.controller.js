@@ -45,6 +45,7 @@ const getSettings = async (req, res) => {
       ? {
           changeAgentModel: r.change_agent_model,
           changeAgentDefaultLimit: r.change_agent_default_limit,
+          changeAgentTokenLimit: r.change_agent_token_limit ?? 95000,
           changeAgentTokenLimits: parseJ(r.change_agent_token_limits, DEFAULT_TOKEN_LIMITS),
           channelLimits: parseJ(r.channel_limits, {}),
           metaAppId: r.meta_app_id || '',
@@ -76,6 +77,7 @@ const getSettings = async (req, res) => {
       : {
           changeAgentModel: 'gpt-4o-mini',
           changeAgentDefaultLimit: 20,
+          changeAgentTokenLimit: 95000,
           changeAgentTokenLimits: DEFAULT_TOKEN_LIMITS,
           channelLimits: {},
           metaAppId: '',
@@ -102,7 +104,7 @@ const getSettings = async (req, res) => {
 const updateSettings = async (req, res) => {
   if (req.user.type !== 'superadmin') return res.status(403).json({ error: 'Solo super admin' })
   const {
-    changeAgentModel, changeAgentDefaultLimit, changeAgentTokenLimits,
+    changeAgentModel, changeAgentDefaultLimit, changeAgentTokenLimits, changeAgentTokenLimit,
     channelLimits, metaAppId, metaConfigId, metaAppSecret,
     promptGeneratorModel, promptGeneratorStructure, promptGeneratorConditions,
     promptGeneratorMaxTokens, promptGeneratorTemperature, promptGeneratorMaxDocChars,
@@ -117,6 +119,7 @@ const updateSettings = async (req, res) => {
     if (changeAgentModel          !== undefined) { sets.push('change_agent_model=?');           vals.push(changeAgentModel) }
     if (changeAgentDefaultLimit   !== undefined) { sets.push('change_agent_default_limit=?');   vals.push(changeAgentDefaultLimit) }
     if (changeAgentTokenLimits    !== undefined) { sets.push('change_agent_token_limits=?');    vals.push(JSON.stringify(changeAgentTokenLimits)) }
+    if (changeAgentTokenLimit     !== undefined) { sets.push('change_agent_token_limit=?');     vals.push(changeAgentTokenLimit === null || changeAgentTokenLimit === '' ? 95000 : Number(changeAgentTokenLimit)) }
     if (channelLimits             !== undefined) { sets.push('channel_limits=?');               vals.push(JSON.stringify(channelLimits)) }
     if (metaAppId                 !== undefined) { sets.push('meta_app_id=?');                  vals.push(metaAppId) }
     if (metaConfigId              !== undefined) { sets.push('meta_config_id=?');               vals.push(metaConfigId) }
@@ -259,6 +262,7 @@ const listAccounts = async (req, res) => {
     for (const u of usages) {
       usageByAcc[u.account_id] = {
         used: u.used || 0,
+        tokensUsed: Number(u.tokens_used || 0) || ((u.basic_used || 0) + (u.medium_used || 0) + (u.complex_used || 0)),
         basicUsed: u.basic_used || 0,
         mediumUsed: u.medium_used || 0,
         complexUsed: u.complex_used || 0,
@@ -269,6 +273,7 @@ const listAccounts = async (req, res) => {
       nickname: a.nickname || a.name,
       modules: parseJ(a.modules, null),
       cmsStorageQuotaMb: a.cms_storage_quota_mb ?? null,
+      changeAgentTokenQuota: a.change_agent_token_quota ?? null,
       channelLimitsOverride: parseJ(a.channel_limits_override, {}),
       changeAgentLimitOverride: a.change_agent_limit_override ?? null,
       changeAgentTokenLimitsOverride: parseJ(a.change_agent_token_limits_override, null),
@@ -326,7 +331,7 @@ const createAccount = async (req, res) => {
 const updateSAAccount = async (req, res) => {
   if (req.user.type !== 'superadmin') return res.status(403).json({ error: 'Solo super admin' })
   const { accId } = req.params
-  const { plan, status, channelLimitsOverride, changeAgentLimitOverride, changeAgentTokenLimitsOverride, modules, cmsStorageQuotaMb, nickname, name } = req.body
+  const { plan, status, channelLimitsOverride, changeAgentLimitOverride, changeAgentTokenLimitsOverride, changeAgentTokenQuota, modules, cmsStorageQuotaMb, nickname, name } = req.body
   try {
     const sets = []; const vals = []
     if (plan                     !== undefined) { sets.push('plan=?');                      vals.push(plan) }
@@ -349,6 +354,8 @@ const updateSAAccount = async (req, res) => {
     // Módulos override por cuenta: array de ids habilitados, o null = heredar del tipo / todos.
     if (modules                  !== undefined) { sets.push('modules=?');                   vals.push(Array.isArray(modules) ? JSON.stringify(modules) : null) }
     if (changeAgentLimitOverride !== undefined) { sets.push('change_agent_limit_override=?'); vals.push(changeAgentLimitOverride) }
+    // Cupo único de tokens del Agente de Cambios por cuenta (null = usar el default global).
+    if (changeAgentTokenQuota !== undefined) { sets.push('change_agent_token_quota=?'); vals.push(changeAgentTokenQuota === null || changeAgentTokenQuota === '' ? null : Number(changeAgentTokenQuota)) }
     if (changeAgentTokenLimitsOverride !== undefined) {
       sets.push('change_agent_token_limits_override=?')
       vals.push(changeAgentTokenLimitsOverride === null ? null : JSON.stringify(changeAgentTokenLimitsOverride))

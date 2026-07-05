@@ -190,6 +190,12 @@ app.use('/api',                recontactRoutes)
     // Estado de conversaciones: archivada / bloqueada.
     "ALTER TABLE conversations ADD COLUMN archived TINYINT(1) DEFAULT 0",
     "ALTER TABLE conversations ADD COLUMN blocked TINYINT(1) DEFAULT 0",
+    // Agente de Cambios: UN solo cupo de tokens totales (sin tipos). Default de
+    // plataforma + override por cuenta + consumo total mensual.
+    "ALTER TABLE platform_settings ADD COLUMN change_agent_token_limit INT DEFAULT 95000",
+    "ALTER TABLE accounts ADD COLUMN change_agent_token_quota INT",
+    "ALTER TABLE change_agent_usage ADD COLUMN tokens_used BIGINT DEFAULT 0",
+    "UPDATE change_agent_usage SET tokens_used = COALESCE(basic_used,0)+COALESCE(medium_used,0)+COALESCE(complex_used,0) WHERE (tokens_used IS NULL OR tokens_used=0) AND (COALESCE(basic_used,0)+COALESCE(medium_used,0)+COALESCE(complex_used,0)) > 0",
     // Apodo interno de la cuenta (identificador estable, no cambia con el nombre)
     // + historial de cambios de nombre.
     "ALTER TABLE accounts ADD COLUMN nickname VARCHAR(120)",

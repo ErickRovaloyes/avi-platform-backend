@@ -216,9 +216,11 @@ const getAccount = async (req, res) => {
       channelLimitsOverride: parseJ(acc.channel_limits_override, {}),
       changeAgentLimitOverride: acc.change_agent_limit_override,
       changeAgentTokenLimitsOverride: parseJ(acc.change_agent_token_limits_override, null),
+      changeAgentTokenQuota: acc.change_agent_token_quota ?? null,
       changeAgentUsage: usageRows.map(u => ({
         month: u.month,
         used: u.used,
+        tokensUsed: Number(u.tokens_used || 0) || ((u.basic_used || 0) + (u.medium_used || 0) + (u.complex_used || 0)),
         basicUsed: u.basic_used || 0,
         mediumUsed: u.medium_used || 0,
         complexUsed: u.complex_used || 0,
@@ -304,40 +306,25 @@ const updateAccount = async (req, res) => {
 const getChangeAgentUsage = async (req, res) => {
   const month = new Date().toISOString().slice(0, 7)
   try {
-    const [[row]] = await pool.query('SELECT used, basic_used, medium_used, complex_used FROM change_agent_usage WHERE account_id=? AND month=?', [req.params.accId, month])
-    res.json({
-      used: row?.used || 0,
-      basicUsed: row?.basic_used || 0,
-      mediumUsed: row?.medium_used || 0,
-      complexUsed: row?.complex_used || 0,
-    })
+    const [[row]] = await pool.query('SELECT used, tokens_used, basic_used, medium_used, complex_used FROM change_agent_usage WHERE account_id=? AND month=?', [req.params.accId, month])
+    const total = Number(row?.tokens_used || 0) || ((row?.basic_used || 0) + (row?.medium_used || 0) + (row?.complex_used || 0))
+    res.json({ used: row?.used || 0, tokensUsed: total })
   } catch (err) { res.status(500).json({ error: 'Error interno' }) }
 }
 
-// Increment usage for a given category and token amount
-// body: { category: 'basic'|'medium'|'complex', tokens: number }
+// Un SOLO pool de tokens totales (sin tipos). body: { tokens: number }
 const incrementChangeAgentUsage = async (req, res) => {
   const { accId } = req.params
-  const { category = null, tokens = 0 } = req.body || {}
+  const { tokens = 0 } = req.body || {}
   const month = new Date().toISOString().slice(0, 7)
-  const validCat = ['basic', 'medium', 'complex'].includes(category) ? category : null
-  const col = validCat ? `${validCat}_used` : null
   const tokInc = Math.max(0, parseInt(tokens) || 0)
   try {
-    if (col) {
-      await pool.query(
-        `INSERT INTO change_agent_usage (account_id, month, used, ${col})
-         VALUES (?, ?, 1, ?)
-         ON DUPLICATE KEY UPDATE used = used + 1, ${col} = ${col} + ?`,
-        [accId, month, tokInc, tokInc]
-      )
-    } else {
-      // Legacy fallback: just bump the global 'used' counter
-      await pool.query(
-        'INSERT INTO change_agent_usage (account_id,month,used) VALUES (?,?,1) ON DUPLICATE KEY UPDATE used=used+1',
-        [accId, month]
-      )
-    }
+    await pool.query(
+      `INSERT INTO change_agent_usage (account_id, month, used, tokens_used)
+       VALUES (?, ?, 1, ?)
+       ON DUPLICATE KEY UPDATE used = used + 1, tokens_used = COALESCE(tokens_used,0) + ?`,
+      [accId, month, tokInc, tokInc]
+    )
     res.json({ ok: true })
   } catch (err) {
     console.error('[INC CA USAGE]', err)
