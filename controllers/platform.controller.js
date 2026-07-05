@@ -7,6 +7,9 @@ const { extractFileText } = require('./promptGenerator.controller')
 // ── Platform settings ─────────────────────────────────────────────────────────
 
 const DEFAULT_TOKEN_LIMITS = { basic: 50000, medium: 30000, complex: 15000 }
+// Capacidades del Agente de Cambios activables por el super admin (qué puede modificar).
+const DEFAULT_CA_CAPS = { prompt: true, tools: true, flows: true, agendas: true }
+const parseCaps = raw => { const c = parseJ(raw, null); return c ? { ...DEFAULT_CA_CAPS, ...c } : { ...DEFAULT_CA_CAPS } }
 const DEFAULT_STRUCTURE = `Eres un asistente especializado.\n\n## Contexto\n[Contexto extraído del documento]\n\n## Personalidad y tono\n[Define la personalidad]\n\n## Instrucciones\n[Instrucciones específicas paso a paso]\n\n## Reglas\n- Responde siempre en español\n- Sé conciso y empático`
 
 const DEFAULT_CONDITIONS = `EXTENSIÓN MÍNIMA: el prompt debe tener entre 2.500 y 6.000 caracteres. Los prompts cortos generan agentes deficientes.
@@ -47,6 +50,7 @@ const getSettings = async (req, res) => {
           changeAgentDefaultLimit: r.change_agent_default_limit,
           changeAgentTokenLimit: r.change_agent_token_limit ?? 95000,
           changeAgentTokenLimits: parseJ(r.change_agent_token_limits, DEFAULT_TOKEN_LIMITS),
+          changeAgentCaps: parseCaps(r.change_agent_caps),
           channelLimits: parseJ(r.channel_limits, {}),
           metaAppId: r.meta_app_id || '',
           metaConfigId: r.meta_config_id || '',
@@ -81,6 +85,7 @@ const getSettings = async (req, res) => {
           changeAgentDefaultLimit: 20,
           changeAgentTokenLimit: 95000,
           changeAgentTokenLimits: DEFAULT_TOKEN_LIMITS,
+          changeAgentCaps: { ...DEFAULT_CA_CAPS },
           channelLimits: {},
           metaAppId: '',
           metaConfigId: '',
@@ -108,7 +113,7 @@ const getSettings = async (req, res) => {
 const updateSettings = async (req, res) => {
   if (req.user.type !== 'superadmin') return res.status(403).json({ error: 'Solo super admin' })
   const {
-    changeAgentModel, changeAgentDefaultLimit, changeAgentTokenLimits, changeAgentTokenLimit,
+    changeAgentModel, changeAgentDefaultLimit, changeAgentTokenLimits, changeAgentTokenLimit, changeAgentCaps,
     channelLimits, metaAppId, metaConfigId, metaAppSecret,
     promptGeneratorModel, promptGeneratorStructure, promptGeneratorConditions,
     promptGeneratorMaxTokens, promptGeneratorTemperature, promptGeneratorMaxDocChars,
@@ -125,6 +130,7 @@ const updateSettings = async (req, res) => {
     if (changeAgentDefaultLimit   !== undefined) { sets.push('change_agent_default_limit=?');   vals.push(changeAgentDefaultLimit) }
     if (changeAgentTokenLimits    !== undefined) { sets.push('change_agent_token_limits=?');    vals.push(JSON.stringify(changeAgentTokenLimits)) }
     if (changeAgentTokenLimit     !== undefined) { sets.push('change_agent_token_limit=?');     vals.push(changeAgentTokenLimit === null || changeAgentTokenLimit === '' ? 95000 : Number(changeAgentTokenLimit)) }
+    if (changeAgentCaps           !== undefined) { sets.push('change_agent_caps=?');            vals.push(JSON.stringify({ ...DEFAULT_CA_CAPS, ...changeAgentCaps })) }
     if (channelLimits             !== undefined) { sets.push('channel_limits=?');               vals.push(JSON.stringify(channelLimits)) }
     if (metaAppId                 !== undefined) { sets.push('meta_app_id=?');                  vals.push(metaAppId) }
     if (metaConfigId              !== undefined) { sets.push('meta_config_id=?');               vals.push(metaConfigId) }
