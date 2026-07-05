@@ -717,19 +717,16 @@ const aiNodes = [
       }
 
       // Conciencia temporal GENERAL de la IA: siempre que esté activada, el modelo
-      // conoce la fecha y hora local actual (zona configurable) y puede razonar sobre
-      // cualquier zona horaria del mundo. Opcionalmente se ancla a una fecha/hora base fija.
+      // conoce la fecha y hora local REAL (zona configurable) y puede razonar sobre
+      // cualquier zona horaria del mundo.
       if (ctx.account?.aiDatetimeEnabled !== false) {
         const tz = ctx.account?.aiTimezone || ctx.account?.scheduling?.timezone || 'America/Lima'
-        const base = ctx.account?.aiBaseDatetime
-        const ref = base ? new Date(base) : new Date()
-        const refValid = !isNaN(ref.getTime())
-        const now = refValid ? ref : new Date()
+        const now = new Date()
         let localStr = '', utcStr = ''
         try { localStr = now.toLocaleString('es', { timeZone: tz, weekday: 'long', year: 'numeric', month: 'long', day: 'numeric', hour: '2-digit', minute: '2-digit' }) } catch { localStr = now.toISOString() }
         try { utcStr = now.toISOString().replace('T', ' ').slice(0, 16) + ' UTC' } catch { utcStr = '' }
         sysWithRag = `${sysWithRag}\n\n---\n🕐 CONTEXTO TEMPORAL\n` +
-          (base && refValid ? `Fecha y hora base definida para tus respuestas: ${localStr} (zona ${tz}).\n` : `Fecha y hora local actual: ${localStr} (zona ${tz}).\n`) +
+          `Fecha y hora local actual: ${localStr} (zona ${tz}).\n` +
           `Referencia UTC: ${utcStr}.\n` +
           `Puedes calcular la fecha, la hora y el día de la semana en CUALQUIER zona horaria del mundo a partir de esta referencia (ej. otro país o ciudad que te pida el cliente). Usa esta información para responder sobre fechas, horarios, "hoy/mañana/ayer", plazos y diferencias horarias.\n---`
       }
