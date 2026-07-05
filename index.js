@@ -190,6 +190,19 @@ app.use('/api',                recontactRoutes)
     // Estado de conversaciones: archivada / bloqueada.
     "ALTER TABLE conversations ADD COLUMN archived TINYINT(1) DEFAULT 0",
     "ALTER TABLE conversations ADD COLUMN blocked TINYINT(1) DEFAULT 0",
+    // Apodo interno de la cuenta (identificador estable, no cambia con el nombre)
+    // + historial de cambios de nombre.
+    "ALTER TABLE accounts ADD COLUMN nickname VARCHAR(120)",
+    "UPDATE accounts SET nickname=name WHERE nickname IS NULL OR nickname=''",
+    `CREATE TABLE IF NOT EXISTS account_name_history (
+       id          VARCHAR(50) PRIMARY KEY,
+       account_id  VARCHAR(50) NOT NULL,
+       old_name    VARCHAR(200),
+       new_name    VARCHAR(200),
+       changed_by  VARCHAR(120),
+       changed_at  BIGINT,
+       INDEX idx_anh_acc (account_id, changed_at)
+     )`,
     // Optimizador Inteligente del Prompt (análisis incremental de conversaciones).
     "ALTER TABLE platform_settings ADD COLUMN optimizer_model VARCHAR(60) DEFAULT 'gpt-4o-mini'",
     `CREATE TABLE IF NOT EXISTS optimizer_convo_index (

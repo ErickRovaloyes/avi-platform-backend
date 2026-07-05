@@ -266,6 +266,7 @@ const listAccounts = async (req, res) => {
     }
     res.json(accounts.map(a => ({
       id: a.id, name: a.name, email: a.email, plan: a.plan, status: a.status,
+      nickname: a.nickname || a.name,
       modules: parseJ(a.modules, null),
       cmsStorageQuotaMb: a.cms_storage_quota_mb ?? null,
       channelLimitsOverride: parseJ(a.channel_limits_override, {}),
@@ -325,11 +326,23 @@ const createAccount = async (req, res) => {
 const updateSAAccount = async (req, res) => {
   if (req.user.type !== 'superadmin') return res.status(403).json({ error: 'Solo super admin' })
   const { accId } = req.params
-  const { plan, status, channelLimitsOverride, changeAgentLimitOverride, changeAgentTokenLimitsOverride, modules, cmsStorageQuotaMb } = req.body
+  const { plan, status, channelLimitsOverride, changeAgentLimitOverride, changeAgentTokenLimitsOverride, modules, cmsStorageQuotaMb, nickname, name } = req.body
   try {
     const sets = []; const vals = []
     if (plan                     !== undefined) { sets.push('plan=?');                      vals.push(plan) }
     if (status                   !== undefined) { sets.push('status=?');                    vals.push(status) }
+    // Apodo interno (solo super admin lo cambia manualmente).
+    if (nickname                 !== undefined) { sets.push('nickname=?');                  vals.push(nickname || null) }
+    // Cambio de nombre desde el super panel: registra historial.
+    if (name !== undefined) {
+      const [[cur]] = await pool.query('SELECT name, nickname FROM accounts WHERE id=?', [accId])
+      if (cur && cur.name !== name) {
+        await pool.query('INSERT INTO account_name_history (id,account_id,old_name,new_name,changed_by,changed_at) VALUES (?,?,?,?,?,?)',
+          ['anh_' + uid(), accId, cur.name || '', name || '', req.user?.name || 'Super Admin', Date.now()]).catch(() => {})
+        if (!cur.nickname) { sets.push('nickname=?'); vals.push(cur.name || name) }
+        sets.push('name=?'); vals.push(name)
+      }
+    }
     // Override de almacenamiento del CMS (plan "personalizado"): MB, o null = usar el plan.
     if (cmsStorageQuotaMb        !== undefined) { sets.push('cms_storage_quota_mb=?');      vals.push(cmsStorageQuotaMb === null || cmsStorageQuotaMb === '' ? null : Number(cmsStorageQuotaMb)) }
     if (channelLimitsOverride    !== undefined) { sets.push('channel_limits_override=?');   vals.push(JSON.stringify(channelLimitsOverride)) }
@@ -353,4 +366,13 @@ const deleteAccount = async (req, res) => {
   } catch (err) { res.status(500).json({ error: 'Error interno' }) }
 }
 
-module.exports = { getSettings, updateSettings, getPublicIntegrations, listSuperAdmins, createSuperAdmin, updateSuperAdmin, deleteSuperAdmin, listAllUsers, listAccounts, createAccount, updateSAAccount, deleteAccount }
+// Historial de cambios de nombre de una cuenta (solo super admin).
+const getAccountNameHistory = async (req, res) => {
+  if (req.user.type !== 'superadmin') return res.status(403).json({ error: 'Solo super admin' })
+  try {
+    const [rows] = await pool.query('SELECT old_name, new_name, changed_by, changed_at FROM account_name_history WHERE account_id=? ORDER BY changed_at DESC', [req.params.accId])
+    res.json(rows.map(r => ({ oldName: r.old_name, newName: r.new_name, changedBy: r.changed_by, changedAt: r.changed_at })))
+  } catch (err) { res.status(500).json({ error: 'Error interno' }) }
+}
+
+module.exports = { getSettings, updateSettings, getPublicIntegrations, listSuperAdmins, createSuperAdmin, updateSuperAdmin, deleteSuperAdmin, listAllUsers, listAccounts, createAccount, updateSAAccount, deleteAccount, getAccountNameHistory }

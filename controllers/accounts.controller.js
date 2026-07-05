@@ -1,7 +1,7 @@
 'use strict'
 const pool   = require('../db')
 const socket = require('../services/socket')
-const { parseJ } = require('../utils')
+const { parseJ, uid } = require('../utils')
 const modulesSvc = require('../services/modules')
 
 // Módulos efectivos de una cuenta: override de la cuenta → preset del tipo → todos.
@@ -133,7 +133,7 @@ async function loadPublicAccount(accId) {
   const modules = await effectiveModules(accId, acc.modules)
   const _mc = parseJ(acc.meta_catalog, null)
   return {
-    id: acc.id, name: acc.name,
+    id: acc.id, name: acc.name, nickname: acc.nickname || acc.name,
     chatTheme: parseJ(acc.chat_theme, null),
     modules,
     metaCatalog: _mc?.catalogId ? { connected: true, catalogId: _mc.catalogId, name: _mc.name || _mc.catalogId } : { connected: false },
@@ -279,6 +279,16 @@ const updateAccount = async (req, res) => {
     if (changeAgentTokenLimitsOverride !== undefined) {
       sets.push('change_agent_token_limits_override=?')
       vals.push(changeAgentTokenLimitsOverride === null ? null : JSON.stringify(changeAgentTokenLimitsOverride))
+    }
+    // Cambio de nombre: registrar historial y, si el apodo está vacío, fijarlo al
+    // primer nombre (el que tenía antes de este cambio) para que no cambie luego.
+    if (name !== undefined) {
+      const [[cur]] = await pool.query('SELECT name, nickname FROM accounts WHERE id=?', [accId])
+      if (cur && cur.name !== name) {
+        await pool.query('INSERT INTO account_name_history (id,account_id,old_name,new_name,changed_by,changed_at) VALUES (?,?,?,?,?,?)',
+          ['anh_' + uid(), accId, cur.name || '', name || '', req.user?.name || req.user?.email || 'Usuario', Date.now()]).catch(() => {})
+        if (!cur.nickname) { sets.push('nickname=?'); vals.push(cur.name || name) }
+      }
     }
     if (!sets.length) return res.json({ ok: true })
     vals.push(accId)
