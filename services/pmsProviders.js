@@ -173,17 +173,179 @@ const hosroom = {
   },
 }
 
-// Kunas: en la lista de proveedores; se activa cuando tengamos su documentación.
+// ── Kunas (OTASync) ────────────────────────────────────────────────────────────
+// API tipo channel-manager: cada POST lleva { token, key, id_properties } en el
+// cuerpo (no Bearer). Base real: https://app.hotelsync.com. Soporta crear, consultar
+// y CANCELAR reservas de forma nativa. Precios por plan de tarifa + array de noches.
+function datesOfStay(checkin, checkout) {
+  const out = []; let d = checkin
+  while (d < checkout) { out.push(d); d = addDays(d, 1) }
+  return out
+}
+function normRoomKunas(rt) {
+  return {
+    id: String(first(rt.id_room_types, rt.id, '')),
+    name: first(rt.name, rt.shortname, 'Habitación'),
+    capacity: Number(first(rt.max_adults, rt.occupancy, rt.adults, 2)) || 2,
+    description: first(rt.description, '') || '',
+    photos: arr(first(rt.images, rt.gallery, rt.photos, [])).map(p => (typeof p === 'string' ? p : first(p.url, p.src, p.image, p.path))).filter(Boolean),
+    basePrice: Number(first(rt.price, 0)) || 0,
+    rates: [],
+    raw: rt,
+  }
+}
+
 const kunas = {
   id: 'kunas',
   label: 'Kunas',
-  comingSoon: true,
-  defaultBaseUrl: '',
-  async testConnection() { return { ok: false, message: 'Kunas estará disponible próximamente. Por ahora usa HosRoom.' } },
-  async getRooms() { throw new Error('Kunas aún no está disponible.') },
-  async getAvailability() { throw new Error('Kunas aún no está disponible.') },
-  async book() { throw new Error('Kunas aún no está disponible.') },
-  async getBooking() { throw new Error('Kunas aún no está disponible.') },
+  defaultBaseUrl: 'https://app.hotelsync.com',
+  needsKey: true,   // la UI pide key (API key) + propertyId
+
+  async _post(cfg, path, extra = {}) {
+    const base = (cfg.baseUrl || this.defaultBaseUrl).replace(/\/$/, '')
+    const body = { token: cfg.token, key: cfg.apiKey, id_properties: cfg.propertyId, ...extra }
+    const res = await fetch(`${base}${path}`, {
+      method: 'POST', headers: { 'Content-Type': 'application/json', 'Accept': 'application/json' },
+      body: JSON.stringify(body),
+    })
+    const text = await res.text()
+    let data = null; try { data = text ? JSON.parse(text) : null } catch { data = text }
+    const errMsg = data && typeof data === 'object' && (data.status === 'error' || data.error) ? (data.message || data.error) : null
+    if (!res.ok || errMsg) {
+      const raw = errMsg || (typeof data === 'string' ? data.slice(0, 200) : (data?.message || JSON.stringify(data || {}).slice(0, 200)))
+      let msg = `Kunas ${res.status}: ${raw}`
+      if (res.status === 401 || res.status === 403 || /unauth|invalid|token|key/i.test(String(raw))) {
+        msg = 'Kunas: credenciales inválidas. Revisa el token, la key (API key) y el ID de propiedad.'
+      }
+      throw Object.assign(new Error(msg), { status: res.status })
+    }
+    return data
+  },
+
+  async testConnection(cfg) {
+    if (!cfg?.token) return { ok: false, message: 'Falta el token de Kunas.' }
+    if (!cfg?.apiKey || !cfg?.propertyId) return { ok: false, message: 'Kunas requiere la API key y el ID de propiedad (id_properties).' }
+    const p = await this._post(cfg, '/api/property/data/property', {})
+    const name = first(p?.name, p?.shortname, '')
+    return { ok: true, message: `Conexión Kunas OK${name ? ` — ${name}` : ''}`, hotelName: name || '' }
+  },
+
+  async getRooms(cfg) {
+    const data = await this._post(cfg, '/api/room/data/rooms', { type: 1, details: '1' })
+    const list = Array.isArray(data) ? data : (data?.data || data?.rooms || [])
+    return list.map(normRoomKunas)
+  },
+
+  // Resuelve el plan de tarifa a usar (configurado, o el primero con booking_engine).
+  async _defaultPlan(cfg) {
+    if (cfg.pricingPlanId) return cfg.pricingPlanId
+    const plans = await this._post(cfg, '/api/pricingPlan/data/pricing_plans', {})
+    const list = Array.isArray(plans) ? plans : (plans?.data || [])
+    const be = list.find(p => String(p.booking_engine) === '1') || list[0]
+    return be?.id_pricing_plans
+  },
+
+  async getAvailability(cfg, { checkin, checkout, adults, children }) {
+    const plan = await this._defaultPlan(cfg)
+    if (!plan) return { rooms: [] }
+    // Habitaciones físicas libres por tipo.
+    const av = await this._post(cfg, '/api/room/data/available_rooms', { dfrom: checkin, dto: checkout, id_pricing_plans: plan })
+    const availList = arr(first(av?.rooms, av?.data, []))
+    const freeByType = {}
+    for (const r of availList) { const t = String(first(r.id_room_types, r.id_room_type, '')); (freeByType[t] ||= []).push(r) }
+    // Precios por tipo y noche para el plan.
+    let priceData = {}
+    try { const pr = await this._post(cfg, '/api/prices/data/prices', { id_pricing_plans: plan, dfrom: checkin, dto: checkout }); priceData = pr?.data || {} } catch {}
+    const nights = datesOfStay(checkin, checkout)
+    // Fichas de habitación (nombre, capacidad, desc).
+    let byId = {}
+    try { const rooms = await this.getRooms(cfg); for (const rm of rooms) byId[rm.id] = rm } catch {}
+    const out = []
+    for (const [rtId, free] of Object.entries(freeByType)) {
+      if (!free.length) continue
+      const rm = byId[rtId] || { id: rtId, name: `Habitación ${rtId}`, capacity: 2, description: '', photos: [], basePrice: 0 }
+      const perNightMap = priceData[rtId] || {}
+      let total = 0, priced = true
+      for (const d of nights) { const p = Number(perNightMap[d]); if (isNaN(p)) { priced = false; break } total += p }
+      if (!priced || !total) total = (rm.basePrice || 0) * nights.length
+      out.push({
+        ...rm,
+        rates: [{
+          id: `${plan}:${rtId}`, name: rm.name, capacity: rm.capacity,
+          total: total || null, perNight: nights.length ? (total / nights.length) : null,
+          available: free.length, mealType: '',
+          _plan: plan, _rtId: rtId, _room: free[0], _nightPrices: nights.map(d => ({ date: d, price: Number(perNightMap[d]) || (rm.basePrice || 0) })),
+        }],
+      })
+    }
+    return { rooms: out }
+  },
+
+  // Crea la reserva. availability = { "plan:rtId": 1 }. Reconstruye el detalle en vivo.
+  async book(cfg, { checkin, checkout, adults, children, availability, customer }) {
+    const rateId = Object.keys(availability || {})[0] || ''
+    const [plan, rtId] = rateId.split(':')
+    if (!plan || !rtId) throw new Error('Kunas: falta la tarifa/habitación a reservar.')
+    // Re-verifica y toma la opción viva.
+    const { rooms } = await this.getAvailability(cfg, { checkin, checkout, adults, children })
+    const opt = rooms.map(r => r.rates[0]).find(rt => rt.id === rateId)
+    if (!opt) throw new Error('La habitación elegida ya no está disponible para esas fechas.')
+    const nights = opt._nightPrices
+    const total = opt.total || nights.reduce((s, n) => s + (n.price || 0), 0)
+    const avg = nights.length ? total / nights.length : total
+    const room = opt._room || {}
+    const roomName = opt.name
+    const guestNames = String(customer.name || '').trim().split(/\s+/)
+    const body = {
+      status: 'confirmed',
+      rooms: [{
+        id_room_types: Number(rtId), id_rooms: first(room.id_rooms, room.id, undefined),
+        room_type: roomName, room_number: first(room.name, room.room_number, ''),
+        avg_price: avg, total_price: total,
+        children_1: Number(children) || 0, children_2: 0, children_3: 0,
+        adults: Math.max(1, Number(adults) || 1), seniors: 0,
+        extras: [], payments: [], overbooking: 0,
+        nights: nights.map(n => ({ night_date: n.date, price: n.price, original_price: n.price, breakfast: 0, lunch: 0, dinner: 0 })),
+      }],
+      guests: [{ first_name: guestNames[0] || 'Huésped', last_name: guestNames.slice(1).join(' ') || '', id_guests: 0, guest_type: 'adults', email: customer.mail || '', phone: customer.phone || '' }],
+      extras: [], payments: [],
+      adults: Math.max(1, Number(adults) || 1), children_1: Number(children) || 0, seniors: 0,
+      rooms_price: total, rooms_discounted: total, total_price: total,
+      id_pricing_plans: Number(plan),
+    }
+    const data = await this._post(cfg, '/api/reservation/insert/reservation', body)
+    const r = data?.reservation || data || {}
+    return {
+      code: String(first(data?.id_reservations, r.id_reservations, '')),
+      checkin: first(r.date_arrival, checkin), checkout: first(r.date_departure, checkout),
+      nights: Number(first(r.nights, nights.length)),
+      total: Number(first(r.total_price, total, 0)) || 0,
+      paymentUrl: '',
+      raw: r,
+    }
+  },
+
+  async getBooking(cfg, code) {
+    const data = await this._post(cfg, '/api/reservation/data/reservation', { id_reservations: code })
+    const r = data?.reservation || data || {}
+    const statusMap = { confirmed: 'confirmada', canceled: 'cancelada', cancelled: 'cancelada' }
+    return {
+      code: String(first(r.id_reservations, code)),
+      status: statusMap[String(first(r.status, '')).toLowerCase()] || first(r.status, 'confirmada'),
+      checkin: r.date_arrival, checkout: r.date_departure, nights: r.nights,
+      guestName: first(r.guest_name, [r.first_name, r.last_name].filter(Boolean).join(' '), ''),
+      total: Number(first(r.total_price, 0)) || 0,
+      paymentUrl: '',
+      raw: r,
+    }
+  },
+
+  // Cancelación NATIVA (Kunas sí lo soporta).
+  async cancel(cfg, code) {
+    const data = await this._post(cfg, '/api/reservation/delete/delete', { id_reservations: code })
+    const r = data?.reservation || data || {}
+    return { ok: true, status: first(r.status, 'canceled'), code: String(first(r.id_reservations, code)) }
+  },
 }
 
 const PROVIDERS = { hosroom, kunas }

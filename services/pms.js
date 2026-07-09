@@ -22,14 +22,17 @@ async function loadConfig(accId) {
 }
 async function saveConfig(accId, cfg) { await pool.query('UPDATE accounts SET pms=? WHERE id=?', [JSON.stringify(cfg || {}), accId]) }
 
-// Config pública (sin token) — va dentro de account.pms para el runtime/UI.
+// Config pública (sin credenciales) — va dentro de account.pms para el runtime/UI.
 function publicConfig(cfg) {
   const c = cfg || {}
-  const connected = !!(c.provider && c.token && !providers.getProvider(c.provider)?.comingSoon)
+  const prov = providers.getProvider(c.provider)
+  // Cada proveedor exige credenciales distintas: HosRoom = token; Kunas = token + key + id_properties.
+  const hasCreds = prov?.needsKey ? !!(c.token && c.apiKey && c.propertyId) : !!c.token
+  const connected = !!(c.provider && prov && !prov.comingSoon && hasCreds)
   return {
     connected,
     provider: c.provider || '',
-    providerLabel: providers.getProvider(c.provider)?.label || '',
+    providerLabel: prov?.label || '',
     hotelName: c.hotelName || '',
     currency: c.currency || 'COP',
     maxPhotos: Number(c.maxPhotos) || 4,
@@ -309,25 +312,41 @@ async function toolCall(accId, fn, args = {}, { convId, agId } = {}) {
     }
   }
 
-  // ── Reagendar / cancelar: solicitud gestionada ────────────────────────────
-  if (fn === 'reagendar_reserva' || fn === 'cancelar_reserva') {
+  // ── Cancelar ──────────────────────────────────────────────────────────────
+  // Si el proveedor soporta cancelación NATIVA (Kunas), se ejecuta de verdad.
+  // Si no (HosRoom, cuyo engine no expone el endpoint), se registra como solicitud
+  // gestionada + aviso al equipo.
+  if (fn === 'cancelar_reserva') {
     const code = String(args.codigo || '').trim()
-    if (!code) return { text: 'Necesito el código de la reserva (ej. HR-123456789) para registrar la solicitud.' }
-    // Verifica que exista y trae el detalle para la nota del equipo.
+    if (!code) return { text: 'Necesito el código de la reserva para cancelarla.' }
     let detail = ''
     try { const b = await prov.getBooking(cfg, code); detail = ` (${b.guestName || 'huésped'} · ${String(b.checkin || '').slice(0, 10)}→${String(b.checkout || '').slice(0, 10)})` }
     catch (e) { if (e.status === 404) return { text: `No existe una reserva con el código ${code}. Verifica el código.` } }
+    const motivo = String(args.motivo || '').replace(/\s+/g, ' ').trim().slice(0, 200)
+    if (typeof prov.cancel === 'function') {
+      try {
+        await prov.cancel(cfg, code)
+        if (cfg.notifyTeam !== false) internalNote(accId, agId, convId, `🏨 RESERVA PMS CANCELADA por el asistente: ${code}${detail}.${motivo ? ` Motivo: ${motivo}` : ''}`).catch(() => {})
+        return { text: `✅ Reserva ${code} CANCELADA en el PMS. Confírmale al cliente que su reserva quedó cancelada.` }
+      } catch (e) {
+        return { text: `No se pudo cancelar la reserva ${code}: ${e.message}` }
+      }
+    }
+    await internalNote(accId, agId, convId, `🏨 SOLICITUD PMS: el cliente pide CANCELAR la reserva ${code}${detail}.${motivo ? ` Motivo: ${motivo}` : ''} — Requiere gestión manual en ${pub.providerLabel || 'el PMS'}.`)
+    return { text: `Solicitud de cancelación de la reserva ${code} registrada. El equipo del hotel la procesará y el cliente recibirá confirmación. Dile al cliente que su solicitud quedó registrada.` }
+  }
 
-    const isCancel = fn === 'cancelar_reserva'
+  // ── Reagendar: solicitud gestionada (aviso al equipo) ─────────────────────
+  if (fn === 'reagendar_reserva') {
+    const code = String(args.codigo || '').trim()
+    if (!code) return { text: 'Necesito el código de la reserva para registrar el cambio de fechas.' }
+    let detail = ''
+    try { const b = await prov.getBooking(cfg, code); detail = ` (${b.guestName || 'huésped'} · ${String(b.checkin || '').slice(0, 10)}→${String(b.checkout || '').slice(0, 10)})` }
+    catch (e) { if (e.status === 404) return { text: `No existe una reserva con el código ${code}. Verifica el código.` } }
     const cleanDate = s => (isDate(s) ? s : '?')
     const motivo = String(args.motivo || '').replace(/\s+/g, ' ').trim().slice(0, 200)
-    const what = isCancel
-      ? `CANCELAR la reserva ${code}${detail}`
-      : `REAGENDAR la reserva ${code}${detail} → nuevas fechas: ${cleanDate(args.nueva_checkin)} a ${cleanDate(args.nueva_checkout)}`
-    await internalNote(accId, agId, convId, `🏨 SOLICITUD PMS: el cliente pide ${what}.${motivo ? ` Motivo: ${motivo}` : ''} — Requiere gestión manual en ${pub.providerLabel || 'el PMS'}.`)
-    return {
-      text: `Solicitud registrada: ${isCancel ? 'cancelación' : 'reagendamiento'} de la reserva ${code}. El equipo del hotel la procesará en breve y el cliente recibirá confirmación. Dile al cliente que su solicitud quedó registrada y será confirmada pronto por el equipo.`,
-    }
+    await internalNote(accId, agId, convId, `🏨 SOLICITUD PMS: el cliente pide REAGENDAR la reserva ${code}${detail} → nuevas fechas: ${cleanDate(args.nueva_checkin)} a ${cleanDate(args.nueva_checkout)}.${motivo ? ` Motivo: ${motivo}` : ''} — Requiere gestión manual en ${pub.providerLabel || 'el PMS'}.`)
+    return { text: `Solicitud de reagendamiento de la reserva ${code} registrada. El equipo del hotel la procesará y el cliente recibirá confirmación. Dile al cliente que su solicitud quedó registrada.` }
   }
 
   return { text: `Función PMS desconocida: ${fn}` }

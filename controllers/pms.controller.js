@@ -12,6 +12,10 @@ const getConfig = async (req, res) => {
       notifyTeam: cfg.notifyTeam !== false,
       postBookingFlowId: cfg.postBookingFlowId || '',
       hasToken: !!cfg.token,
+      // Kunas: credenciales adicionales (la key se enmascara).
+      hasApiKey: !!cfg.apiKey,
+      propertyId: cfg.propertyId || '',
+      pricingPlanId: cfg.pricingPlanId || '',
       providers: providers.listProviders(),
     })
   } catch { res.status(500).json({ error: 'Error interno' }) }
@@ -20,7 +24,7 @@ const getConfig = async (req, res) => {
 // Guarda la configuración. El token solo se actualiza si llega uno nuevo no vacío.
 const saveConfig = async (req, res) => {
   const { accId } = req.params
-  const { provider, token, baseUrl, currency, maxPhotos, notifyTeam, postBookingFlowId } = req.body || {}
+  const { provider, token, apiKey, propertyId, pricingPlanId, baseUrl, currency, maxPhotos, notifyTeam, postBookingFlowId } = req.body || {}
   try {
     const cur = await pms.loadConfig(accId) || {}
     const next = { ...cur }
@@ -28,14 +32,18 @@ const saveConfig = async (req, res) => {
       if (provider && !providers.getProvider(provider)) return res.status(400).json({ error: 'Proveedor desconocido' })
       next.provider = provider || ''
     }
+    // Secretos (token / apiKey): solo se actualizan si llega un valor nuevo no enmascarado.
     if (token !== undefined && token !== '' && !String(token).includes('•')) next.token = String(token).trim()
+    if (apiKey !== undefined && apiKey !== '' && !String(apiKey).includes('•')) next.apiKey = String(apiKey).trim()
+    if (propertyId !== undefined) next.propertyId = String(propertyId || '').trim()
+    if (pricingPlanId !== undefined) next.pricingPlanId = String(pricingPlanId || '').trim()
     if (baseUrl !== undefined) next.baseUrl = String(baseUrl || '').trim()
     if (currency !== undefined) next.currency = String(currency || 'COP').toUpperCase().slice(0, 6)
     if (maxPhotos !== undefined) next.maxPhotos = Math.max(1, Math.min(10, Number(maxPhotos) || 4))
     if (notifyTeam !== undefined) next.notifyTeam = !!notifyTeam
     if (postBookingFlowId !== undefined) next.postBookingFlowId = String(postBookingFlowId || '')
     await pms.saveConfig(accId, next)
-    res.json({ ok: true, config: { ...pms.publicConfig(next), hasToken: !!next.token } })
+    res.json({ ok: true, config: { ...pms.publicConfig(next), hasToken: !!next.token, hasApiKey: !!next.apiKey, propertyId: next.propertyId || '', pricingPlanId: next.pricingPlanId || '' } })
   } catch (e) { console.error('[pms saveConfig]', e); res.status(500).json({ error: 'Error interno' }) }
 }
 
