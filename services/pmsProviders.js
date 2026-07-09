@@ -180,14 +180,22 @@ const hosroom = {
 // El usuario solo pega el TOKEN. La key (pKey) se obtiene haciendo login con el
 // token, y el id_properties se auto-descubre. Ambos se cachean por token.
 const _kunasKeyCache = new Map()    // token → pKey (api key)
-const _kunasPropCache = new Map()   // token → id_properties descubierto
-// Busca recursivamente una clave (pKey/apiKey…) en la respuesta del login.
+const _kunasPropCache = new Map()   // token → id_properties (primera propiedad)
+const _kunasPropInfo = new Map()    // token → [{id, name}] (del login)
+// Busca recursivamente una clave (pkey/apikey…) en la respuesta del login.
 function deepFind(obj, names, depth = 0) {
   if (!obj || typeof obj !== 'object' || depth > 4) return null
   for (const k of Object.keys(obj)) {
     if (names.includes(k.toLowerCase()) && obj[k] && typeof obj[k] !== 'object') return String(obj[k])
   }
   for (const k of Object.keys(obj)) { const r = deepFind(obj[k], names, depth + 1); if (r) return r }
+  return null
+}
+// Busca recursivamente un array con cierto nombre (properties) en la respuesta.
+function deepFindArray(obj, name, depth = 0) {
+  if (!obj || typeof obj !== 'object' || depth > 4) return null
+  for (const k of Object.keys(obj)) { if (k.toLowerCase() === name && Array.isArray(obj[k])) return obj[k] }
+  for (const k of Object.keys(obj)) { const r = deepFindArray(obj[k], name, depth + 1); if (r) return r }
   return null
 }
 function datesOfStay(checkin, checkout) {
@@ -235,15 +243,27 @@ const kunas = {
     return data
   },
 
-  // Login: con SOLO el token, obtiene la key (pKey) que exigen los demás endpoints.
+  // Login: con SOLO el token → la respuesta trae `pkey` (la api key para el resto
+  // de endpoints) y el array `properties` (id_properties accesibles). Doc oficial:
+  // POST /api/user/auth/login. Se cachea la key y la primera propiedad por token.
   async _login(cfg) {
-    // Endpoints de login candidatos (la respuesta trae pKey). Se prueban en orden.
-    for (const path of ['/api/login/login', '/api/login', '/api/auth/login', '/api/user/login', '/api/login/data/login']) {
-      try {
-        const data = await this._rawFetch(cfg, path, { token: cfg.token })
-        const pKey = deepFind(data, ['pkey', 'apikey', 'api_key', 'key'])
-        if (pKey) return pKey
-      } catch (e) { if (e.status === 401 || e.status === 403) throw e }
+    for (const path of ['/api/user/auth/login', '/api/login/login', '/api/auth/login']) {
+      let data
+      try { data = await this._rawFetch(cfg, path, { token: cfg.token, remember: 1 }) }
+      catch (e) { if (e.status === 401 || e.status === 403) throw e; continue }
+      const pKey = deepFind(data, ['pkey', 'apikey', 'api_key', 'key'])
+      if (!pKey) continue
+      // La respuesta del login también trae las propiedades accesibles.
+      const propsArr = deepFindArray(data, 'properties') || []
+      const props = propsArr
+        .map(p => ({ id: String(first(p.id_properties, p.id, p.property_id, '')), name: first(p.name, p.shortname, '') }))
+        .filter(p => p.id)
+      if (props.length) {
+        _kunasPropInfo.set(cfg.token, props)
+        if (!_kunasPropCache.has(cfg.token)) _kunasPropCache.set(cfg.token, props[0].id)
+      }
+      _kunasKeyCache.set(cfg.token, pKey)
+      return pKey
     }
     return ''
   },
@@ -289,9 +309,12 @@ const kunas = {
     return null
   },
 
-  // id_properties efectivo: el configurado, o el auto-descubierto (cacheado por token).
+  // id_properties efectivo: el configurado, o el del login (o descubrimiento explícito).
   async _propId(cfg) {
     if (cfg.propertyId) return cfg.propertyId
+    if (_kunasPropCache.has(cfg.token)) return _kunasPropCache.get(cfg.token)
+    // El login ya trae las propiedades: forzarlo puebla la caché.
+    await this._key(cfg).catch(() => {})
     if (_kunasPropCache.has(cfg.token)) return _kunasPropCache.get(cfg.token)
     const found = await this._discoverProperty(cfg)
     if (found?.id) { _kunasPropCache.set(cfg.token, found.id); return found.id }
@@ -306,25 +329,22 @@ const kunas = {
 
   async testConnection(cfg) {
     if (!cfg?.token) return { ok: false, message: 'Falta el token de Kunas.' }
-    // 1) Login con el token → key (pKey).
+    // 1) Login con el token → key (pkey) + propiedades (en la misma respuesta).
     let apiKey = ''
     try { apiKey = await this._key(cfg, { forceLogin: true }) }
     catch (e) { return { ok: false, message: e.message } }
-    if (!apiKey) return { ok: false, message: 'Kunas: el token no permitió iniciar sesión (no llegó la key/pKey). Verifica que sea el token vigente de Kunas.' }
-    // 2) Auto-descubre la propiedad.
-    let propertyId = cfg.propertyId || ''
-    let name = ''
-    if (!propertyId) {
-      let found = null
-      try { found = await this._discoverProperty(cfg) } catch (e) { return { ok: false, message: e.message } }
-      if (!found?.id) return { ok: false, message: 'Kunas: el token es válido pero no encontré ninguna propiedad asociada. Verifica que corresponda a una propiedad activa.' }
-      propertyId = found.id; name = found.name || ''
-    }
+    if (!apiKey) return { ok: false, message: 'Kunas: el token no permitió iniciar sesión (no llegó la key/pkey). Verifica que sea el token vigente de Kunas.' }
+    // 2) Propiedad: la del login (o la configurada).
+    const info = _kunasPropInfo.get(cfg.token) || []
+    let propertyId = cfg.propertyId || (info[0]?.id) || _kunasPropCache.get(cfg.token) || ''
+    if (!propertyId) return { ok: false, message: 'Kunas: el token inició sesión pero no trae ninguna propiedad asociada. Verifica que la cuenta tenga una propiedad activa.' }
     _kunasPropCache.set(cfg.token, propertyId)
+    let name = info.find(p => p.id === propertyId)?.name || info[0]?.name || ''
     if (!name) {
       try { const p = await this._rawPost(cfg, '/api/property/data/property', { id_properties: propertyId }); name = first(p?.name, p?.shortname, '') } catch {}
     }
-    return { ok: true, message: `Conexión Kunas OK${name ? ` — ${name}` : ''}`, hotelName: name || '', propertyId, apiKey }
+    const extra = info.length > 1 ? ` (${info.length} propiedades; usando "${name || propertyId}")` : ''
+    return { ok: true, message: `Conexión Kunas OK${name ? ` — ${name}` : ''}${extra}`, hotelName: name || '', propertyId, apiKey }
   },
 
   async getRooms(cfg) {
