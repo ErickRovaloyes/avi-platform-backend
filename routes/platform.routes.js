@@ -33,7 +33,7 @@ router.put('/superadmin/super-admins/:saId',            authMiddleware, ctrl.upd
 router.delete('/superadmin/super-admins/:saId',         authMiddleware, ctrl.deleteSuperAdmin)
 router.get('/superadmin/users',                         authMiddleware, ctrl.listAllUsers)
 router.get('/superadmin/accounts',                      authMiddleware, ctrl.listAccounts)
-router.post('/superadmin/accounts',                     authMiddleware, withUpload(upload.single('file')), ctrl.createAccount)
+router.post('/superadmin/accounts',                     authMiddleware, ctrl.createAccount)
 router.put('/superadmin/accounts/:accId',               authMiddleware, ctrl.updateSAAccount)
 router.get('/superadmin/accounts/:accId/name-history',  authMiddleware, ctrl.getAccountNameHistory)
 router.delete('/superadmin/accounts/:accId',            authMiddleware, ctrl.deleteAccount)

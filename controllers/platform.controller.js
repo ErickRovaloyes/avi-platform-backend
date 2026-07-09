@@ -330,33 +330,26 @@ const listAccounts = async (req, res) => {
 
 const createAccount = async (req, res) => {
   if (req.user.type !== 'superadmin') return res.status(403).json({ error: 'Solo super admin' })
-  // Acepta JSON o multipart (cuando se sube un documento para generar el prompt).
-  const { name, email, plan = 'free', agentName = '', observations = '' } = req.body
+  // Crear cuenta desde el Super Panel = SOLO el nombre. Sin correo, sin owner y sin
+  // generar prompt. El super admin entra a la cuenta y la configura después.
+  const name = String(req.body?.name || '').trim()
+  if (!name) return res.status(400).json({ error: 'El nombre es obligatorio' })
+  const plan = req.body?.plan || 'free'
   const id = 'acc_' + uid()
   try {
     await pool.query(
-      'INSERT INTO accounts (id,name,email,plan,status,channel_limits_override) VALUES (?,?,?,?,?,?)',
-      [id, name, email, plan, 'active', '{"webchat":null,"test":null,"whatsapp":null,"messenger":null,"instagram":null}']
+      'INSERT INTO accounts (id,name,nickname,email,plan,status,channel_limits_override) VALUES (?,?,?,?,?,?,?)',
+      [id, name, name, '', plan, 'active', '{"webchat":null,"test":null,"whatsapp":null,"messenger":null,"instagram":null}']
     )
-    const ownerRoleId = 'role_owner_' + uid()
+    // Roles internos (necesarios para agregar miembros y para los permisos).
     await pool.query(
       'INSERT INTO roles (id,account_id,name,is_system,permissions) VALUES (?,?,?,1,?)',
-      [ownerRoleId, id, 'Owner', '{"inbox":true,"agents":true,"channels":true,"crm":true,"pipeline":true,"config":true,"admins":true,"flows":true,"variables":true,"tools":true,"knowledge":true}']
+      ['role_owner_' + uid(), id, 'Owner', '{"inbox":true,"agents":true,"channels":true,"crm":true,"pipeline":true,"config":true,"admins":true,"flows":true,"variables":true,"tools":true,"knowledge":true}']
     )
     await pool.query(
       'INSERT INTO roles (id,account_id,name,is_system,permissions) VALUES (?,?,?,0,?)',
       ['role_agent_' + uid(), id, 'Agente', '{"inbox":true,"agents":false,"channels":false,"crm":true,"pipeline":true,"config":false,"admins":false,"flows":false,"variables":false,"tools":false,"knowledge":false}']
     )
-
-    // Deja la cuenta lista: agente + prompt (generador) + flujo de respuesta +
-    // variable {{respuesta_ia}}. Best-effort: si falla, la cuenta igual se crea.
-    try {
-      const docText = req.file ? await extractFileText(req.file) : ''
-      await provisionDefaultAgent(id, { agentName, companyName: name, observations, docText })
-    } catch (provErr) {
-      console.error('[POST ACCOUNT SA] provisión por defecto falló (cuenta creada igual):', provErr.message)
-    }
-
     res.json({ id })
   } catch (err) {
     console.error('[POST ACCOUNT SA]', err)
@@ -367,7 +360,7 @@ const createAccount = async (req, res) => {
 const updateSAAccount = async (req, res) => {
   if (req.user.type !== 'superadmin') return res.status(403).json({ error: 'Solo super admin' })
   const { accId } = req.params
-  const { plan, status, channelLimitsOverride, changeAgentLimitOverride, changeAgentTokenLimitsOverride, changeAgentTokenQuota, modules, cmsStorageQuotaMb, nickname, name } = req.body
+  const { plan, status, channelLimitsOverride, changeAgentLimitOverride, changeAgentTokenLimitsOverride, changeAgentTokenQuota, changeAgentTokensUsed, modules, cmsStorageQuotaMb, nickname, name } = req.body
   try {
     const sets = []; const vals = []
     if (plan                     !== undefined) { sets.push('plan=?');                      vals.push(plan) }
@@ -397,6 +390,18 @@ const updateSAAccount = async (req, res) => {
       vals.push(changeAgentTokenLimitsOverride === null ? null : JSON.stringify(changeAgentTokenLimitsOverride))
     }
     if (sets.length) { vals.push(accId); await pool.query(`UPDATE accounts SET ${sets.join(',')} WHERE id=?`, vals) }
+
+    // Consumo actual de tokens del Agente de Cambios (mes en curso): el super admin
+    // puede fijarlo a un valor exacto o reiniciarlo (0 = restablece el cupo mensual).
+    if (changeAgentTokensUsed !== undefined) {
+      const month = new Date().toISOString().slice(0, 7)
+      const used = Math.max(0, parseInt(changeAgentTokensUsed) || 0)
+      await pool.query(
+        `INSERT INTO change_agent_usage (account_id, month, used, tokens_used) VALUES (?,?,0,?)
+         ON DUPLICATE KEY UPDATE tokens_used=?`,
+        [accId, month, used, used]
+      )
+    }
     res.json({ ok: true })
   } catch (err) { console.error('[PUT SA ACCOUNT]', err); res.status(500).json({ error: 'Error interno' }) }
 }
