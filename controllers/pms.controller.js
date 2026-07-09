@@ -53,6 +53,18 @@ const test = async (req, res) => {
   catch (e) { res.status(502).json({ ok: false, message: e.message }) }
 }
 
+// Reinicia las credenciales: borra token/key/propiedad/nombre y desconecta.
+// Conserva el proveedor y las preferencias de presentación (moneda, fotos…).
+const resetCredentials = async (req, res) => {
+  const { accId } = req.params
+  try {
+    const cur = await pms.loadConfig(accId) || {}
+    const next = { ...cur, token: '', apiKey: '', propertyId: '', pricingPlanId: '', hotelName: '' }
+    await pms.saveConfig(accId, next)
+    res.json({ ok: true, config: { ...pms.publicConfig(next), hasToken: false, hasApiKey: false, propertyId: '', pricingPlanId: '' } })
+  } catch (e) { console.error('[pms resetCredentials]', e); res.status(500).json({ error: 'Error interno' }) }
+}
+
 // Rate limiter en memoria para el proxy PÚBLICO (frena la enumeración de códigos
 // de reserva por IP). Ventana deslizante de 60s.
 const _rate = new Map() // key ip → [timestamps]
@@ -77,4 +89,4 @@ const tool = async (req, res) => {
   } catch (e) { res.status(400).json({ error: e.message }) }
 }
 
-module.exports = { getConfig, saveConfig, test, tool }
+module.exports = { getConfig, saveConfig, test, resetCredentials, tool }
