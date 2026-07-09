@@ -32,6 +32,7 @@ function publicConfig(cfg) {
     ? !!(c.token && (c.apiKey || (c.username && c.password)))
     : !!c.token
   const connected = !!(c.provider && prov && !prov.comingSoon && hasCreds)
+  const props = Array.isArray(c.properties) ? c.properties.map(p => ({ id: String(p.id), name: p.name || `Propiedad ${p.id}` })) : []
   return {
     connected,
     provider: c.provider || '',
@@ -39,6 +40,8 @@ function publicConfig(cfg) {
     hotelName: c.hotelName || '',
     currency: c.currency || 'COP',
     maxPhotos: Number(c.maxPhotos) || 4,
+    properties: props,
+    multiProperty: props.length > 1,
   }
 }
 
@@ -72,12 +75,26 @@ const _optionsCache = new Map() // convId → { at, checkin, checkout, adults, c
 const OPTIONS_TTL = 20 * 60 * 1000
 
 async function getRoomsCached(accId, cfg) {
-  const hit = _roomsCache.get(accId)
+  const ck = `${accId}:${cfg.propertyId || 'default'}`
+  const hit = _roomsCache.get(ck)
   if (hit && Date.now() - hit.at < ROOMS_TTL) return hit.rooms
   const prov = providers.getProvider(cfg.provider)
   const rooms = await prov.getRooms(cfg)
-  _roomsCache.set(accId, { at: Date.now(), rooms })
+  _roomsCache.set(ck, { at: Date.now(), rooms })
   return rooms
+}
+
+// Resuelve la propiedad indicada por el asistente (nombre o id) contra la lista
+// del login. Devuelve el cfg con esa propiedad, o null si no la reconoce.
+function resolveProperty(cfg, propArg) {
+  const props = Array.isArray(cfg.properties) ? cfg.properties : []
+  if (!propArg || props.length <= 1) return { id: cfg.propertyId, name: cfg.hotelName || (props[0]?.name || ''), cfg }
+  const q = norm(propArg)
+  const p = props.find(x => norm(x.name) === q)
+    || props.find(x => norm(x.name).includes(q) || q.includes(norm(x.name)))
+    || props.find(x => String(x.id) === String(propArg).trim())
+  if (!p) return null
+  return { id: String(p.id), name: p.name, cfg: { ...cfg, propertyId: String(p.id) } }
 }
 
 // ── Utilidades ─────────────────────────────────────────────────────────────────
@@ -187,10 +204,27 @@ async function toolCall(accId, fn, args = {}, { convId, agId } = {}) {
   if (!pub.connected) return { text: 'El PMS no está conectado. El equipo debe configurarlo en Zona IA → PMS.' }
   const prov = providers.getProvider(cfg.provider)
   const currency = pub.currency
+  const props = Array.isArray(cfg.properties) ? cfg.properties : []
+  const multi = props.length > 1
+
+  // ── Ver propiedades (hoteles del grupo, p.ej. Kunas multi-propiedad) ──────
+  if (fn === 'ver_propiedades') {
+    if (!multi) return { text: `Este alojamiento tiene una sola propiedad${cfg.hotelName ? `: ${cfg.hotelName}` : ''}. Muestra sus habitaciones con ver_habitaciones.` }
+    return { text: `Propiedades disponibles (${props.length}):\n${props.map((p, i) => `${i + 1}. ${p.name}`).join('\n')}\n\nPregúntale al cliente en cuál está interesado y pásala como "propiedad" (el nombre) a ver_habitaciones, ver_disponibilidad_hotel o reservar_habitacion.` }
+  }
+
+  // Multi-propiedad: para operar hay que fijar la propiedad. Si no la indican, la pide.
+  let scoped = cfg
+  if (multi && ['ver_habitaciones', 'ver_disponibilidad_hotel', 'reservar_habitacion'].includes(fn)) {
+    if (!args.propiedad) return { text: `Este hotel maneja varias propiedades: ${props.map(p => p.name).join(', ')}. Pregúntale al cliente en cuál desea y vuelve a llamar con "propiedad": <nombre>.` }
+    const r = resolveProperty(cfg, args.propiedad)
+    if (!r) return { text: `No reconocí la propiedad "${args.propiedad}". Disponibles: ${props.map(p => p.name).join(', ')}.` }
+    scoped = r.cfg
+  }
 
   // ── Ver habitaciones (con fotos) ──────────────────────────────────────────
   if (fn === 'ver_habitaciones') {
-    const rooms = await getRoomsCached(accId, cfg)
+    const rooms = await getRoomsCached(accId, scoped)
     if (!rooms.length) return { text: 'El hotel no tiene habitaciones publicadas en el PMS.' }
     const wanted = norm(args.habitacion || '')
     if (wanted) {
@@ -225,7 +259,7 @@ async function toolCall(accId, fn, args = {}, { convId, agId } = {}) {
     const adults = Math.max(1, Number(args.adultos) || 1)
     const children = Number(args.ninos) || 0
     const query = { checkin, checkout, adults, children, infants: Number(args.infantes) || 0, rooms: Number(args.habitaciones) || undefined, promoCode: args.codigo_promocional || undefined }
-    const { rooms: availRooms } = await prov.getAvailability(cfg, query)
+    const { rooms: availRooms } = await prov.getAvailability(scoped, query)
     let options = buildOptions(availRooms, { adults, children })
 
     if (!options.length) {
@@ -236,7 +270,7 @@ async function toolCall(accId, fn, args = {}, { convId, agId } = {}) {
         const ci = addDays(checkin, shift); if (ci <= new Date().toISOString().slice(0, 10) && shift < 0) continue
         const co = addDays(ci, nights)
         try {
-          const r = await prov.getAvailability(cfg, { ...query, checkin: ci, checkout: co })
+          const r = await prov.getAvailability(scoped, { ...query, checkin: ci, checkout: co })
           const opts = buildOptions(r.rooms, { adults, children })
           if (opts.length) { alts.push({ checkin: ci, checkout: co, best: opts[0] }); if (alts.length >= 2) break }
         } catch {}
@@ -277,7 +311,7 @@ async function toolCall(accId, fn, args = {}, { convId, agId } = {}) {
     const cacheValid = cached && Date.now() - cached.at < OPTIONS_TTL && cached.checkin === checkin && cached.checkout === checkout
     let target = null
     if (args.opcion && cacheValid) target = cached.options.find(o => o.n === Number(args.opcion)) || null
-    const { rooms: liveRooms } = await prov.getAvailability(cfg, { checkin, checkout, adults, children, promoCode: args.codigo_promocional || cached?.promoCode || undefined })
+    const { rooms: liveRooms } = await prov.getAvailability(scoped, { checkin, checkout, adults, children, promoCode: args.codigo_promocional || cached?.promoCode || undefined })
     const liveOptions = buildOptions(liveRooms, { adults, children })
     if (!liveOptions.length) return { text: `Ya no hay disponibilidad del ${checkin} al ${checkout}. Consulta otras fechas con ver_disponibilidad_hotel.` }
     if (target) {
@@ -295,7 +329,7 @@ async function toolCall(accId, fn, args = {}, { convId, agId } = {}) {
     }
 
     const surnameSplit = name.split(/\s+/)
-    const booking = await prov.book(cfg, {
+    const booking = await prov.book(scoped, {
       checkin, checkout, adults, children,
       infants: Number(args.infantes) || 0,
       availability: { [target.rateId]: 1 },
