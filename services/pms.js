@@ -26,8 +26,9 @@ async function saveConfig(accId, cfg) { await pool.query('UPDATE accounts SET pm
 function publicConfig(cfg) {
   const c = cfg || {}
   const prov = providers.getProvider(c.provider)
-  // Cada proveedor exige credenciales distintas: HosRoom = token; Kunas = token + key + id_properties.
-  const hasCreds = prov?.needsKey ? !!(c.token && c.apiKey && c.propertyId) : !!c.token
+  // Solo credenciales (tokens): HosRoom = token; Kunas = token + key. El resto
+  // (id_properties, plan de tarifa, endpoint) se resuelve automáticamente.
+  const hasCreds = prov?.needsKey ? !!(c.token && c.apiKey) : !!c.token
   const connected = !!(c.provider && prov && !prov.comingSoon && hasCreds)
   return {
     connected,
@@ -45,8 +46,11 @@ async function testConnection(accId) {
   const prov = providers.getProvider(cfg.provider)
   if (!prov) return { ok: false, message: `Proveedor desconocido: ${cfg.provider}` }
   const r = await prov.testConnection(cfg)
-  // Guarda el nombre del hotel para mostrarlo en la UI y en las respuestas.
-  if (r.ok && r.hotelName) { await saveConfig(accId, { ...cfg, hotelName: r.hotelName }).catch(() => {}) }
+  // Guarda el nombre del hotel y el id de propiedad auto-descubierto (Kunas) para
+  // mostrarlos en la UI y evitar redescubrirlos en cada llamada.
+  if (r.ok && (r.hotelName || r.propertyId)) {
+    await saveConfig(accId, { ...cfg, hotelName: r.hotelName || cfg.hotelName, propertyId: r.propertyId || cfg.propertyId }).catch(() => {})
+  }
   return r
 }
 
