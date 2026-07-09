@@ -214,18 +214,43 @@ function datesOfStay(checkin, checkout) {
   while (d < checkout) { out.push(d); d = addDays(d, 1) }
   return out
 }
-// Extrae URLs de imágenes de un objeto: campos images/photos/gallery… con valores
-// string, array de strings o array de objetos {url|src|image|path|original…}.
-function imagesOf(o) {
-  const out = []
-  const add = v => {
-    if (!v) return
-    if (typeof v === 'string') { if (v.trim()) out.push(v.trim()); return }
-    if (Array.isArray(v)) { v.forEach(add); return }
-    if (typeof v === 'object') { const u = first(v.url, v.src, v.image, v.path, v.original, v.large, v.medium, v.thumb, v.thumbnail, v.file); if (u) out.push(u) }
+const IMG_KEY_RE = /(image|photo|foto|gallery|galer|img|media|picture|thumb|cover|banner|logo|avatar)/i
+const IMG_EXT_RE = /\.(jpe?g|png|webp|gif|avif|bmp|svg)(\?\S*)?$/i
+// Extrae URLs de imágenes de CUALQUIER forma de respuesta: recorre el objeto y
+// captura strings que sean URL de imagen (por extensión o por ruta) o valores bajo
+// claves tipo image/photo/foto/gallery/media…, normalizando a URL absoluta.
+function imagesOf(o, base = 'https://app.hotelsync.com') {
+  const raw = []
+  const pushObj = el => {
+    if (typeof el === 'string') raw.push(el)
+    else if (el && typeof el === 'object') { const u = first(el.url, el.src, el.image, el.path, el.original, el.large, el.medium, el.file, el.filename, el.href); if (u) raw.push(u) }
   }
-  for (const k of ['images', 'image', 'photos', 'photo', 'gallery', 'galleries', 'pictures', 'fotos', 'media', 'img']) if (o && o[k] != null) add(o[k])
-  return [...new Set(out.filter(Boolean))]
+  const walk = (v, depth) => {
+    if (v == null || depth > 6) return
+    if (typeof v === 'string') { const s = v.trim(); if (/^https?:\/\//i.test(s) && (IMG_EXT_RE.test(s) || /\/(images?|photos?|fotos?|uploads?|media|gallery|files?)\//i.test(s))) raw.push(s); return }
+    if (Array.isArray(v)) { v.forEach(x => walk(x, depth + 1)); return }
+    if (typeof v === 'object') {
+      for (const [k, val] of Object.entries(v)) {
+        if (IMG_KEY_RE.test(k)) {
+          if (typeof val === 'string') String(val).split(/[,|;\n]/).forEach(s => { if (s.trim()) raw.push(s.trim()) })
+          else if (Array.isArray(val)) val.forEach(pushObj)
+          else pushObj(val)
+        } else walk(val, depth + 1)
+      }
+    }
+  }
+  walk(o, 0)
+  const b = (base || 'https://app.hotelsync.com').replace(/\/$/, '')
+  const norm = s => {
+    s = String(s || '').trim()
+    if (!s) return null
+    if (/^https?:\/\//i.test(s)) return s
+    if (s.startsWith('//')) return 'https:' + s
+    if (s.startsWith('/')) return b + s
+    if (IMG_EXT_RE.test(s) || s.includes('/')) return b + '/' + s.replace(/^\/+/, '')
+    return null
+  }
+  return [...new Set(raw.map(norm).filter(Boolean))]
 }
 function normRoomKunas(rt) {
   return {
@@ -441,7 +466,7 @@ const kunas = {
     return {
       name: first(p.name, p.shortname, cfg.hotelName, ''),
       description: first(p.description, p.desc, '') || '',
-      photos: imagesOf(p),
+      photos: imagesOf(data, cfg.baseUrl),   // recorre TODA la respuesta
       raw: p,
     }
   },
