@@ -95,7 +95,21 @@ const SPECIAL_CATALOG_TOOL = {
   actionType: 'meta_catalog',
   special: true,
 }
-const specialTools = () => [SPECIAL_WOO_TOOL, SPECIAL_AGENDA_TOOL, SPECIAL_PAYMENT_TOOL, SPECIAL_CATALOG_TOOL]
+// Herramienta IA Especial de PMS HOTELERO (HosRoom/Kunas). Siempre asignable;
+// opera solo si la cuenta conectó su PMS en Zona IA → PMS. El asistente puede
+// mostrar habitaciones con fotos reales, consultar disponibilidad con precios,
+// reservar (con link de pago), ver el estado de una reserva y gestionar
+// solicitudes de reagenda/cancelación.
+const SPECIAL_PMS_TOOL = {
+  id: 'pms_hotel',
+  name: 'pms',
+  description: 'PMS hotelero conectado (HosRoom/Kunas): el asistente muestra habitaciones con fotos reales, consulta disponibilidad con precios y cotización, crea reservas con link de pago, hace seguimiento por código y registra solicitudes de reagenda/cancelación para el equipo. Asígnala a un prompt para habilitarla.',
+  collectFields: [],
+  actionType: 'pms',
+  special: true,
+}
+const pmsSvc = require('../services/pms')
+const specialTools = () => [SPECIAL_WOO_TOOL, SPECIAL_AGENDA_TOOL, SPECIAL_PAYMENT_TOOL, SPECIAL_CATALOG_TOOL, SPECIAL_PMS_TOOL]
 
 const mapCmsAsset = c => ({
   id: c.id, name: c.name, description: c.description || '', tags: parseJ(c.tags, []),
@@ -143,6 +157,7 @@ async function loadPublicAccount(accId) {
     aiTools:   [SPECIAL_CMS_TOOL, ...specialTools(), ...aiTools.map(t => ({ id: t.id, name: t.name, description: t.description, collectFields: parseJ(t.collect_fields, []), flowId: t.flow_id, actionType: t.action_type || 'variable' }))],
     woocommerce: storeSvc.publicConfig(parseJ(acc.woocommerce, null)),
     scheduling: schedulingCfg,
+    pms: pmsSvc.publicConfig(parseJ(acc.pms, null)),
     // Conciencia temporal de la IA (zona horaria + fecha/hora base opcional).
     aiTimezone: acc.ai_timezone || 'America/Lima',
     aiDatetimeEnabled: acc.ai_datetime_enabled == null ? true : !!acc.ai_datetime_enabled,
@@ -238,6 +253,7 @@ const getAccount = async (req, res) => {
       aiTools:   [SPECIAL_CMS_TOOL, ...specialTools(), ...aiTools.map(t => ({ id: t.id, name: t.name, description: t.description, collectFields: parseJ(t.collect_fields, []), flowId: t.flow_id, actionType: t.action_type || 'variable', createdAt: t.created_at }))],
       woocommerce: storeSvc.publicConfig(parseJ(acc.woocommerce, null)),
       scheduling: schedulingCfg,
+      pms: pmsSvc.publicConfig(parseJ(acc.pms, null)),
       aiTimezone: acc.ai_timezone || 'America/Lima',
       aiDatetimeEnabled: acc.ai_datetime_enabled == null ? true : !!acc.ai_datetime_enabled,
       aiBaseDatetime: acc.ai_base_datetime || '',

@@ -122,6 +122,7 @@ const woocommerceRoutes   = require('./routes/woocommerce.routes')
 const paymentsRoutes      = require('./routes/payments.routes')
 const pushRoutes          = require('./routes/push.routes')
 const schedulingRoutes    = require('./routes/scheduling.routes')
+const pmsRoutes           = require('./routes/pms.routes')
 
 // Guest counter alias (used by storage.js generateGuest)
 const guestRouter = require('express').Router()
@@ -164,6 +165,7 @@ app.use('/api',                woocommerceRoutes)
 app.use('/api',                paymentsRoutes)
 app.use('/api',                pushRoutes)
 app.use('/api',                schedulingRoutes)
+app.use('/api',                pmsRoutes)
 app.use('/api',                webhookRoutes)
 app.use('/api',                metaCatalogRoutes)
 app.use('/api',                metaPagesRoutes)
@@ -204,6 +206,8 @@ app.use('/api',                recontactRoutes)
     // Agente de Cambios: capacidades globales activables por el super admin
     // (qué puede modificar: prompt / herramientas / flujos / agendas).
     "ALTER TABLE platform_settings ADD COLUMN change_agent_caps TEXT",
+    // Herramienta IA Especial PMS (HosRoom/Kunas): config por cuenta (proveedor + token).
+    "ALTER TABLE accounts ADD COLUMN pms TEXT",
     // Conciencia temporal de la IA: zona horaria local + (opcional) fecha/hora base fija.
     "ALTER TABLE accounts ADD COLUMN ai_timezone VARCHAR(64) DEFAULT 'America/Lima'",
     "ALTER TABLE accounts ADD COLUMN ai_datetime_enabled TINYINT(1) DEFAULT 1",

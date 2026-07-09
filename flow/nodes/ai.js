@@ -46,6 +46,7 @@ function buildToolDefs(toolList, account) {
     else if (tool.actionType === 'scheduling') { if (account?.scheduling?.connected) defs.push(...buildAgendaToolDefs(account)) }
     else if (tool.actionType === 'payment') { if (account?.payments?.connected) defs.push(...buildPaymentToolDefs()) }
     else if (tool.actionType === 'meta_catalog') { if (account?.metaCatalog?.connected) defs.push(...buildCatalogToolDefs()) }
+    else if (tool.actionType === 'pms') { if (account?.pms?.connected) defs.push(...buildPmsToolDefs(account)) }
     else { const d = buildOneToolDef(tool); if (d) defs.push(d) }
   }
   return defs
@@ -68,6 +69,10 @@ async function execToolCall(ctx, toolList, toolName, toolArgs) {
   // Catálogo de Meta.
   if (CATALOG_FUNCS.has(normalized) && (toolList || []).some(t => t.actionType === 'meta_catalog')) {
     return catalogExec(ctx, normalized, toolArgs)
+  }
+  // PMS hotelero (HosRoom/Kunas).
+  if (PMS_FUNCS.has(normalized) && (toolList || []).some(t => t.actionType === 'pms')) {
+    return pmsExec(ctx, normalized, toolArgs)
   }
   const tool = (toolList || []).find(t => t.name.replace(/\s+/g, '_').toLowerCase() === normalized)
   if (!tool) return `Error: herramienta "${toolName}" no encontrada o no asignada a este prompt.`
@@ -415,6 +420,91 @@ async function paymentExec(ctx, fnName, args) {
     return `No se pudo completar la acción de pago: ${e.message}`
   }
   return 'Acción de pago no reconocida.'
+}
+
+// ── PMS hotelero (HosRoom/Kunas): herramienta especial con varias funciones ────
+// Lógica en services/pms.js (server-side). El servicio devuelve { text, media? };
+// aquí se envían las fotos al chat y se dispara el flujo post-reserva si existe.
+const PMS_FUNCS = new Set(['ver_habitaciones', 'ver_disponibilidad_hotel', 'reservar_habitacion', 'reagendar_reserva', 'cancelar_reserva', 'ver_reserva'])
+function buildPmsToolDefs(account) {
+  const hotel = account?.pms?.hotelName ? ` del hotel "${account.pms.hotelName}"` : ''
+  return [
+    { type: 'function', function: { name: 'ver_habitaciones',
+      description: `Muestra las habitaciones${hotel} con sus FOTOS reales, capacidad y planes. Úsalo cuando el cliente pregunte por las habitaciones o pida fotos.`,
+      parameters: { type: 'object', properties: {
+        habitacion: { type: 'string', description: 'Nombre de una habitación concreta para enviar todas sus fotos y ficha (vacío = panorama de todas)' },
+      } } } },
+    { type: 'function', function: { name: 'ver_disponibilidad_hotel',
+      description: 'Consulta la disponibilidad REAL del hotel para un rango de fechas con precios y cotización total. Úsalo antes de reservar. NUNCA inventes precios ni disponibilidad.',
+      parameters: { type: 'object', properties: {
+        checkin: { type: 'string', description: 'Fecha de entrada YYYY-MM-DD' },
+        checkout: { type: 'string', description: 'Fecha de salida YYYY-MM-DD' },
+        adultos: { type: 'number', description: 'Número de adultos (mínimo 1)' },
+        ninos: { type: 'number', description: 'Número de niños (opcional)' },
+        infantes: { type: 'number', description: 'Número de infantes (opcional)' },
+        habitaciones: { type: 'number', description: 'Número de habitaciones (opcional)' },
+        codigo_promocional: { type: 'string', description: 'Código promocional si el cliente tiene uno (opcional)' },
+      }, required: ['checkin', 'checkout', 'adultos'] } } },
+    { type: 'function', function: { name: 'reservar_habitacion',
+      description: 'Crea la RESERVA en el PMS del hotel. Úsalo SOLO cuando el cliente confirme fechas y opción, y tengas su nombre, email y teléfono. Devuelve el código de reserva y el link de pago.',
+      parameters: { type: 'object', properties: {
+        checkin: { type: 'string', description: 'YYYY-MM-DD' },
+        checkout: { type: 'string', description: 'YYYY-MM-DD' },
+        adultos: { type: 'number' },
+        ninos: { type: 'number' },
+        opcion: { type: 'number', description: 'Número de opción de la última consulta de disponibilidad' },
+        plan: { type: 'string', description: 'Nombre de la habitación/plan elegido (si no usas "opcion")' },
+        nombre: { type: 'string', description: 'Nombre completo del huésped' },
+        email: { type: 'string', description: 'Email del huésped (obligatorio para la reserva)' },
+        telefono: { type: 'string', description: 'Teléfono del huésped (si no, se toma el de la conversación)' },
+        nota: { type: 'string', description: 'Petición especial del huésped (opcional)' },
+        codigo_promocional: { type: 'string' },
+      }, required: ['checkin', 'checkout', 'adultos'] } } },
+    { type: 'function', function: { name: 'ver_reserva',
+      description: 'Consulta el estado y detalle de una reserva por su código (ej. HR-123456789). Úsalo para seguimiento cuando el cliente pregunte por su reserva.',
+      parameters: { type: 'object', properties: {
+        codigo: { type: 'string', description: 'Código de la reserva' },
+      }, required: ['codigo'] } } },
+    { type: 'function', function: { name: 'reagendar_reserva',
+      description: 'Registra la solicitud de CAMBIO DE FECHAS de una reserva existente (el equipo del hotel la procesa y confirma). Pide el código y las nuevas fechas.',
+      parameters: { type: 'object', properties: {
+        codigo: { type: 'string', description: 'Código de la reserva (HR-…)' },
+        nueva_checkin: { type: 'string', description: 'Nueva fecha de entrada YYYY-MM-DD' },
+        nueva_checkout: { type: 'string', description: 'Nueva fecha de salida YYYY-MM-DD' },
+        motivo: { type: 'string' },
+      }, required: ['codigo', 'nueva_checkin', 'nueva_checkout'] } } },
+    { type: 'function', function: { name: 'cancelar_reserva',
+      description: 'Registra la solicitud de CANCELACIÓN de una reserva (el equipo del hotel la procesa y confirma). Pide el código de la reserva.',
+      parameters: { type: 'object', properties: {
+        codigo: { type: 'string', description: 'Código de la reserva (HR-…)' },
+        motivo: { type: 'string' },
+      }, required: ['codigo'] } } },
+  ]
+}
+async function pmsExec(ctx, fnName, args) {
+  try {
+    const pms = require('../../services/pms')
+    const r = await pms.toolCall(ctx.accId, fnName, args || {}, { convId: ctx.convId, agId: ctx.agId })
+    // Envía las fotos al chat (web + canal externo).
+    for (const m of (r.media || [])) {
+      await sendBotMsg(ctx, m.caption || '', { kind: 'image', media: { kind: 'image', url: m.url }, mediaUrl: m.url })
+    }
+    logDebug(ctx, 'tool_result', `🏨 PMS ${fnName}${r.bookingCode ? ` → ${r.bookingCode}` : ''}`, { media: (r.media || []).length })
+    // Flujo post-reserva (opcional, configurado en Zona IA → PMS).
+    if (r.booked) {
+      try {
+        const cfg = await pms.loadConfig(ctx.accId)
+        if (cfg?.postBookingFlowId) {
+          const { executeFlow } = require('../engine')
+          executeFlow({ flowId: cfg.postBookingFlowId, accId: ctx.accId, agId: ctx.agId, convId: ctx.convId, triggerContext: { pmsBookingCode: r.bookingCode } }).catch(() => {})
+        }
+      } catch {}
+    }
+    return r?.text || 'Hecho.'
+  } catch (e) {
+    logDebug(ctx, 'error', `PMS: ${e.message}`, {})
+    return `No se pudo completar la acción del PMS: ${e.message}`
+  }
 }
 
 // Carga los turnos recientes para dar MEMORIA al agente. Descarta el/los turnos
