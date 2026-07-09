@@ -76,7 +76,7 @@ const listProperties = async (req, res) => {
   catch (e) { res.status(502).json({ error: e.message }) }
 }
 const listRooms = async (req, res) => {
-  try { res.json({ rooms: await pms.listRooms(req.params.accId, { propertyId: req.query.propertyId || '' }) }) }
+  try { res.json(await pms.listRooms(req.params.accId, { propertyId: req.query.propertyId || '' })) }
   catch (e) { res.status(502).json({ error: e.message }) }
 }
 const availability = async (req, res) => {

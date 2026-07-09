@@ -430,13 +430,20 @@ async function listProperties(accId) {
 }
 
 // Habitaciones con ficha, fotos y planes (opcionalmente de una propiedad concreta).
+// Devuelve también la propiedad (con sus fotos y descripción) cuando el proveedor
+// la expone (Kunas: /api/property/data/property).
 async function listRooms(accId, { propertyId } = {}) {
   const cfg = await loadConfig(accId)
   if (!publicConfig(cfg).connected) throw new Error('El PMS no está conectado.')
   const prov = providers.getProvider(cfg.provider)
   const c = propertyId ? { ...cfg, propertyId: String(propertyId) } : cfg
+  let property = null
+  if (typeof prov.getProperty === 'function') {
+    const p = await prov.getProperty(c).catch(() => null)
+    if (p) property = { name: p.name || '', description: p.description || '', photos: Array.isArray(p.photos) ? p.photos.filter(Boolean) : [] }
+  }
   const rooms = await prov.getRooms(c)
-  return rooms.map(mapRoomPublic)
+  return { rooms: rooms.map(mapRoomPublic), property }
 }
 
 // Disponibilidad para un rango (una sola consulta): habitaciones con precio.

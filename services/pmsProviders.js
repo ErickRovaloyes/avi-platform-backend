@@ -19,6 +19,8 @@
 
 const first = (...vals) => vals.find(v => v !== undefined && v !== null && v !== '')
 const arr = x => (Array.isArray(x) ? x : (x ? [x] : []))
+// Suma días a una fecha YYYY-MM-DD (usada por Kunas: rangos y disponibilidad).
+function addDays(dateStr, n) { const d = new Date(`${dateStr}T12:00:00Z`); d.setUTCDate(d.getUTCDate() + n); return d.toISOString().slice(0, 10) }
 
 // ── Transporte HosRoom ─────────────────────────────────────────────────────────
 // La API de HosRoom usa Authorization: Bearer <token del hotel>. El token debe ser
@@ -432,13 +434,28 @@ const kunas = {
     }
   },
 
+  // Datos de la propiedad (incluye sus FOTOS): /api/property/data/property.
+  async getProperty(cfg) {
+    const data = await this._post(cfg, '/api/property/data/property', {})
+    const p = (data && typeof data === 'object' && !Array.isArray(data)) ? (data.property || data.data || data) : {}
+    return {
+      name: first(p.name, p.shortname, cfg.hotelName, ''),
+      description: first(p.description, p.desc, '') || '',
+      photos: imagesOf(p),
+      raw: p,
+    }
+  },
+
   // Habitaciones (tipos) desde el calendario. Usa fotos de la PROPIEDAD como
   // respaldo si un tipo no trae imágenes propias.
   async getRooms(cfg) {
     const date = new Date().toISOString().slice(0, 10)
-    const data = await this._calendar(cfg, date)
+    const [data, prop] = await Promise.all([
+      this._calendar(cfg, date),
+      this.getProperty(cfg).catch(() => ({ photos: [] })),
+    ])
     const propObj = (data && typeof data === 'object') ? first(data.property, data.data?.property) : null
-    const propImages = propObj ? imagesOf(propObj) : []
+    const propImages = [...new Set([...(prop.photos || []), ...(propObj ? imagesOf(propObj) : [])])]
     const list = deepFindArray(data, 'room_types') || (Array.isArray(data) ? data : arr(first(data?.data, data?.rooms, [])))
     return (list || []).map(rt => this._mapRoomType(rt, propImages)).filter(r => r.id || r.name)
   },
@@ -488,6 +505,7 @@ const kunas = {
     const out = { properties: _kunasPropInfo.get(cfg.token) || [] }
     const date = new Date().toISOString().slice(0, 10)
     const dto = addDays(date, 7)
+    try { out.property = await this._post(cfg, '/api/property/data/property', {}) } catch (e) { out.propertyError = e.message }
     try { out.calendar = await this._calendar(cfg, date) } catch (e) { out.calendarError = e.message }
     try { out.avail = await this._post(cfg, '/api/avail/data/avail', { dfrom: date, dto }) } catch (e) { out.availError = e.message }
     return out
