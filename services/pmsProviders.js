@@ -8,7 +8,8 @@
  *   GET  /api/engine/availability    → disponibilidad por checkin/checkout + ocupación
  *   POST /api/engine/book            → crear reserva (customer, source:'bot', link de pago)
  *   GET  /api/engine/status/{code}   → detalle/estado de una reserva (HR-XXXX)
- * Autenticación: Bearer token del hotel. Base: https://sys.hosroom.com
+ * Autenticación: el token de API se canjea por una SESIÓN de hotel (cookie) vía
+ * POST /login-api (HosRoom NO usa Authorization: Bearer). Base: https://sys.hosroom.com
  * NOTA: el engine NO expone cancelar/reagendar; esas operaciones van como
  * "solicitud gestionada" (nota interna + aviso al equipo) desde services/pms.js.
  *
@@ -18,27 +19,80 @@
 const first = (...vals) => vals.find(v => v !== undefined && v !== null && v !== '')
 const arr = x => (Array.isArray(x) ? x : (x ? [x] : []))
 
-async function http(base, token, path, { method = 'GET', body, query } = {}) {
-  const url = new URL(`${(base || '').replace(/\/$/, '')}${path}`)
-  for (const [k, v] of Object.entries(query || {})) {
-    if (v !== undefined && v !== null && v !== '') url.searchParams.set(k, String(v))
+// ── Sesión HosRoom ─────────────────────────────────────────────────────────────
+// HosRoom NO usa Authorization: Bearer. El token de API se canjea por una SESIÓN
+// de hotel (cookie) haciendo POST a /login-api; luego el resto de endpoints
+// (/api/engine/*) se llaman con esa cookie. Cacheamos la sesión por token (~45 min)
+// y re-logueamos si expira (401).
+const _sessions = new Map() // token → { at, cookies }
+const SESSION_TTL = 45 * 60 * 1000
+
+function parseSetCookies(res) {
+  const out = {}
+  const list = typeof res.headers.getSetCookie === 'function'
+    ? res.headers.getSetCookie()
+    : (res.headers.get('set-cookie') ? [res.headers.get('set-cookie')] : [])
+  for (const line of list) {
+    const m = /^\s*([^=;]+)=([^;]*)/.exec(line)
+    if (m) out[m[1].trim()] = m[2]
   }
-  const res = await fetch(url, {
-    method,
-    headers: {
-      'Accept': 'application/json',
-      'Content-Type': 'application/json',
-      'Authorization': `Bearer ${token}`,
-    },
-    body: body ? JSON.stringify(body) : undefined,
+  return out
+}
+const cookieHeader = c => Object.entries(c).map(([k, v]) => `${k}=${v}`).join('; ')
+
+async function hosLogin(base, token) {
+  // 1) GET /login-api → CSRF (_token) + cookies iniciales.
+  const g = await fetch(`${base}/login-api`, { headers: { 'Accept': 'text/html' } })
+  const html = await g.text()
+  let cookies = parseSetCookies(g)
+  const m = /name="_token"\s+value="([^"]+)"/.exec(html) || /<meta name="csrf-token" content="([^"]+)"/.exec(html)
+  const csrf = m ? m[1] : ''
+  // 2) POST el token → establece la sesión de hotel (302 en éxito, 401/422 si es inválido).
+  const p = await fetch(`${base}/login-api`, {
+    method: 'POST', redirect: 'manual',
+    headers: { 'Content-Type': 'application/x-www-form-urlencoded', 'Accept': 'text/html', 'Cookie': cookieHeader(cookies) },
+    body: new URLSearchParams({ _token: csrf, token }).toString(),
   })
+  cookies = { ...cookies, ...parseSetCookies(p) }
+  if (p.status === 401 || p.status === 419 || p.status === 422) {
+    throw Object.assign(new Error('HosRoom: el token de API es inválido o expiró. Genéralo de nuevo en HosRoom.'), { status: 401 })
+  }
+  if (!cookies.hosroom_session) throw new Error('HosRoom: no se pudo iniciar la sesión con el token.')
+  return cookies
+}
+
+async function hosSession(cfg, force = false) {
+  const base = (cfg.baseUrl || 'https://sys.hosroom.com').replace(/\/$/, '')
+  const hit = _sessions.get(cfg.token)
+  if (!force && hit && Date.now() - hit.at < SESSION_TTL) return { base, entry: hit }
+  const cookies = await hosLogin(base, cfg.token)
+  const entry = { at: Date.now(), cookies }
+  _sessions.set(cfg.token, entry)
+  return { base, entry }
+}
+
+// Llamada autenticada a la API de HosRoom con la sesión (cookie). Reintenta una vez
+// re-logueando si la sesión caducó.
+async function hosFetch(cfg, path, { method = 'GET', body, query, _retry = false } = {}) {
+  const { base, entry } = await hosSession(cfg)
+  const url = new URL(`${base}${path}`)
+  for (const [k, v] of Object.entries(query || {})) { if (v !== undefined && v !== null && v !== '') url.searchParams.set(k, String(v)) }
+  const headers = { 'Accept': 'application/json', 'Cookie': cookieHeader(entry.cookies) }
+  if (body) headers['Content-Type'] = 'application/json'
+  if (entry.cookies['XSRF-TOKEN']) headers['X-XSRF-TOKEN'] = decodeURIComponent(entry.cookies['XSRF-TOKEN'])
+  const res = await fetch(url, { method, headers, body: body ? JSON.stringify(body) : undefined })
+  // Mantén la sesión fresca (Laravel rota XSRF-TOKEN por request).
+  const fresh = parseSetCookies(res)
+  if (Object.keys(fresh).length) entry.cookies = { ...entry.cookies, ...fresh }
   const text = await res.text()
   let data = null; try { data = text ? JSON.parse(text) : null } catch { data = text }
+  if ((res.status === 401 || res.status === 419) && !_retry) {
+    _sessions.delete(cfg.token)
+    return hosFetch(cfg, path, { method, body, query, _retry: true })
+  }
   if (!res.ok) {
     const msg = typeof data === 'string' ? data.slice(0, 200) : (data?.message || JSON.stringify(data?.errors || data || {}).slice(0, 200))
-    const err = new Error(`HosRoom ${res.status}: ${msg}`)
-    err.status = res.status
-    throw err
+    throw Object.assign(new Error(`HosRoom ${res.status}: ${msg}`), { status: res.status })
   }
   return data
 }
@@ -83,22 +137,19 @@ const hosroom = {
   async testConnection(cfg) {
     if (!cfg?.token) return { ok: false, message: 'Falta el token del hotel.' }
     try {
-      const data = await http(cfg.baseUrl || this.defaultBaseUrl, cfg.token, '/api/hotel')
-      const name = first(data?.data?.name, data?.name, data?.hotel?.name, '')
-      return { ok: true, message: `Conexión HosRoom OK${name ? ` — ${name}` : ''}`, hotelName: name || '' }
+      const data = await hosFetch(cfg, '/api/engine/settings')
+      const root = data?.settings || data || {}
+      const name = first(root.hotel?.name, root.hotel?.title, data?.hotel?.name, '')
+      const nRooms = arr(first(root.rooms, root.data, [])).length
+      return { ok: true, message: `Conexión HosRoom OK${name ? ` — ${name}` : ''}${nRooms ? ` · ${nRooms} habitación(es)` : ''}`, hotelName: name || '' }
     } catch (e) {
-      // Algunos tokens solo tienen alcance de engine: valida contra settings como respaldo.
-      try {
-        const s = await http(cfg.baseUrl || this.defaultBaseUrl, cfg.token, '/api/engine/settings')
-        if (s?.success !== false) return { ok: true, message: 'Conexión HosRoom OK (engine)', hotelName: '' }
-      } catch {}
       return { ok: false, message: e.message }
     }
   },
 
   // Habitaciones con ficha completa, fotos y planes.
   async getRooms(cfg) {
-    const data = await http(cfg.baseUrl || this.defaultBaseUrl, cfg.token, '/api/engine/settings')
+    const data = await hosFetch(cfg, '/api/engine/settings')
     const root = data?.settings || data || {}
     return arr(first(root.rooms, root.data, [])).map(normRoom)
   },
@@ -114,7 +165,7 @@ const hosroom = {
     if (rooms) query.rooms = Number(rooms)
     if (promoCode) query.promoCode = promoCode
     if (agencyCode) query.code = agencyCode
-    const data = await http(cfg.baseUrl || this.defaultBaseUrl, cfg.token, '/api/engine/availability', { query })
+    const data = await hosFetch(cfg, '/api/engine/availability', { query })
     const root = data?.settings || data || {}
     const list = arr(first(root.rooms, root.availability, root.data, []))
     return { rooms: list.map(normRoom), raw: data }
@@ -140,7 +191,7 @@ const hosroom = {
     if (promoCode) body.promoCode = promoCode
     if (agencyCode) body.code = agencyCode
     if (payment !== undefined) body.payment = !!payment
-    const data = await http(cfg.baseUrl || this.defaultBaseUrl, cfg.token, '/api/engine/book', { method: 'POST', body })
+    const data = await hosFetch(cfg, '/api/engine/book', { method: 'POST', body })
     const d = data?.data || data || {}
     return {
       code: first(d.code, d.reference, ''),
@@ -154,7 +205,7 @@ const hosroom = {
 
   // Estado/detalle de una reserva por su código HR-XXXX.
   async getBooking(cfg, code) {
-    const data = await http(cfg.baseUrl || this.defaultBaseUrl, cfg.token, `/api/engine/status/${encodeURIComponent(code)}`)
+    const data = await hosFetch(cfg, `/api/engine/status/${encodeURIComponent(code)}`)
     const d = data?.data || data || {}
     return {
       code: first(d.code, code),
