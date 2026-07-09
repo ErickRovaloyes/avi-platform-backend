@@ -212,6 +212,19 @@ function datesOfStay(checkin, checkout) {
   while (d < checkout) { out.push(d); d = addDays(d, 1) }
   return out
 }
+// Extrae URLs de imágenes de un objeto: campos images/photos/gallery… con valores
+// string, array de strings o array de objetos {url|src|image|path|original…}.
+function imagesOf(o) {
+  const out = []
+  const add = v => {
+    if (!v) return
+    if (typeof v === 'string') { if (v.trim()) out.push(v.trim()); return }
+    if (Array.isArray(v)) { v.forEach(add); return }
+    if (typeof v === 'object') { const u = first(v.url, v.src, v.image, v.path, v.original, v.large, v.medium, v.thumb, v.thumbnail, v.file); if (u) out.push(u) }
+  }
+  for (const k of ['images', 'image', 'photos', 'photo', 'gallery', 'galleries', 'pictures', 'fotos', 'media', 'img']) if (o && o[k] != null) add(o[k])
+  return [...new Set(out.filter(Boolean))]
+}
 function normRoomKunas(rt) {
   return {
     id: String(first(rt.id_room_types, rt.id, '')),
@@ -393,31 +406,41 @@ const kunas = {
     return _kunasPropInfo.get(cfg.token) || []
   },
 
-  // Calendario de un día: trae los tipos de habitación con nombre/ocupación/precio.
+  // Calendario de una fecha: tipos de habitación con nombre/ocupación/precio/fotos.
+  // El cuerpo pide explícitamente disponibilidad, precio y detalle (según la doc).
   async _calendar(cfg, date) {
-    const body = { date }
+    const body = { date, avail: 1, price: 1, min: 1, days: 1, scroll: 0 }
     if (cfg.pricingPlanId) body.id_pricing_plans = cfg.pricingPlanId
+    if (cfg.restrictionPlanId) body.id_restriction_plans = cfg.restrictionPlanId
     return this._post(cfg, '/api/calendar/data/calendar', body)
   },
   // Mapea un room_type del calendario a la ficha normalizada (tolerante de campos).
-  _mapRoomType(rt) {
+  // Las fotos pueden estar en el tipo o en sus habitaciones físicas anidadas.
+  _mapRoomType(rt, propImages = []) {
+    let photos = imagesOf(rt)
+    for (const rm of (Array.isArray(rt.rooms) ? rt.rooms : [])) photos = photos.concat(imagesOf(rm))
+    photos = [...new Set(photos)]
+    if (!photos.length && propImages.length) photos = propImages.slice(0, 6)
     return {
       id: String(first(rt.id_room_types, rt.id, rt.id_room_type, '')),
       name: first(rt.name, rt.shortname, rt.room_type, 'Habitación'),
       capacity: Number(first(rt.occupancy, rt.max_adults, rt.adults, rt.capacity, 2)) || 2,
       description: first(rt.description, rt.desc, '') || '',
-      photos: arr(first(rt.images, rt.gallery, rt.photos, [])).map(p => (typeof p === 'string' ? p : first(p.url, p.src, p.image, p.path))).filter(Boolean),
+      photos,
       basePrice: Number(first(rt.price, rt.base_price, rt.rate, 0)) || 0,
       rates: [],
     }
   },
 
-  // Habitaciones (tipos) desde el calendario de una fecha próxima.
+  // Habitaciones (tipos) desde el calendario. Usa fotos de la PROPIEDAD como
+  // respaldo si un tipo no trae imágenes propias.
   async getRooms(cfg) {
     const date = new Date().toISOString().slice(0, 10)
     const data = await this._calendar(cfg, date)
+    const propObj = (data && typeof data === 'object') ? first(data.property, data.data?.property) : null
+    const propImages = propObj ? imagesOf(propObj) : []
     const list = deepFindArray(data, 'room_types') || (Array.isArray(data) ? data : arr(first(data?.data, data?.rooms, [])))
-    return (list || []).map(rt => this._mapRoomType(rt)).filter(r => r.id || r.name)
+    return (list || []).map(rt => this._mapRoomType(rt, propImages)).filter(r => r.id || r.name)
   },
 
   // Disponibilidad real por rango: /api/avail/data/avail → { roomTypeId: { fecha: cupo } }.
