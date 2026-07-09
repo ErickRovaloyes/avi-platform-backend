@@ -8,8 +8,9 @@
  *   GET  /api/engine/availability    → disponibilidad por checkin/checkout + ocupación
  *   POST /api/engine/book            → crear reserva (customer, source:'bot', link de pago)
  *   GET  /api/engine/status/{code}   → detalle/estado de una reserva (HR-XXXX)
- * Autenticación: el token de API se canjea por una SESIÓN de hotel (cookie) vía
- * POST /login-api (HosRoom NO usa Authorization: Bearer). Base: https://sys.hosroom.com
+ * Autenticación: Authorization: Bearer <token del HOTEL>. El token debe ser el del
+ * hotel (no el de un usuario) y el hotel debe tener habilitada la integración
+ * "Motor de reservas" en HosRoom. Base: https://sys.hosroom.com
  * NOTA: el engine NO expone cancelar/reagendar; esas operaciones van como
  * "solicitud gestionada" (nota interna + aviso al equipo) desde services/pms.js.
  *
@@ -19,80 +20,25 @@
 const first = (...vals) => vals.find(v => v !== undefined && v !== null && v !== '')
 const arr = x => (Array.isArray(x) ? x : (x ? [x] : []))
 
-// ── Sesión HosRoom ─────────────────────────────────────────────────────────────
-// HosRoom NO usa Authorization: Bearer. El token de API se canjea por una SESIÓN
-// de hotel (cookie) haciendo POST a /login-api; luego el resto de endpoints
-// (/api/engine/*) se llaman con esa cookie. Cacheamos la sesión por token (~45 min)
-// y re-logueamos si expira (401).
-const _sessions = new Map() // token → { at, cookies }
-const SESSION_TTL = 45 * 60 * 1000
-
-function parseSetCookies(res) {
-  const out = {}
-  const list = typeof res.headers.getSetCookie === 'function'
-    ? res.headers.getSetCookie()
-    : (res.headers.get('set-cookie') ? [res.headers.get('set-cookie')] : [])
-  for (const line of list) {
-    const m = /^\s*([^=;]+)=([^;]*)/.exec(line)
-    if (m) out[m[1].trim()] = m[2]
-  }
-  return out
-}
-const cookieHeader = c => Object.entries(c).map(([k, v]) => `${k}=${v}`).join('; ')
-
-async function hosLogin(base, token) {
-  // 1) GET /login-api → CSRF (_token) + cookies iniciales.
-  const g = await fetch(`${base}/login-api`, { headers: { 'Accept': 'text/html' } })
-  const html = await g.text()
-  let cookies = parseSetCookies(g)
-  const m = /name="_token"\s+value="([^"]+)"/.exec(html) || /<meta name="csrf-token" content="([^"]+)"/.exec(html)
-  const csrf = m ? m[1] : ''
-  // 2) POST el token → establece la sesión de hotel (302 en éxito, 401/422 si es inválido).
-  const p = await fetch(`${base}/login-api`, {
-    method: 'POST', redirect: 'manual',
-    headers: { 'Content-Type': 'application/x-www-form-urlencoded', 'Accept': 'text/html', 'Cookie': cookieHeader(cookies) },
-    body: new URLSearchParams({ _token: csrf, token }).toString(),
-  })
-  cookies = { ...cookies, ...parseSetCookies(p) }
-  if (p.status === 401 || p.status === 419 || p.status === 422) {
-    throw Object.assign(new Error('HosRoom: el token de API es inválido o expiró. Genéralo de nuevo en HosRoom.'), { status: 401 })
-  }
-  if (!cookies.hosroom_session) throw new Error('HosRoom: no se pudo iniciar la sesión con el token.')
-  return cookies
-}
-
-async function hosSession(cfg, force = false) {
+// ── Transporte HosRoom ─────────────────────────────────────────────────────────
+// La API de HosRoom usa Authorization: Bearer <token del hotel>. El token debe ser
+// el del HOTEL (no el de un usuario) y el hotel debe tener habilitada la integración
+// "Motor de reservas". Los mensajes de error traducen los casos típicos.
+async function hosFetch(cfg, path, { method = 'GET', body, query } = {}) {
   const base = (cfg.baseUrl || 'https://sys.hosroom.com').replace(/\/$/, '')
-  const hit = _sessions.get(cfg.token)
-  if (!force && hit && Date.now() - hit.at < SESSION_TTL) return { base, entry: hit }
-  const cookies = await hosLogin(base, cfg.token)
-  const entry = { at: Date.now(), cookies }
-  _sessions.set(cfg.token, entry)
-  return { base, entry }
-}
-
-// Llamada autenticada a la API de HosRoom con la sesión (cookie). Reintenta una vez
-// re-logueando si la sesión caducó.
-async function hosFetch(cfg, path, { method = 'GET', body, query, _retry = false } = {}) {
-  const { base, entry } = await hosSession(cfg)
   const url = new URL(`${base}${path}`)
   for (const [k, v] of Object.entries(query || {})) { if (v !== undefined && v !== null && v !== '') url.searchParams.set(k, String(v)) }
-  const headers = { 'Accept': 'application/json', 'Cookie': cookieHeader(entry.cookies) }
+  const headers = { 'Accept': 'application/json', 'Authorization': `Bearer ${cfg.token}` }
   if (body) headers['Content-Type'] = 'application/json'
-  if (entry.cookies['XSRF-TOKEN']) headers['X-XSRF-TOKEN'] = decodeURIComponent(entry.cookies['XSRF-TOKEN'])
   const res = await fetch(url, { method, headers, body: body ? JSON.stringify(body) : undefined })
-  // Mantén la sesión fresca (Laravel rota XSRF-TOKEN por request).
-  const fresh = parseSetCookies(res)
-  if (Object.keys(fresh).length) entry.cookies = { ...entry.cookies, ...fresh }
   const text = await res.text()
   let data = null; try { data = text ? JSON.parse(text) : null } catch { data = text }
-  if ((res.status === 401 || res.status === 419) && !_retry) {
-    _sessions.delete(cfg.token)
-    return hosFetch(cfg, path, { method, body, query, _retry: true })
-  }
   if (!res.ok) {
-    const msg = typeof data === 'string' ? data.slice(0, 200) : (data?.message || JSON.stringify(data?.errors || data || {}).slice(0, 200))
-    throw Object.assign(new Error(`HosRoom ${res.status}: ${msg}`), { status: res.status })
+    const raw = typeof data === 'string' ? data.slice(0, 200) : (data?.message || JSON.stringify(data?.errors || data || {}).slice(0, 200))
+    let msg = `HosRoom ${res.status}: ${raw}`
+    if (res.status === 401) msg = 'HosRoom: el token es inválido o no es un token de HOTEL. Usa el token que genera HosRoom en Configuración → Integraciones → Motor de reservas (no el token de tu usuario).'
+    else if (/sesi[oó]n de hotel/i.test(raw)) msg = 'HosRoom: el token no está asociado a un hotel con el "Motor de reservas" habilitado. Habilita la integración "Canales de reserva" + "Motor de reservas" en HosRoom (Configuración → Integraciones) y usa el token que te da esa integración.'
+    throw Object.assign(new Error(msg), { status: res.status })
   }
   return data
 }
@@ -136,14 +82,22 @@ const hosroom = {
 
   async testConnection(cfg) {
     if (!cfg?.token) return { ok: false, message: 'Falta el token del hotel.' }
+    // 1) /api/hotel valida que el token pertenezca a un HOTEL y da su nombre.
+    let hotelName = ''
+    try {
+      const h = await hosFetch(cfg, '/api/hotel')
+      hotelName = first(h?.data?.name, h?.name, '')
+    } catch (e) {
+      return { ok: false, message: e.message }
+    }
+    // 2) /api/engine/settings confirma que el "Motor de reservas" está habilitado.
     try {
       const data = await hosFetch(cfg, '/api/engine/settings')
       const root = data?.settings || data || {}
-      const name = first(root.hotel?.name, root.hotel?.title, data?.hotel?.name, '')
       const nRooms = arr(first(root.rooms, root.data, [])).length
-      return { ok: true, message: `Conexión HosRoom OK${name ? ` — ${name}` : ''}${nRooms ? ` · ${nRooms} habitación(es)` : ''}`, hotelName: name || '' }
+      return { ok: true, message: `Conexión HosRoom OK${hotelName ? ` — ${hotelName}` : ''}${nRooms ? ` · ${nRooms} habitación(es)` : ''}`, hotelName }
     } catch (e) {
-      return { ok: false, message: e.message }
+      return { ok: false, message: `Token del hotel válido${hotelName ? ` (${hotelName})` : ''}, pero el Motor de reservas no responde: ${e.message}` }
     }
   },
 
