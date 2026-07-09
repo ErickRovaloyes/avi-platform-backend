@@ -1,6 +1,76 @@
 'use strict'
 const pool = require('../db')
+const { parseJ } = require('../utils')
+const socket = require('../services/socket')
 const { createBackupInternal } = require('./backups.controller')
+
+// POST /api/accounts/:accId/change-agent/apply
+// Aplica un cambio de prompt de forma ATÓMICA y en el orden correcto (evita la
+// carrera que a veces revertía el cambio o no guardaba el historial):
+//   1) backup flash del estado ANTERIOR  2) escribe el nuevo contenido del prompt
+//   3) inserta la entrada de historial. Todo server-side, en una sola petición.
+const applyChange = async (req, res) => {
+  const { accId } = req.params
+  const {
+    agentId, promptId, promptName,
+    instruction = '', category = 'medium', wasEditedManually = false,
+    oldContent = '', newContent = '',
+    inputTokens = 0, outputTokens = 0, totalTokens = 0, costUsd = 0,
+    model = '', provider = '',
+  } = req.body || {}
+  if (!agentId || !promptId || newContent == null || newContent === '') {
+    return res.status(400).json({ error: 'Faltan datos (agentId, promptId, newContent).' })
+  }
+  try {
+    // Verifica agente + prompt.
+    const [[ag]] = await pool.query('SELECT prompts FROM agents WHERE id=? AND account_id=?', [agentId, accId])
+    if (!ag) return res.status(404).json({ error: 'Agente no encontrado' })
+    const target0 = parseJ(ag.prompts, []).find(p => p.id === promptId)
+    if (!target0) return res.status(404).json({ error: 'Prompt no encontrado' })
+    const realOld = target0.content || ''
+
+    // 1) Backup flash del estado ANTERIOR (antes de aplicar).
+    let backupId = null
+    try {
+      const bk = await createBackupInternal({ accId, agId: agentId, label: `⚡ Antes de "${(instruction || 'cambio').slice(0, 60)}"`, type: 'flash' })
+      backupId = bk.id
+    } catch (e) { console.warn('[apply] flash backup falló:', e.message) }
+
+    // 2) Aplica el nuevo contenido (re-lee para minimizar la ventana de carrera).
+    const [[ag2]] = await pool.query('SELECT prompts FROM agents WHERE id=? AND account_id=?', [agentId, accId])
+    let prompts = parseJ(ag2.prompts, [])
+    const isActive = !!prompts.find(p => p.id === promptId)?.isActive
+    prompts = prompts.map(p => p.id === promptId ? { ...p, content: newContent } : p)
+    const sets = ['prompts=?']; const vals = [JSON.stringify(prompts)]
+    if (isActive) { sets.push('system_prompt=?'); vals.push(newContent) }
+    vals.push(agentId, accId)
+    await pool.query(`UPDATE agents SET ${sets.join(',')} WHERE id=? AND account_id=?`, vals)
+
+    // 3) Entrada de historial (con el contenido viejo real).
+    const userName = req.user?.name || req.user?.email || 'desconocido'
+    const userId = req.user?.id || null
+    const ts = Date.now()
+    const [r] = await pool.query(
+      `INSERT INTO prompt_change_history
+         (account_id, agent_id, prompt_id, prompt_name, user_id, user_name,
+          instruction, category, was_edited_manually, old_content, new_content,
+          input_tokens, output_tokens, total_tokens, cost_usd, model, provider, backup_id, ts)
+       VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`,
+      [
+        accId, agentId, promptId, promptName || null, userId, userName,
+        instruction, category, wasEditedManually ? 1 : 0,
+        String(oldContent || realOld), String(newContent),
+        parseInt(inputTokens) || 0, parseInt(outputTokens) || 0, parseInt(totalTokens) || 0, Number(costUsd) || 0,
+        model, provider, backupId, ts,
+      ]
+    )
+    try { socket.emit(accId, 'account:updated', { accId }) } catch {}
+    res.json({ ok: true, historyId: r.insertId, backupId, ts, isActive, content: newContent })
+  } catch (err) {
+    console.error('[APPLY CHANGE]', err)
+    res.status(500).json({ error: err.message || 'Error interno' })
+  }
+}
 
 // POST /api/accounts/:accId/prompt-history
 // Body: { agentId, promptId, promptName, instruction, category, wasEditedManually,
@@ -118,4 +188,4 @@ const getEntry = async (req, res) => {
   } catch (err) { res.status(500).json({ error: 'Error interno' }) }
 }
 
-module.exports = { createEntry, listEntries, getEntry }
+module.exports = { createEntry, applyChange, listEntries, getEntry }

@@ -199,15 +199,22 @@ async function toolCall(accId, fn, args = {}, { convId, agId } = {}) {
       if (!room) return { text: `No encontré una habitación llamada "${args.habitacion}". Las disponibles son: ${rooms.map(r => r.name).join(', ')}.` }
       const media = room.photos.slice(0, pub.maxPhotos).map((url, i) => ({ url, caption: i === 0 ? `${room.name} (capacidad ${room.capacity})` : '' }))
       const plans = (room.rates || []).map(rt => `• ${rt.name}${rt.mealType === 'breakfast' ? ' (con desayuno)' : ''}`).join('\n')
+      // Si el PMS no expone fotos (p.ej. Kunas), NO afirmes que enviaste fotos.
+      const photoTxt = media.length
+        ? `Envié ${media.length} foto(s) de "${room.name}" al cliente.`
+        : `Este hotel no tiene fotos publicadas para "${room.name}" en el PMS, así que no hay imágenes para enviar; describe la habitación con la ficha.`
       return {
-        text: `Envié ${media.length} foto(s) de "${room.name}" al cliente. Ficha: capacidad ${room.capacity} persona(s). ${room.description || ''}${plans ? `\nPlanes: \n${plans}` : ''}\nPara precios exactos usa ver_disponibilidad_hotel con las fechas.`,
+        text: `${photoTxt} Ficha: capacidad ${room.capacity} persona(s). ${room.description || ''}${plans ? `\nPlanes: \n${plans}` : ''}\nPara precios exactos usa ver_disponibilidad_hotel con las fechas.`,
         media,
       }
     }
-    // Panorama general: 1 foto de portada por habitación (máx 6).
+    // Panorama general: 1 foto de portada por habitación (máx 6) si el PMS las expone.
     const media = rooms.slice(0, 6).filter(r => r.photos[0]).map(r => ({ url: r.photos[0], caption: `${r.name} · ${r.capacity} persona(s)` }))
     const list = rooms.map(r => `• ${r.name} — capacidad ${r.capacity}${r.description ? ` — ${String(r.description).slice(0, 110)}` : ''}`).join('\n')
-    return { text: `Habitaciones del hotel (envié una foto de cada una):\n${list}\n\nPide "ver_habitaciones" con el nombre para más fotos, o consulta disponibilidad con fechas.`, media }
+    const intro = media.length
+      ? `Habitaciones del hotel (envié una foto de cada una que tiene imagen):`
+      : `Habitaciones del hotel (este PMS no expone fotos por API, así que comparto la ficha sin imágenes):`
+    return { text: `${intro}\n${list}\n\nPide "ver_habitaciones" con el nombre para su ficha completa, o consulta disponibilidad con fechas.`, media }
   }
 
   // ── Disponibilidad + cotización ───────────────────────────────────────────
