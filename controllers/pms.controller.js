@@ -12,8 +12,10 @@ const getConfig = async (req, res) => {
       notifyTeam: cfg.notifyTeam !== false,
       postBookingFlowId: cfg.postBookingFlowId || '',
       hasToken: !!cfg.token,
-      // Kunas: credenciales adicionales (la key se enmascara).
+      // Kunas: credenciales del login (usuario visible; contraseña/key enmascaradas).
       hasApiKey: !!cfg.apiKey,
+      username: cfg.username || '',
+      hasPassword: !!cfg.password,
       propertyId: cfg.propertyId || '',
       pricingPlanId: cfg.pricingPlanId || '',
       providers: providers.listProviders(),
@@ -24,7 +26,7 @@ const getConfig = async (req, res) => {
 // Guarda la configuración. El token solo se actualiza si llega uno nuevo no vacío.
 const saveConfig = async (req, res) => {
   const { accId } = req.params
-  const { provider, token, apiKey, propertyId, pricingPlanId, baseUrl, currency, maxPhotos, notifyTeam, postBookingFlowId } = req.body || {}
+  const { provider, token, apiKey, username, password, propertyId, pricingPlanId, baseUrl, currency, maxPhotos, notifyTeam, postBookingFlowId } = req.body || {}
   try {
     const cur = await pms.loadConfig(accId) || {}
     const next = { ...cur }
@@ -32,9 +34,12 @@ const saveConfig = async (req, res) => {
       if (provider && !providers.getProvider(provider)) return res.status(400).json({ error: 'Proveedor desconocido' })
       next.provider = provider || ''
     }
-    // Secretos (token / apiKey): solo se actualizan si llega un valor nuevo no enmascarado.
-    if (token !== undefined && token !== '' && !String(token).includes('•')) next.token = String(token).trim()
+    // Secretos (token / apiKey / contraseña): solo se actualizan con un valor nuevo no enmascarado.
+    // Si cambian el token o la contraseña, se descarta la key (pKey) derivada para re-login.
+    if (token !== undefined && token !== '' && !String(token).includes('•')) { if (String(token).trim() !== cur.token) next.apiKey = ''; next.token = String(token).trim() }
     if (apiKey !== undefined && apiKey !== '' && !String(apiKey).includes('•')) next.apiKey = String(apiKey).trim()
+    if (username !== undefined) next.username = String(username || '').trim()
+    if (password !== undefined && password !== '' && !String(password).includes('•')) { next.password = String(password); next.apiKey = '' }
     if (propertyId !== undefined) next.propertyId = String(propertyId || '').trim()
     if (pricingPlanId !== undefined) next.pricingPlanId = String(pricingPlanId || '').trim()
     if (baseUrl !== undefined) next.baseUrl = String(baseUrl || '').trim()
@@ -43,7 +48,7 @@ const saveConfig = async (req, res) => {
     if (notifyTeam !== undefined) next.notifyTeam = !!notifyTeam
     if (postBookingFlowId !== undefined) next.postBookingFlowId = String(postBookingFlowId || '')
     await pms.saveConfig(accId, next)
-    res.json({ ok: true, config: { ...pms.publicConfig(next), hasToken: !!next.token, hasApiKey: !!next.apiKey, propertyId: next.propertyId || '', pricingPlanId: next.pricingPlanId || '' } })
+    res.json({ ok: true, config: { ...pms.publicConfig(next), hasToken: !!next.token, hasApiKey: !!next.apiKey, username: next.username || '', hasPassword: !!next.password, propertyId: next.propertyId || '', pricingPlanId: next.pricingPlanId || '' } })
   } catch (e) { console.error('[pms saveConfig]', e); res.status(500).json({ error: 'Error interno' }) }
 }
 
@@ -59,9 +64,9 @@ const resetCredentials = async (req, res) => {
   const { accId } = req.params
   try {
     const cur = await pms.loadConfig(accId) || {}
-    const next = { ...cur, token: '', apiKey: '', propertyId: '', pricingPlanId: '', hotelName: '' }
+    const next = { ...cur, token: '', apiKey: '', username: '', password: '', propertyId: '', pricingPlanId: '', hotelName: '' }
     await pms.saveConfig(accId, next)
-    res.json({ ok: true, config: { ...pms.publicConfig(next), hasToken: false, hasApiKey: false, propertyId: '', pricingPlanId: '' } })
+    res.json({ ok: true, config: { ...pms.publicConfig(next), hasToken: false, hasApiKey: false, username: '', hasPassword: false, propertyId: '', pricingPlanId: '' } })
   } catch (e) { console.error('[pms resetCredentials]', e); res.status(500).json({ error: 'Error interno' }) }
 }
 

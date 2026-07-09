@@ -245,38 +245,57 @@ const kunas = {
 
   // Login: con SOLO el token → la respuesta trae `pkey` (la api key para el resto
   // de endpoints) y el array `properties` (id_properties accesibles). Doc oficial:
-  // POST /api/user/auth/login. Se cachea la key y la primera propiedad por token.
+  // POST /api/user/auth/login. Captura la respuesta cruda para diagnosticar y, si
+  // no aparece la pkey, lanza un error con lo que devolvió el API (no lo oculta).
   async _login(cfg) {
+    const base = (cfg.baseUrl || this.defaultBaseUrl).replace(/\/$/, '')
+    // El login exige token + usuario + contraseña (según la doc de Kunas).
+    const loginBody = { token: cfg.token, remember: 1 }
+    if (cfg.username) loginBody.username = cfg.username
+    if (cfg.password) loginBody.password = cfg.password
+    let diag = ''
     for (const path of ['/api/user/auth/login', '/api/login/login', '/api/auth/login']) {
-      let data
-      try { data = await this._rawFetch(cfg, path, { token: cfg.token, remember: 1 }) }
-      catch (e) { if (e.status === 401 || e.status === 403) throw e; continue }
+      let res, text
+      try {
+        res = await fetch(`${base}${path}`, {
+          method: 'POST', headers: { 'Content-Type': 'application/json', 'Accept': 'application/json' },
+          body: JSON.stringify(loginBody),
+        })
+        text = await res.text()
+      } catch (e) { diag = `${path} → red: ${e.message}`; continue }
+      let data = null; try { data = text ? JSON.parse(text) : null } catch { data = text }
       const pKey = deepFind(data, ['pkey', 'apikey', 'api_key', 'key'])
-      if (!pKey) continue
-      // La respuesta del login también trae las propiedades accesibles.
-      const propsArr = deepFindArray(data, 'properties') || []
-      const props = propsArr
-        .map(p => ({ id: String(first(p.id_properties, p.id, p.property_id, '')), name: first(p.name, p.shortname, '') }))
-        .filter(p => p.id)
-      if (props.length) {
-        _kunasPropInfo.set(cfg.token, props)
-        if (!_kunasPropCache.has(cfg.token)) _kunasPropCache.set(cfg.token, props[0].id)
+      if (pKey) {
+        // La respuesta del login también trae las propiedades accesibles.
+        const propsArr = deepFindArray(data, 'properties') || []
+        const props = propsArr
+          .map(p => ({ id: String(first(p.id_properties, p.id, p.property_id, '')), name: first(p.name, p.shortname, '') }))
+          .filter(p => p.id)
+        if (props.length) {
+          _kunasPropInfo.set(cfg.token, props)
+          if (!_kunasPropCache.has(cfg.token)) _kunasPropCache.set(cfg.token, props[0].id)
+        }
+        _kunasKeyCache.set(cfg.token, pKey)
+        return pKey
       }
-      _kunasKeyCache.set(cfg.token, pKey)
-      return pKey
+      // Sin pkey → guarda qué devolvió (mensaje de negocio o snippet) para el diagnóstico.
+      const biz = data && typeof data === 'object' ? (data.message || data.error || (data.errors && JSON.stringify(data.errors)) || data.status) : null
+      const snippet = biz ? String(biz).slice(0, 160) : (typeof data === 'string' ? data.slice(0, 160) : JSON.stringify(data || {}).slice(0, 160))
+      diag = `${path} → HTTP ${res.status} · ${snippet}`
+      // 404 = ruta equivocada, sigue probando; cualquier otra respuesta ya es la real.
+      if (res.status !== 404) break
     }
-    return ''
+    throw Object.assign(new Error(`Kunas: el login no devolvió la key (pkey). El API respondió: ${diag || 'sin datos'}`), { noPkey: true })
   },
 
   // Key efectiva (pKey). Prioridad: caché en memoria → guardada → login por token.
+  // `_login` lanza un error descriptivo si no logra la key (no devuelve vacío).
   async _key(cfg, { forceLogin = false } = {}) {
     if (!forceLogin) {
       if (_kunasKeyCache.has(cfg.token)) return _kunasKeyCache.get(cfg.token)
       if (cfg.apiKey) { _kunasKeyCache.set(cfg.token, cfg.apiKey); return cfg.apiKey }
     }
-    const pKey = await this._login(cfg)
-    if (pKey) _kunasKeyCache.set(cfg.token, pKey)
-    return pKey
+    return this._login(cfg)   // cachea internamente al obtener la pkey
   },
 
   // POST autenticado (token + key resuelta). Reintenta con login fresco si la key expiró.

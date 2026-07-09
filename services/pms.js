@@ -26,9 +26,11 @@ async function saveConfig(accId, cfg) { await pool.query('UPDATE accounts SET pm
 function publicConfig(cfg) {
   const c = cfg || {}
   const prov = providers.getProvider(c.provider)
-  // Solo el TOKEN. HosRoom usa Bearer; Kunas hace login con el token para obtener
-  // la key (pKey) y auto-descubre la propiedad — todo por detrás.
-  const hasCreds = !!c.token
+  // HosRoom: solo el token (Bearer). Kunas: token + (usuario+contraseña para el
+  // primer login, o la key/pKey ya derivada). El resto se resuelve por detrás.
+  const hasCreds = c.provider === 'kunas'
+    ? !!(c.token && (c.apiKey || (c.username && c.password)))
+    : !!c.token
   const connected = !!(c.provider && prov && !prov.comingSoon && hasCreds)
   return {
     connected,
