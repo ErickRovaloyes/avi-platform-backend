@@ -157,6 +157,14 @@ const hosroom = {
     }
   },
 
+  // Diagnóstico: respuestas crudas para afinar el mapeo.
+  async debug(cfg) {
+    const out = {}
+    try { out.settings = await hosFetch(cfg, '/api/engine/settings') } catch (e) { out.settingsError = e.message }
+    try { out.hotel = await hosFetch(cfg, '/api/hotel') } catch (e) { out.hotelError = e.message }
+    return out
+  },
+
   // Estado/detalle de una reserva por su código HR-XXXX.
   async getBooking(cfg, code) {
     const data = await hosFetch(cfg, `/api/engine/status/${encodeURIComponent(code)}`)
@@ -373,55 +381,81 @@ const kunas = {
     return _kunasPropInfo.get(cfg.token) || []
   },
 
+  // Calendario de un día: trae los tipos de habitación con nombre/ocupación/precio.
+  async _calendar(cfg, date) {
+    const body = { date }
+    if (cfg.pricingPlanId) body.id_pricing_plans = cfg.pricingPlanId
+    return this._post(cfg, '/api/calendar/data/calendar', body)
+  },
+  // Mapea un room_type del calendario a la ficha normalizada (tolerante de campos).
+  _mapRoomType(rt) {
+    return {
+      id: String(first(rt.id_room_types, rt.id, rt.id_room_type, '')),
+      name: first(rt.name, rt.shortname, rt.room_type, 'Habitación'),
+      capacity: Number(first(rt.occupancy, rt.max_adults, rt.adults, rt.capacity, 2)) || 2,
+      description: first(rt.description, rt.desc, '') || '',
+      photos: arr(first(rt.images, rt.gallery, rt.photos, [])).map(p => (typeof p === 'string' ? p : first(p.url, p.src, p.image, p.path))).filter(Boolean),
+      basePrice: Number(first(rt.price, rt.base_price, rt.rate, 0)) || 0,
+      rates: [],
+    }
+  },
+
+  // Habitaciones (tipos) desde el calendario de una fecha próxima.
   async getRooms(cfg) {
-    const data = await this._post(cfg, '/api/room/data/rooms', { type: 1, details: '1' })
-    const list = Array.isArray(data) ? data : (data?.data || data?.rooms || [])
-    return list.map(normRoomKunas)
+    const date = new Date().toISOString().slice(0, 10)
+    const data = await this._calendar(cfg, date)
+    const list = deepFindArray(data, 'room_types') || (Array.isArray(data) ? data : arr(first(data?.data, data?.rooms, [])))
+    return (list || []).map(rt => this._mapRoomType(rt)).filter(r => r.id || r.name)
   },
 
-  // Resuelve el plan de tarifa a usar (configurado, o el primero con booking_engine).
-  async _defaultPlan(cfg) {
-    if (cfg.pricingPlanId) return cfg.pricingPlanId
-    const plans = await this._post(cfg, '/api/pricingPlan/data/pricing_plans', {})
-    const list = Array.isArray(plans) ? plans : (plans?.data || [])
-    const be = list.find(p => String(p.booking_engine) === '1') || list[0]
-    return be?.id_pricing_plans
+  // Disponibilidad real por rango: /api/avail/data/avail → { roomTypeId: { fecha: cupo } }.
+  async _avail(cfg, dfrom, dto) {
+    const data = await this._post(cfg, '/api/avail/data/avail', { dfrom, dto })
+    // Puede venir plano o bajo data. Normaliza a { rtId: { fecha: cupo } }.
+    const root = (data && typeof data === 'object' && !Array.isArray(data)) ? (data.data && typeof data.data === 'object' && !Array.isArray(data.data) ? data.data : data) : {}
+    const map = {}
+    for (const [rtId, byDate] of Object.entries(root)) {
+      if (!byDate || typeof byDate !== 'object' || Array.isArray(byDate)) continue
+      const inner = {}
+      for (const [d, c] of Object.entries(byDate)) { if (/^\d{4}-\d{2}-\d{2}/.test(d)) inner[d.slice(0, 10)] = Number(c) || 0 }
+      if (Object.keys(inner).length) map[String(rtId)] = inner
+    }
+    return map
   },
 
-  async getAvailability(cfg, { checkin, checkout, adults, children }) {
-    const plan = await this._defaultPlan(cfg)
-    if (!plan) return { rooms: [] }
-    // Habitaciones físicas libres por tipo.
-    const av = await this._post(cfg, '/api/room/data/available_rooms', { dfrom: checkin, dto: checkout, id_pricing_plans: plan })
-    const availList = arr(first(av?.rooms, av?.data, []))
-    const freeByType = {}
-    for (const r of availList) { const t = String(first(r.id_room_types, r.id_room_type, '')); (freeByType[t] ||= []).push(r) }
-    // Precios por tipo y noche para el plan.
-    let priceData = {}
-    try { const pr = await this._post(cfg, '/api/prices/data/prices', { id_pricing_plans: plan, dfrom: checkin, dto: checkout }); priceData = pr?.data || {} } catch {}
+  async getAvailability(cfg, { checkin, checkout }) {
+    const map = await this._avail(cfg, checkin, checkout)
     const nights = datesOfStay(checkin, checkout)
-    // Fichas de habitación (nombre, capacidad, desc).
     let byId = {}
     try { const rooms = await this.getRooms(cfg); for (const rm of rooms) byId[rm.id] = rm } catch {}
     const out = []
-    for (const [rtId, free] of Object.entries(freeByType)) {
-      if (!free.length) continue
-      const rm = byId[rtId] || { id: rtId, name: `Habitación ${rtId}`, capacity: 2, description: '', photos: [], basePrice: 0 }
-      const perNightMap = priceData[rtId] || {}
-      let total = 0, priced = true
-      for (const d of nights) { const p = Number(perNightMap[d]); if (isNaN(p)) { priced = false; break } total += p }
-      if (!priced || !total) total = (rm.basePrice || 0) * nights.length
+    for (const [rtId, byDate] of Object.entries(map)) {
+      let minAvail = Infinity
+      for (const d of nights) { const c = Number(byDate[d]); minAvail = Math.min(minAvail, isNaN(c) ? 0 : c) }
+      if (!isFinite(minAvail)) minAvail = 0
+      const rm = byId[String(rtId)] || { id: String(rtId), name: `Habitación ${rtId}`, capacity: 2, description: '', photos: [], basePrice: 0 }
+      const total = (rm.basePrice || 0) * nights.length
       out.push({
         ...rm,
-        rates: [{
-          id: `${plan}:${rtId}`, name: rm.name, capacity: rm.capacity,
-          total: total || null, perNight: nights.length ? (total / nights.length) : null,
-          available: free.length, mealType: '',
-          _plan: plan, _rtId: rtId, _room: free[0], _nightPrices: nights.map(d => ({ date: d, price: Number(perNightMap[d]) || (rm.basePrice || 0) })),
-        }],
+        rates: [{ id: String(rtId), name: rm.name, capacity: rm.capacity, total: total || null, perNight: rm.basePrice || null, available: minAvail, mealType: '', _rtId: rtId, _room: {}, _nightPrices: nights.map(d => ({ date: d, price: rm.basePrice || 0 })) }],
       })
     }
     return { rooms: out }
+  },
+
+  // Disponibilidad de todo un rango en UNA sola llamada (para el heatmap del calendario).
+  async getMonthAvailability(cfg, { dfrom, dto }) {
+    return this._avail(cfg, dfrom, dto)   // { rtId: { fecha: cupo } }
+  },
+
+  // Diagnóstico: respuestas crudas para afinar el mapeo cuando algo no cuadra.
+  async debug(cfg) {
+    const out = { properties: _kunasPropInfo.get(cfg.token) || [] }
+    const date = new Date().toISOString().slice(0, 10)
+    const dto = addDays(date, 7)
+    try { out.calendar = await this._calendar(cfg, date) } catch (e) { out.calendarError = e.message }
+    try { out.avail = await this._post(cfg, '/api/avail/data/avail', { dfrom: date, dto }) } catch (e) { out.availError = e.message }
+    return out
   },
 
   // Crea la reserva. availability = { "plan:rtId": 1 }. Reconstruye el detalle en vivo.

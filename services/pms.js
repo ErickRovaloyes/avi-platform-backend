@@ -438,6 +438,26 @@ async function monthAvailability(accId, { year, month, roomTypeId, propertyId, a
   const daysInMonth = new Date(Date.UTC(y, m, 0)).getUTCDate()
   const today = new Date().toISOString().slice(0, 10)
   const pad = n => String(n).padStart(2, '0')
+
+  // Vía rápida: el proveedor puede dar todo el rango en UNA llamada (Kunas /avail).
+  if (typeof prov.getMonthAvailability === 'function') {
+    const dfrom = `${y}-${pad(m)}-01`
+    const dto = addDays(`${y}-${pad(m)}-${pad(daysInMonth)}`, 1)
+    const map = await prov.getMonthAvailability(c, { dfrom, dto })   // { rtId: { fecha: cupo } }
+    const out = {}
+    for (let d = 1; d <= daysInMonth; d++) {
+      const date = `${y}-${pad(m)}-${pad(d)}`
+      if (date < today) continue
+      let available = 0
+      if (roomTypeId) available = Number((map[String(roomTypeId)] || {})[date]) || 0
+      else for (const byDate of Object.values(map)) available += Number(byDate[date]) || 0
+      out[date] = { available, price: null }
+    }
+    const data = { year: y, month: m, currency: publicConfig(cfg).currency, days: out }
+    _monthCache.set(key, { at: Date.now(), data })
+    return data
+  }
+
   const dates = []
   for (let d = 1; d <= daysInMonth; d++) { const date = `${y}-${pad(m)}-${pad(d)}`; if (date >= today) dates.push(date) }
   const out = {}
@@ -459,4 +479,16 @@ async function monthAvailability(accId, { year, month, roomTypeId, propertyId, a
   return data
 }
 
-module.exports = { loadConfig, saveConfig, publicConfig, testConnection, toolCall, listProperties, listRooms, rangeAvailability, monthAvailability }
+// Diagnóstico: respuestas crudas del PMS para afinar el mapeo (solo super/lectura interna).
+async function debug(accId) {
+  const cfg = await loadConfig(accId)
+  const prov = providers.getProvider(cfg?.provider)
+  if (!prov) return { error: 'Sin proveedor configurado.' }
+  if (typeof prov.debug !== 'function') return { note: 'Este proveedor no expone diagnóstico.' }
+  const raw = await prov.debug(cfg).catch(e => ({ error: e.message }))
+  // Recorta para no devolver megas.
+  const s = JSON.stringify(raw)
+  return s.length > 60000 ? { truncated: true, sample: s.slice(0, 60000) } : raw
+}
+
+module.exports = { loadConfig, saveConfig, publicConfig, testConnection, toolCall, listProperties, listRooms, rangeAvailability, monthAvailability, debug }

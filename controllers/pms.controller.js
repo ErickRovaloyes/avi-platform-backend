@@ -98,6 +98,12 @@ const monthAvailability = async (req, res) => {
   } catch (e) { res.status(502).json({ error: e.message }) }
 }
 
+// Diagnóstico (autenticado): respuestas crudas del PMS para afinar el mapeo.
+const debug = async (req, res) => {
+  try { res.json(await pms.debug(req.params.accId)) }
+  catch (e) { res.status(502).json({ error: e.message }) }
+}
+
 // Rate limiter en memoria para el proxy PÚBLICO (frena la enumeración de códigos
 // de reserva por IP). Ventana deslizante de 60s.
 const _rate = new Map() // key ip → [timestamps]
@@ -122,4 +128,4 @@ const tool = async (req, res) => {
   } catch (e) { res.status(400).json({ error: e.message }) }
 }
 
-module.exports = { getConfig, saveConfig, test, resetCredentials, listProperties, listRooms, availability, monthAvailability, tool }
+module.exports = { getConfig, saveConfig, test, resetCredentials, listProperties, listRooms, availability, monthAvailability, debug, tool }

@@ -14,6 +14,7 @@ router.get('/pms/:accId/properties',         authMiddleware, ctrl.listProperties
 router.get('/pms/:accId/rooms',              authMiddleware, ctrl.listRooms)
 router.get('/pms/:accId/availability',       authMiddleware, ctrl.availability)
 router.get('/pms/:accId/availability/month', authMiddleware, ctrl.monthAvailability)
+router.get('/pms/:accId/debug',              authMiddleware, ctrl.debug)
 
 // Proxy del asistente (webchat-en-navegador y motor): mismo patrón que scheduling.
 router.post('/pms/:accId/tool',  ctrl.tool)
