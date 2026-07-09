@@ -36,7 +36,7 @@ const saveConfig = async (req, res) => {
     }
     // Secretos (token / apiKey / contraseña): solo se actualizan con un valor nuevo no enmascarado.
     // Si cambian el token o la contraseña, se descarta la key (pKey) derivada para re-login.
-    if (token !== undefined && token !== '' && !String(token).includes('•')) { if (String(token).trim() !== cur.token) next.apiKey = ''; next.token = String(token).trim() }
+    if (token !== undefined && token !== '' && !String(token).includes('•')) { if (String(token).trim() !== cur.token) { next.apiKey = ''; next.properties = []; next.propertyId = ''; next.hotelName = '' } next.token = String(token).trim() }
     if (apiKey !== undefined && apiKey !== '' && !String(apiKey).includes('•')) next.apiKey = String(apiKey).trim()
     if (username !== undefined) next.username = String(username || '').trim()
     if (password !== undefined && password !== '' && !String(password).includes('•')) { next.password = String(password); next.apiKey = '' }
@@ -64,7 +64,7 @@ const resetCredentials = async (req, res) => {
   const { accId } = req.params
   try {
     const cur = await pms.loadConfig(accId) || {}
-    const next = { ...cur, token: '', apiKey: '', username: '', password: '', propertyId: '', pricingPlanId: '', hotelName: '' }
+    const next = { ...cur, token: '', apiKey: '', username: '', password: '', propertyId: '', pricingPlanId: '', hotelName: '', properties: [] }
     await pms.saveConfig(accId, next)
     res.json({ ok: true, config: { ...pms.publicConfig(next), hasToken: false, hasApiKey: false, username: '', hasPassword: false, propertyId: '', pricingPlanId: '' } })
   } catch (e) { console.error('[pms resetCredentials]', e); res.status(500).json({ error: 'Error interno' }) }

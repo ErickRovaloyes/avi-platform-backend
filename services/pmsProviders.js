@@ -190,6 +190,7 @@ const hosroom = {
 const _kunasKeyCache = new Map()    // token → pKey (api key)
 const _kunasPropCache = new Map()   // token → id_properties (primera propiedad)
 const _kunasPropInfo = new Map()    // token → [{id, name}] (del login)
+const _kunasLoginInflight = new Map() // token → Promise (single-flight: evita logins duplicados)
 // Busca recursivamente una clave (pkey/apikey…) en la respuesta del login.
 function deepFind(obj, names, depth = 0) {
   if (!obj || typeof obj !== 'object' || depth > 4) return null
@@ -251,11 +252,21 @@ const kunas = {
     return data
   },
 
-  // Login: con SOLO el token → la respuesta trae `pkey` (la api key para el resto
-  // de endpoints) y el array `properties` (id_properties accesibles). Doc oficial:
+  // Login con single-flight: si ya hay un login en curso para este token, reusa la
+  // misma promesa (evita ráfagas de logins cuando varias vistas cargan a la vez).
+  _login(cfg) {
+    const inflight = _kunasLoginInflight.get(cfg.token)
+    if (inflight) return inflight
+    const p = this._loginImpl(cfg).finally(() => { _kunasLoginInflight.delete(cfg.token) })
+    _kunasLoginInflight.set(cfg.token, p)
+    return p
+  },
+
+  // Login real: con SOLO el token → la respuesta trae `pkey` (la api key para el
+  // resto de endpoints) y el array `properties` (id_properties accesibles). Doc:
   // POST /api/user/auth/login. Captura la respuesta cruda para diagnosticar y, si
   // no aparece la pkey, lanza un error con lo que devolvió el API (no lo oculta).
-  async _login(cfg) {
+  async _loginImpl(cfg) {
     const base = (cfg.baseUrl || this.defaultBaseUrl).replace(/\/$/, '')
     // El login exige token + usuario + contraseña (según la doc de Kunas).
     const loginBody = { token: cfg.token, remember: 1 }
@@ -371,7 +382,8 @@ const kunas = {
       try { const p = await this._rawPost(cfg, '/api/property/data/property', { id_properties: propertyId }); name = first(p?.name, p?.shortname, '') } catch {}
     }
     const extra = info.length > 1 ? ` (${info.length} propiedades; usando "${name || propertyId}")` : ''
-    return { ok: true, message: `Conexión Kunas OK${name ? ` — ${name}` : ''}${extra}`, hotelName: name || '', propertyId, apiKey }
+    const properties = info.map(p => ({ id: String(p.id), name: p.name || `Propiedad ${p.id}` }))
+    return { ok: true, message: `Conexión Kunas OK${name ? ` — ${name}` : ''}${extra}`, hotelName: name || '', propertyId, apiKey, properties }
   },
 
   // Propiedades accesibles (del login). Para elegir/filtrar en la UI.

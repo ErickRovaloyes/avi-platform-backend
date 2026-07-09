@@ -48,10 +48,17 @@ async function testConnection(accId) {
   const prov = providers.getProvider(cfg.provider)
   if (!prov) return { ok: false, message: `Proveedor desconocido: ${cfg.provider}` }
   const r = await prov.testConnection(cfg)
-  // Guarda lo auto-resuelto (Kunas: key derivada del login + id de propiedad; y el
-  // nombre del hotel) para mostrarlo en la UI y evitar rehacerlo en cada llamada.
-  if (r.ok && (r.hotelName || r.propertyId || r.apiKey)) {
-    await saveConfig(accId, { ...cfg, hotelName: r.hotelName || cfg.hotelName, propertyId: r.propertyId || cfg.propertyId, apiKey: r.apiKey || cfg.apiKey }).catch(() => {})
+  // Guarda lo auto-resuelto (Kunas: key derivada del login + id de propiedad + la
+  // LISTA de propiedades; y el nombre del hotel) para mostrarlo en la UI y evitar
+  // rehacer login en cada llamada (conexión estable, sin re-login).
+  if (r.ok && (r.hotelName || r.propertyId || r.apiKey || r.properties)) {
+    await saveConfig(accId, {
+      ...cfg,
+      hotelName: r.hotelName || cfg.hotelName,
+      propertyId: r.propertyId || cfg.propertyId,
+      apiKey: r.apiKey || cfg.apiKey,
+      properties: (Array.isArray(r.properties) && r.properties.length) ? r.properties : cfg.properties,
+    }).catch(() => {})
   }
   return r
 }
@@ -366,13 +373,17 @@ const mapRoomPublic = r => ({
 })
 
 // Propiedades accesibles (Kunas puede tener varias). HosRoom: 0/1 (el propio hotel).
+// Estable: primero usa las propiedades PERSISTIDAS (sin login); solo si no hay,
+// consulta al proveedor (login) y las persiste para las próximas veces.
 async function listProperties(accId) {
   const cfg = await loadConfig(accId)
+  if (Array.isArray(cfg?.properties) && cfg.properties.length) return cfg.properties
   const prov = providers.getProvider(cfg?.provider)
   if (!prov) return []
   if (typeof prov.listProperties === 'function') {
-    const list = await prov.listProperties(cfg).catch(() => [])
-    return (list || []).map(p => ({ id: String(p.id), name: p.name || `Propiedad ${p.id}` }))
+    const list = (await prov.listProperties(cfg).catch(() => [])).map(p => ({ id: String(p.id), name: p.name || `Propiedad ${p.id}` }))
+    if (list.length) await saveConfig(accId, { ...cfg, properties: list }).catch(() => {})
+    return list
   }
   return cfg?.hotelName ? [{ id: cfg.propertyId || 'default', name: cfg.hotelName }] : []
 }
