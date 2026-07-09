@@ -123,6 +123,7 @@ const paymentsRoutes      = require('./routes/payments.routes')
 const pushRoutes          = require('./routes/push.routes')
 const schedulingRoutes    = require('./routes/scheduling.routes')
 const pmsRoutes           = require('./routes/pms.routes')
+const ordersRoutes        = require('./routes/orders.routes')
 
 // Guest counter alias (used by storage.js generateGuest)
 const guestRouter = require('express').Router()
@@ -166,6 +167,7 @@ app.use('/api',                paymentsRoutes)
 app.use('/api',                pushRoutes)
 app.use('/api',                schedulingRoutes)
 app.use('/api',                pmsRoutes)
+app.use('/api',                ordersRoutes)
 app.use('/api',                webhookRoutes)
 app.use('/api',                metaCatalogRoutes)
 app.use('/api',                metaPagesRoutes)
@@ -208,6 +210,53 @@ app.use('/api',                recontactRoutes)
     "ALTER TABLE platform_settings ADD COLUMN change_agent_caps TEXT",
     // Herramienta IA Especial PMS (HosRoom/Kunas): config por cuenta (proveedor + token).
     "ALTER TABLE accounts ADD COLUMN pms TEXT",
+    // ── Módulo Pedidos y Domicilios ──────────────────────────────────────────
+    // Config por cuenta (tipos de pedido, moneda, tarifas, mínimos, pago…).
+    "ALTER TABLE accounts ADD COLUMN orders TEXT",
+    `CREATE TABLE IF NOT EXISTS order_products (
+       id VARCHAR(50) PRIMARY KEY, account_id VARCHAR(50) NOT NULL,
+       category VARCHAR(120) DEFAULT '', name VARCHAR(200) NOT NULL, description TEXT,
+       price DECIMAL(12,2) DEFAULT 0, media_id VARCHAR(50), image_url TEXT,
+       modifier_group_ids TEXT, available TINYINT(1) DEFAULT 1, sort INT DEFAULT 0,
+       source VARCHAR(20) DEFAULT 'menu', source_ref VARCHAR(120), created_at BIGINT,
+       INDEX idx_op_acc (account_id, category)
+     )`,
+    `CREATE TABLE IF NOT EXISTS order_modifier_groups (
+       id VARCHAR(50) PRIMARY KEY, account_id VARCHAR(50) NOT NULL,
+       name VARCHAR(160) NOT NULL, min_select INT DEFAULT 0, max_select INT DEFAULT 1,
+       required TINYINT(1) DEFAULT 0, sort INT DEFAULT 0, created_at BIGINT,
+       INDEX idx_omg_acc (account_id)
+     )`,
+    `CREATE TABLE IF NOT EXISTS order_modifiers (
+       id VARCHAR(50) PRIMARY KEY, group_id VARCHAR(50) NOT NULL, account_id VARCHAR(50) NOT NULL,
+       name VARCHAR(160) NOT NULL, price_delta DECIMAL(12,2) DEFAULT 0, available TINYINT(1) DEFAULT 1,
+       sort INT DEFAULT 0,
+       INDEX idx_om_group (group_id)
+     )`,
+    `CREATE TABLE IF NOT EXISTS order_zones (
+       id VARCHAR(50) PRIMARY KEY, account_id VARCHAR(50) NOT NULL,
+       name VARCHAR(160) NOT NULL, fee DECIMAL(12,2) DEFAULT 0, min_order DECIMAL(12,2) DEFAULT 0,
+       eta_min INT DEFAULT 0, sort INT DEFAULT 0, created_at BIGINT,
+       INDEX idx_oz_acc (account_id)
+     )`,
+    `CREATE TABLE IF NOT EXISTS order_couriers (
+       id VARCHAR(50) PRIMARY KEY, account_id VARCHAR(50) NOT NULL,
+       name VARCHAR(160) NOT NULL, phone VARCHAR(40), active TINYINT(1) DEFAULT 1, created_at BIGINT,
+       INDEX idx_oc_acc (account_id)
+     )`,
+    `CREATE TABLE IF NOT EXISTS orders (
+       id VARCHAR(50) PRIMARY KEY, account_id VARCHAR(50) NOT NULL, agent_id VARCHAR(50),
+       conv_id VARCHAR(50), contact_id VARCHAR(50), code VARCHAR(30),
+       type VARCHAR(20) DEFAULT 'delivery', status VARCHAR(24) DEFAULT 'draft',
+       items MEDIUMTEXT, subtotal DECIMAL(12,2) DEFAULT 0, delivery_fee DECIMAL(12,2) DEFAULT 0,
+       tax DECIMAL(12,2) DEFAULT 0, tip DECIMAL(12,2) DEFAULT 0, packaging_fee DECIMAL(12,2) DEFAULT 0,
+       discount DECIMAL(12,2) DEFAULT 0, total DECIMAL(12,2) DEFAULT 0, currency VARCHAR(6) DEFAULT 'COP',
+       address MEDIUMTEXT, zone_id VARCHAR(50), table_label VARCHAR(60), scheduled_for VARCHAR(40),
+       courier_id VARCHAR(50), payment_method VARCHAR(20), payment_status VARCHAR(20) DEFAULT 'pending',
+       cash_amount DECIMAL(12,2), notes TEXT, timeline MEDIUMTEXT,
+       created_at BIGINT, updated_at BIGINT,
+       INDEX idx_ord_acc (account_id, status), INDEX idx_ord_conv (conv_id)
+     )`,
     // Conciencia temporal de la IA: zona horaria local + (opcional) fecha/hora base fija.
     "ALTER TABLE accounts ADD COLUMN ai_timezone VARCHAR(64) DEFAULT 'America/Lima'",
     "ALTER TABLE accounts ADD COLUMN ai_datetime_enabled TINYINT(1) DEFAULT 1",

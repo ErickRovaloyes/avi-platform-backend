@@ -109,7 +109,19 @@ const SPECIAL_PMS_TOOL = {
   special: true,
 }
 const pmsSvc = require('../services/pms')
-const specialTools = () => [SPECIAL_WOO_TOOL, SPECIAL_AGENDA_TOOL, SPECIAL_PAYMENT_TOOL, SPECIAL_CATALOG_TOOL, SPECIAL_PMS_TOOL]
+// Herramienta IA Especial "pedidos": el asistente muestra el menú (con fotos),
+// arma el pedido, captura tipo de entrega y datos, calcula totales + envío por
+// zona, genera el pago (link o contra entrega) y hace seguimiento por código.
+const SPECIAL_ORDERS_TOOL = {
+  id: 'orders_local',
+  name: 'pedidos',
+  description: 'Pedidos y domicilios: el asistente muestra el menú con precios y fotos, arma el pedido (carrito), captura el tipo de entrega (domicilio/recoger/en el local/programado) y los datos, calcula el total con envío por zona, mínimos e impuestos, cobra en línea (link de pago) o contra entrega con vuelto, confirma el pedido con un código y hace seguimiento. Asígnala a un prompt para habilitarla.',
+  collectFields: [],
+  actionType: 'orders',
+  special: true,
+}
+const ordersSvc = require('../services/orders')
+const specialTools = () => [SPECIAL_WOO_TOOL, SPECIAL_AGENDA_TOOL, SPECIAL_PAYMENT_TOOL, SPECIAL_CATALOG_TOOL, SPECIAL_PMS_TOOL, SPECIAL_ORDERS_TOOL]
 
 const mapCmsAsset = c => ({
   id: c.id, name: c.name, description: c.description || '', tags: parseJ(c.tags, []),
@@ -158,6 +170,7 @@ async function loadPublicAccount(accId) {
     woocommerce: storeSvc.publicConfig(parseJ(acc.woocommerce, null)),
     scheduling: schedulingCfg,
     pms: pmsSvc.publicConfig(parseJ(acc.pms, null)),
+    orders: ordersSvc.publicConfig(parseJ(acc.orders, null)),
     // Conciencia temporal de la IA (zona horaria + fecha/hora base opcional).
     aiTimezone: acc.ai_timezone || 'America/Lima',
     aiDatetimeEnabled: acc.ai_datetime_enabled == null ? true : !!acc.ai_datetime_enabled,
@@ -254,6 +267,7 @@ const getAccount = async (req, res) => {
       woocommerce: storeSvc.publicConfig(parseJ(acc.woocommerce, null)),
       scheduling: schedulingCfg,
       pms: pmsSvc.publicConfig(parseJ(acc.pms, null)),
+      orders: ordersSvc.publicConfig(parseJ(acc.orders, null)),
       aiTimezone: acc.ai_timezone || 'America/Lima',
       aiDatetimeEnabled: acc.ai_datetime_enabled == null ? true : !!acc.ai_datetime_enabled,
       aiBaseDatetime: acc.ai_base_datetime || '',

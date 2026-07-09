@@ -47,6 +47,7 @@ function buildToolDefs(toolList, account) {
     else if (tool.actionType === 'payment') { if (account?.payments?.connected) defs.push(...buildPaymentToolDefs()) }
     else if (tool.actionType === 'meta_catalog') { if (account?.metaCatalog?.connected) defs.push(...buildCatalogToolDefs()) }
     else if (tool.actionType === 'pms') { if (account?.pms?.connected) defs.push(...buildPmsToolDefs(account)) }
+    else if (tool.actionType === 'orders') { if (account?.orders?.connected) defs.push(...buildOrdersToolDefs(account)) }
     else { const d = buildOneToolDef(tool); if (d) defs.push(d) }
   }
   return defs
@@ -73,6 +74,10 @@ async function execToolCall(ctx, toolList, toolName, toolArgs) {
   // PMS hotelero (HosRoom/Kunas).
   if (PMS_FUNCS.has(normalized) && (toolList || []).some(t => t.actionType === 'pms')) {
     return pmsExec(ctx, normalized, toolArgs)
+  }
+  // Pedidos y domicilios.
+  if (ORDERS_FUNCS.has(normalized) && (toolList || []).some(t => t.actionType === 'orders')) {
+    return ordersExec(ctx, normalized, toolArgs)
   }
   const tool = (toolList || []).find(t => t.name.replace(/\s+/g, '_').toLowerCase() === normalized)
   if (!tool) return `Error: herramienta "${toolName}" no encontrada o no asignada a este prompt.`
@@ -504,6 +509,81 @@ async function pmsExec(ctx, fnName, args) {
   } catch (e) {
     logDebug(ctx, 'error', `PMS: ${e.message}`, {})
     return `No se pudo completar la acción del PMS: ${e.message}`
+  }
+}
+
+// ── Pedidos y domicilios ───────────────────────────────────────────────────────
+const ORDERS_FUNCS = new Set(['ver_menu', 'agregar_al_pedido', 'ver_carrito', 'ver_pedido', 'quitar_del_pedido', 'fijar_datos_entrega', 'confirmar_pedido', 'estado_pedido'])
+function buildOrdersToolDefs(account) {
+  const o = account?.orders || {}
+  const biz = o.businessName ? ` de "${o.businessName}"` : ''
+  const typeLabel = { delivery: 'domicilio', pickup: 'para recoger', dinein: 'en el local', scheduled: 'programado' }
+  const types = (Array.isArray(o.orderTypes) && o.orderTypes.length ? o.orderTypes : ['delivery', 'pickup']).map(t => typeLabel[t] || t).join(', ')
+  const methods = (Array.isArray(o.paymentMethods) && o.paymentMethods.length ? o.paymentMethods : ['online', 'cash']).map(m => m === 'online' ? 'pago en línea' : 'contra entrega').join(' y ')
+  return [
+    { type: 'function', function: { name: 'ver_menu',
+      description: `Muestra el menú/catálogo${biz} con precios (y fotos si el cliente pide una categoría). Úsalo cuando pregunten qué hay, el menú, la carta o los precios. NUNCA inventes productos ni precios.`,
+      parameters: { type: 'object', properties: {
+        categoria: { type: 'string', description: 'Categoría concreta para filtrar y enviar fotos (vacío = panorama de todo el menú)' },
+      } } } },
+    { type: 'function', function: { name: 'agregar_al_pedido',
+      description: 'Agrega un producto al pedido (carrito) del cliente. Úsalo cada vez que el cliente pida algo. Puedes incluir adiciones/modificadores y una nota.',
+      parameters: { type: 'object', properties: {
+        producto: { type: 'string', description: 'Nombre del producto tal como aparece en el menú' },
+        cantidad: { type: 'number', description: 'Cantidad (mínimo 1)' },
+        adiciones: { type: 'string', description: 'Adiciones/modificadores separados por coma (ej. "extra queso, sin cebolla")' },
+        nota: { type: 'string', description: 'Nota para la cocina sobre este producto (opcional)' },
+      }, required: ['producto'] } } },
+    { type: 'function', function: { name: 'ver_carrito',
+      description: 'Muestra el resumen del pedido actual con los productos y el total. Úsalo cuando el cliente quiera revisar su pedido antes de confirmar.',
+      parameters: { type: 'object', properties: {} } } },
+    { type: 'function', function: { name: 'quitar_del_pedido',
+      description: 'Quita un producto del pedido. Indica el número de línea (de ver_carrito) o el nombre del producto.',
+      parameters: { type: 'object', properties: {
+        indice: { type: 'number', description: 'Número de la línea a quitar (según ver_carrito)' },
+        producto: { type: 'string', description: 'Nombre del producto a quitar (si no usas el número)' },
+      } } } },
+    { type: 'function', function: { name: 'fijar_datos_entrega',
+      description: `Fija el tipo de entrega (disponibles: ${types}) y los datos. Para domicilio pide dirección y zona (calcula el envío). Úsalo antes de confirmar.`,
+      parameters: { type: 'object', properties: {
+        tipo: { type: 'string', description: 'domicilio | recoger | local | programado' },
+        direccion: { type: 'string', description: 'Dirección de entrega (para domicilio)' },
+        referencias: { type: 'string', description: 'Referencias o indicaciones para llegar (opcional)' },
+        zona: { type: 'string', description: 'Zona/barrio de entrega para calcular el costo de envío' },
+        mesa: { type: 'string', description: 'Número/identificador de mesa (para consumo en el local)' },
+        para: { type: 'string', description: 'Fecha/hora para pedido programado' },
+      } } } },
+    { type: 'function', function: { name: 'confirmar_pedido',
+      description: `Cierra y CONFIRMA el pedido. Úsalo SOLO cuando el pedido tenga productos y, si es domicilio, dirección y zona. Métodos de pago: ${methods}. Devuelve el código del pedido y, si es en línea, el link de pago.`,
+      parameters: { type: 'object', properties: {
+        nombre: { type: 'string', description: 'Nombre del cliente (si no, se toma el de la conversación)' },
+        telefono: { type: 'string', description: 'Teléfono del cliente (si no, se toma el de la conversación)' },
+        metodo_pago: { type: 'string', description: 'en línea | contra entrega (efectivo)' },
+        paga_con: { type: 'string', description: 'Con cuánto paga en efectivo, para calcular el vuelto (solo contra entrega)' },
+        propina: { type: 'number', description: 'Propina en dinero (opcional)' },
+        nota: { type: 'string', description: 'Nota general del pedido (opcional)' },
+      } } } },
+    { type: 'function', function: { name: 'estado_pedido',
+      description: 'Consulta el estado de un pedido por su código (ej. P-AB12C). Úsalo para seguimiento cuando el cliente pregunte por su pedido.',
+      parameters: { type: 'object', properties: {
+        codigo: { type: 'string', description: 'Código del pedido' },
+      }, required: ['codigo'] } } },
+  ]
+}
+async function ordersExec(ctx, fnName, args) {
+  try {
+    const orders = require('../../services/orders')
+    const r = await orders.toolCall(ctx.accId, fnName, args || {}, { convId: ctx.convId, agId: ctx.agId })
+    // Envía las fotos del menú al chat (web + canal externo).
+    for (const m of (r.media || [])) {
+      const url = m.needsHost ? `${resourceBaseUrl()}${m.url}` : m.url
+      await sendBotMsg(ctx, m.caption || '', { kind: 'image', media: { kind: 'image', url }, mediaUrl: url })
+    }
+    logDebug(ctx, 'tool_result', `🛵 Pedidos ${fnName}${r.orderCode ? ` → ${r.orderCode}` : ''}`, { media: (r.media || []).length })
+    return r?.text || 'Hecho.'
+  } catch (e) {
+    logDebug(ctx, 'error', `Pedidos: ${e.message}`, {})
+    return `No se pudo completar la acción de pedidos: ${e.message}`
   }
 }
 
