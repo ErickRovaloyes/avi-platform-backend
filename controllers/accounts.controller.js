@@ -170,7 +170,7 @@ async function loadPublicAccount(accId) {
     woocommerce: storeSvc.publicConfig(parseJ(acc.woocommerce, null)),
     scheduling: schedulingCfg,
     pms: pmsSvc.publicConfig(parseJ(acc.pms, null)),
-    orders: ordersSvc.publicConfig(parseJ(acc.orders, null)),
+    orders: await ordersSvc.publicConfigAsync(accId).catch(() => ({ connected: false })),
     // Conciencia temporal de la IA (zona horaria + fecha/hora base opcional).
     aiTimezone: acc.ai_timezone || 'America/Lima',
     aiDatetimeEnabled: acc.ai_datetime_enabled == null ? true : !!acc.ai_datetime_enabled,
@@ -267,7 +267,7 @@ const getAccount = async (req, res) => {
       woocommerce: storeSvc.publicConfig(parseJ(acc.woocommerce, null)),
       scheduling: schedulingCfg,
       pms: pmsSvc.publicConfig(parseJ(acc.pms, null)),
-      orders: ordersSvc.publicConfig(parseJ(acc.orders, null)),
+      orders: await ordersSvc.publicConfigAsync(accId).catch(() => ({ connected: false })),
       aiTimezone: acc.ai_timezone || 'America/Lima',
       aiDatetimeEnabled: acc.ai_datetime_enabled == null ? true : !!acc.ai_datetime_enabled,
       aiBaseDatetime: acc.ai_base_datetime || '',

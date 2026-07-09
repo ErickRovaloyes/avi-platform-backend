@@ -122,6 +122,7 @@ const mapOrder = o => ({
   scheduledFor: o.scheduled_for || '', courierId: o.courier_id || null,
   paymentMethod: o.payment_method || '', paymentStatus: o.payment_status || 'pending', cashAmount: o.cash_amount != null ? Number(o.cash_amount) : null,
   notes: o.notes || '', timeline: parseJ(o.timeline, []), convId: o.conv_id, contactId: o.contact_id,
+  customerName: o.customer_name || '', customerPhone: o.customer_phone || '',
   createdAt: o.created_at, updatedAt: o.updated_at,
 })
 async function getDraft(accId, convId, { create = false } = {}) {
@@ -333,9 +334,9 @@ async function toolCall(accId, fn, args = {}, { convId, agId } = {}) {
     const code = shortCode()
     const timeline = [{ status: 'received', at: Date.now(), by: 'ia' }]
     await pool.query(
-      `UPDATE orders SET code=?, status='received', contact_id=?, subtotal=?, delivery_fee=?, tax=?, tip=?, packaging_fee=?, total=?, currency=?,
+      `UPDATE orders SET code=?, status='received', contact_id=?, customer_name=?, customer_phone=?, subtotal=?, delivery_fee=?, tax=?, tip=?, packaging_fee=?, total=?, currency=?,
         payment_method=?, payment_status=?, cash_amount=?, notes=?, timeline=?, updated_at=? WHERE id=? AND account_id=?`,
-      [code, contactId, t.subtotal, t.deliveryFee, t.tax, t.tip, t.packaging, t.total, currency,
+      [code, contactId, name || null, phone || null, t.subtotal, t.deliveryFee, t.tax, t.tip, t.packaging, t.total, currency,
        paymentMethod, 'pending', cashAmount, String(args.nota || draft.notes || '').slice(0, 300), JSON.stringify(timeline), Date.now(), draft.id, accId]
     )
     socket.emit(accId, 'orders:updated', { accId })
