@@ -366,6 +366,13 @@ const kunas = {
     return { ok: true, message: `Conexión Kunas OK${name ? ` — ${name}` : ''}${extra}`, hotelName: name || '', propertyId, apiKey }
   },
 
+  // Propiedades accesibles (del login). Para elegir/filtrar en la UI.
+  async listProperties(cfg) {
+    if (_kunasPropInfo.has(cfg.token)) return _kunasPropInfo.get(cfg.token)
+    await this._key(cfg, { forceLogin: true }).catch(() => {})
+    return _kunasPropInfo.get(cfg.token) || []
+  },
+
   async getRooms(cfg) {
     const data = await this._post(cfg, '/api/room/data/rooms', { type: 1, details: '1' })
     const list = Array.isArray(data) ? data : (data?.data || data?.rooms || [])

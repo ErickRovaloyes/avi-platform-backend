@@ -358,4 +358,105 @@ async function toolCall(accId, fn, args = {}, { convId, agId } = {}) {
   return { text: `Función PMS desconocida: ${fn}` }
 }
 
-module.exports = { loadConfig, saveConfig, publicConfig, testConnection, toolCall }
+// ── Lectura para la UI (subpestañas Propiedades / Disponibilidad) ───────────────
+const mapRoomPublic = r => ({
+  id: r.id, name: r.name, capacity: r.capacity, description: r.description || '',
+  photos: Array.isArray(r.photos) ? r.photos.filter(Boolean) : [],
+  rates: (r.rates || []).map(rt => ({ name: rt.name, mealType: rt.mealType || '', total: rt.total ?? null, perNight: rt.perNight ?? null, capacity: rt.capacity ?? null, available: rt.available ?? null })),
+})
+
+// Propiedades accesibles (Kunas puede tener varias). HosRoom: 0/1 (el propio hotel).
+async function listProperties(accId) {
+  const cfg = await loadConfig(accId)
+  const prov = providers.getProvider(cfg?.provider)
+  if (!prov) return []
+  if (typeof prov.listProperties === 'function') {
+    const list = await prov.listProperties(cfg).catch(() => [])
+    return (list || []).map(p => ({ id: String(p.id), name: p.name || `Propiedad ${p.id}` }))
+  }
+  return cfg?.hotelName ? [{ id: cfg.propertyId || 'default', name: cfg.hotelName }] : []
+}
+
+// Habitaciones con ficha, fotos y planes (opcionalmente de una propiedad concreta).
+async function listRooms(accId, { propertyId } = {}) {
+  const cfg = await loadConfig(accId)
+  if (!publicConfig(cfg).connected) throw new Error('El PMS no está conectado.')
+  const prov = providers.getProvider(cfg.provider)
+  const c = propertyId ? { ...cfg, propertyId: String(propertyId) } : cfg
+  const rooms = await prov.getRooms(c)
+  return rooms.map(mapRoomPublic)
+}
+
+// Disponibilidad para un rango (una sola consulta): habitaciones con precio.
+async function rangeAvailability(accId, { checkin, checkout, adults, children, propertyId } = {}) {
+  if (!isDate(checkin) || !isDate(checkout) || checkout <= checkin) throw new Error('Fechas inválidas (YYYY-MM-DD, checkout > checkin).')
+  const cfg = await loadConfig(accId)
+  if (!publicConfig(cfg).connected) throw new Error('El PMS no está conectado.')
+  const prov = providers.getProvider(cfg.provider)
+  const c = propertyId ? { ...cfg, propertyId: String(propertyId) } : cfg
+  const { rooms } = await prov.getAvailability(c, { checkin, checkout, adults: Math.max(1, Number(adults) || 2), children: Number(children) || 0 })
+  const nights = nightsBetween(checkin, checkout)
+  return {
+    checkin, checkout, nights, currency: publicConfig(cfg).currency,
+    rooms: rooms.map(r => ({
+      ...mapRoomPublic(r),
+      bestTotal: (r.rates || []).reduce((m, rt) => (rt.total != null && (m == null || rt.total < m) ? rt.total : m), null),
+      available: (r.rates || []).reduce((s, rt) => s + (Number(rt.available) || 0), 0),
+    })).filter(r => r.available > 0 || r.rates.length),
+  }
+}
+
+// Disponibilidad por MES (heatmap del calendario) para una habitación concreta.
+// Escanea los días futuros del mes como estadías de 1 noche, con concurrencia y caché.
+const _monthCache = new Map()   // key → { at, data }
+const MONTH_TTL = 3 * 60 * 1000
+function withTimeout(promise, ms) {
+  return Promise.race([promise, new Promise((_, rej) => setTimeout(() => rej(new Error('timeout')), ms))])
+}
+async function runLimited(items, limit, fn) {
+  const q = items.slice(); const active = new Set()
+  async function pump() {
+    while (q.length && active.size < limit) {
+      const it = q.shift()
+      const p = Promise.resolve(fn(it)).finally(() => active.delete(p))
+      active.add(p)
+    }
+    if (active.size) { await Promise.race(active); return pump() }
+  }
+  await pump()
+}
+async function monthAvailability(accId, { year, month, roomTypeId, propertyId, adults }) {
+  const y = Number(year), m = Number(month)
+  if (!y || !m || m < 1 || m > 12) throw new Error('Mes inválido.')
+  const key = `${accId}:${y}-${m}:${roomTypeId || '*'}:${propertyId || '*'}:${adults || 2}`
+  const hit = _monthCache.get(key)
+  if (hit && Date.now() - hit.at < MONTH_TTL) return hit.data
+  const cfg = await loadConfig(accId)
+  if (!publicConfig(cfg).connected) throw new Error('El PMS no está conectado.')
+  const prov = providers.getProvider(cfg.provider)
+  const c = propertyId ? { ...cfg, propertyId: String(propertyId) } : cfg
+  const daysInMonth = new Date(Date.UTC(y, m, 0)).getUTCDate()
+  const today = new Date().toISOString().slice(0, 10)
+  const pad = n => String(n).padStart(2, '0')
+  const dates = []
+  for (let d = 1; d <= daysInMonth; d++) { const date = `${y}-${pad(m)}-${pad(d)}`; if (date >= today) dates.push(date) }
+  const out = {}
+  await runLimited(dates, 6, async date => {
+    const next = addDays(date, 1)
+    try {
+      const { rooms } = await withTimeout(prov.getAvailability(c, { checkin: date, checkout: next, adults: Math.max(1, Number(adults) || 2), children: 0 }), 8000)
+      let available = 0, price = null
+      for (const rm of rooms) {
+        if (roomTypeId && String(rm.id) !== String(roomTypeId)) continue
+        for (const rt of (rm.rates || [])) { available += Number(rt.available) || 0; if (rt.total != null && (price == null || rt.total < price)) price = rt.total }
+      }
+      out[date] = { available, price }
+    } catch { out[date] = { error: true } }
+  })
+  const data = { year: y, month: m, currency: publicConfig(cfg).currency, days: out }
+  _monthCache.set(key, { at: Date.now(), data })
+  if (_monthCache.size > 200) { for (const [k, v] of _monthCache) if (Date.now() - v.at > MONTH_TTL) _monthCache.delete(k) }
+  return data
+}
+
+module.exports = { loadConfig, saveConfig, publicConfig, testConnection, toolCall, listProperties, listRooms, rangeAvailability, monthAvailability }

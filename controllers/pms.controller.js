@@ -70,6 +70,34 @@ const resetCredentials = async (req, res) => {
   } catch (e) { console.error('[pms resetCredentials]', e); res.status(500).json({ error: 'Error interno' }) }
 }
 
+// ── Lectura para la UI: propiedades, habitaciones y disponibilidad ──────────────
+const listProperties = async (req, res) => {
+  try { res.json({ properties: await pms.listProperties(req.params.accId) }) }
+  catch (e) { res.status(502).json({ error: e.message }) }
+}
+const listRooms = async (req, res) => {
+  try { res.json({ rooms: await pms.listRooms(req.params.accId, { propertyId: req.query.propertyId || '' }) }) }
+  catch (e) { res.status(502).json({ error: e.message }) }
+}
+const availability = async (req, res) => {
+  try {
+    const r = await pms.rangeAvailability(req.params.accId, {
+      checkin: req.query.checkin, checkout: req.query.checkout,
+      adults: req.query.adults, children: req.query.children, propertyId: req.query.propertyId || '',
+    })
+    res.json(r)
+  } catch (e) { res.status(502).json({ error: e.message }) }
+}
+const monthAvailability = async (req, res) => {
+  try {
+    const r = await pms.monthAvailability(req.params.accId, {
+      year: req.query.year, month: req.query.month, roomTypeId: req.query.roomTypeId || '',
+      propertyId: req.query.propertyId || '', adults: req.query.adults,
+    })
+    res.json(r)
+  } catch (e) { res.status(502).json({ error: e.message }) }
+}
+
 // Rate limiter en memoria para el proxy PÚBLICO (frena la enumeración de códigos
 // de reserva por IP). Ventana deslizante de 60s.
 const _rate = new Map() // key ip → [timestamps]
@@ -94,4 +122,4 @@ const tool = async (req, res) => {
   } catch (e) { res.status(400).json({ error: e.message }) }
 }
 
-module.exports = { getConfig, saveConfig, test, resetCredentials, tool }
+module.exports = { getConfig, saveConfig, test, resetCredentials, listProperties, listRooms, availability, monthAvailability, tool }
