@@ -1,6 +1,6 @@
 {
   "name": "avi-server",
-  "version": "1.0.0.166",
+  "version": "1.0.0.167",
   "description": "AVI Platform — Backend API + WebSockets",
   "main": "index.js",
   "scripts": {

@@ -141,13 +141,20 @@ const impersonate = async (req, res) => {
     const saName  = sa?.name  || req.user.name  || 'Super Admin'
     const saEmail = sa?.email || req.user.email || ''
     const saPhoto = sa?.photo || req.user.photo || null
+    // Cuentas a las que el super admin PERTENECE (donde es miembro activo con su correo),
+    // más la cuenta que está abriendo. Así el selector "cambiar cuenta" muestra todas.
+    let allAccountIds = [accountId]
+    if (saEmail) {
+      const [memberAccts] = await pool.query("SELECT DISTINCT account_id FROM members WHERE email=? AND status='active'", [saEmail])
+      allAccountIds = [...new Set([accountId, ...memberAccts.map(r => r.account_id)])]
+    }
     // Modo VISTA: el super admin entra con SU PROPIA identidad. No es una impersonación
     // genérica: el perfil muestra a su usuario super admin real. `isImpersonating` solo
     // activa la barra de "vista" y el botón Volver.
     const session = {
       type: 'member', id: saId, name: saName, email: saEmail, photo: saPhoto,
       accountId, accountName: acc.name,
-      roleId: 'role_owner', allAccountIds: [accountId],
+      roleId: 'role_owner', allAccountIds,
       permissions: { inbox:true, agents:true, channels:true, crm:true, pipeline:true, config:true, admins:true, flows:true, variables:true, tools:true, knowledge:true },
       agentAccess: [], isImpersonating: true,
       // Identidad del super admin que está en la vista (para acciones que la necesitan).
