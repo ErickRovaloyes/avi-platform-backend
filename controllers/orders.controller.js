@@ -17,7 +17,7 @@ const saveConfig = async (req, res) => {
     const cur = orders.normConfig(await orders.loadConfig(accId))
     const b = req.body || {}
     const next = { ...cur }
-    for (const k of ['enabled', 'orderTypes', 'currency', 'taxPct', 'packagingFee', 'minOrder', 'freeDeliveryThreshold', 'paymentMethods', 'notifyTeam', 'postOrderFlowId', 'tips', 'businessName', 'notifyCustomer', 'statusMessages']) {
+    for (const k of ['enabled', 'orderTypes', 'currency', 'taxPct', 'packagingFee', 'minOrder', 'freeDeliveryThreshold', 'paymentMethods', 'notifyTeam', 'postOrderFlowId', 'tips', 'businessName', 'notifyCustomer', 'statusMessages', 'hours']) {
       if (b[k] !== undefined) next[k] = b[k]
     }
     await orders.saveConfig(accId, orders.normConfig(next))

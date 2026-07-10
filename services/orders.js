@@ -61,7 +61,36 @@ function normConfig(cfg) {
     // Avisar al cliente por su canal cuando cambia el estado del pedido.
     notifyCustomer: c.notifyCustomer !== false,
     statusMessages: (c.statusMessages && typeof c.statusMessages === 'object' && !Array.isArray(c.statusMessages)) ? c.statusMessages : {},
+    // Horario de atención: si enabled, solo se confirman pedidos dentro del horario
+    // (los programados no se bloquean). Rango(s) "HH:MM-HH:MM" por día ('' = cerrado).
+    hours: (() => {
+      const h = (c.hours && typeof c.hours === 'object') ? c.hours : {}
+      const d = (h.days && typeof h.days === 'object') ? h.days : {}
+      return { enabled: !!h.enabled, days: { mon: d.mon || '', tue: d.tue || '', wed: d.wed || '', thu: d.thu || '', fri: d.fri || '', sat: d.sat || '', sun: d.sun || '' } }
+    })(),
   }
+}
+
+// ── Horario de atención ─────────────────────────────────────────────────────────
+function nowInTz(tz) {
+  const d = new Date()
+  const day = new Intl.DateTimeFormat('en-US', { timeZone: tz || 'America/Bogota', weekday: 'short' }).format(d).toLowerCase().slice(0, 3)
+  const hhmm = new Intl.DateTimeFormat('en-GB', { timeZone: tz || 'America/Bogota', hour: '2-digit', minute: '2-digit', hour12: false }).format(d)
+  return { day, hhmm }
+}
+function isOpenNow(hours, tz) {
+  if (!hours?.enabled) return { open: true }
+  try {
+    const { day, hhmm } = nowInTz(tz)
+    const ranges = String(hours.days?.[day] || '').split(',').map(s => s.trim()).filter(Boolean)
+    for (const r of ranges) {
+      const [o, c] = r.split('-').map(s => s.trim())
+      if (!o || !c) continue
+      if (c > o) { if (hhmm >= o && hhmm <= c) return { open: true } }
+      else if (hhmm >= o || hhmm <= c) return { open: true }   // cruza medianoche (20:00-02:00)
+    }
+    return { open: false, todayHours: hours.days?.[day] || '' }
+  } catch { return { open: true } }
 }
 
 // Config pública para el runtime/UI (va dentro de account.orders).
@@ -327,6 +356,14 @@ async function toolCall(accId, fn, args = {}, { convId, agId } = {}) {
   if (fn === 'confirmar_pedido') {
     const draft = await getDraft(accId, convId)
     if (!draft || !draft.items.length) return { text: 'El pedido está vacío. Agrega productos antes de confirmar.' }
+    // Horario de atención: no se confirman pedidos fuera del horario (salvo programados).
+    if (cfg.hours?.enabled && draft.type !== 'scheduled') {
+      try {
+        const [[acc]] = await pool.query('SELECT ai_timezone FROM accounts WHERE id=?', [accId])
+        const st = isOpenNow(cfg.hours, acc?.ai_timezone)
+        if (!st.open) return { text: `El negocio está CERRADO ahora mismo${st.todayHours ? ` (horario de hoy: ${st.todayHours})` : ' (hoy no abrimos)'}. No se puede confirmar el pedido en este momento. Ofrécele al cliente dejarlo PROGRAMADO para más tarde (tipo "programado") o volver dentro del horario de atención.` }
+      } catch {}
+    }
     const zones = draft.type === 'delivery' ? await listZones(accId) : []
     const zone = zones.find(z => z.id === draft.zoneId) || null
     if (draft.type === 'delivery' && zones.length && !zone) return { text: 'Falta la zona de entrega para calcular el envío. Pídele al cliente su zona/dirección y usa fijar_datos_entrega.' }
