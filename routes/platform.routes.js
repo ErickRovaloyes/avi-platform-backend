@@ -32,6 +32,7 @@ router.post('/superadmin/super-admins',                 authMiddleware, ctrl.cre
 router.put('/superadmin/super-admins/:saId',            authMiddleware, ctrl.updateSuperAdmin)
 router.delete('/superadmin/super-admins/:saId',         authMiddleware, ctrl.deleteSuperAdmin)
 router.get('/superadmin/users',                         authMiddleware, ctrl.listAllUsers)
+router.get('/superadmin/module-usage',                  authMiddleware, ctrl.getModuleUsage)
 router.get('/superadmin/accounts',                      authMiddleware, ctrl.listAccounts)
 router.post('/superadmin/accounts',                     authMiddleware, ctrl.createAccount)
 router.put('/superadmin/accounts/:accId',               authMiddleware, ctrl.updateSAAccount)

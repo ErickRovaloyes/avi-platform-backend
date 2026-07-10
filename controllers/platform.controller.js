@@ -440,4 +440,29 @@ const testEmail = async (req, res) => {
   } catch (err) { res.status(500).json({ error: 'Error interno' }) }
 }
 
-module.exports = { getSettings, updateSettings, getPublicIntegrations, listSuperAdmins, createSuperAdmin, updateSuperAdmin, deleteSuperAdmin, listAllUsers, listAccounts, createAccount, updateSAAccount, deleteAccount, getAccountNameHistory, testEmail }
+// Analítica de módulos: por cada módulo, cuántas y cuáles cuentas lo usan (módulo efectivo:
+// override de cuenta → preset del tipo → todos). Solo super admin.
+const getModuleUsage = async (req, res) => {
+  if (req.user.type !== 'superadmin') return res.status(403).json({ error: 'Solo super admin' })
+  try {
+    const modulesSvc = require('../services/modules')
+    const [accts] = await pool.query("SELECT id, name, modules FROM accounts WHERE status<>'deleted'")
+    const [subs]  = await pool.query('SELECT account_id, account_type_id FROM account_subscriptions')
+    const [types] = await pool.query('SELECT id, name, modules FROM account_types')
+    const typeById = Object.fromEntries(types.map(t => [t.id, t]))
+    const typeOf   = Object.fromEntries(subs.map(s => [s.account_id, s.account_type_id]))
+    const usage = Object.fromEntries(modulesSvc.MODULE_IDS.map(id => [id, []]))
+    for (const a of accts) {
+      const typeModules = typeById[typeOf[a.id]]?.modules ?? null
+      const eff = modulesSvc.resolveModules(a.modules, typeModules)
+      for (const id of modulesSvc.MODULE_IDS) if (eff[id]) usage[id].push({ id: a.id, name: a.name })
+    }
+    const modules = modulesSvc.MODULES.map(m => ({
+      id: m.id, name: m.name, description: m.description,
+      count: usage[m.id].length, accounts: usage[m.id].sort((x, y) => String(x.name).localeCompare(String(y.name))),
+    })).sort((a, b) => b.count - a.count)
+    res.json({ totalAccounts: accts.length, modules })
+  } catch (err) { console.error('[module usage]', err); res.status(500).json({ error: 'Error interno' }) }
+}
+
+module.exports = { getSettings, updateSettings, getPublicIntegrations, listSuperAdmins, createSuperAdmin, updateSuperAdmin, deleteSuperAdmin, listAllUsers, listAccounts, createAccount, updateSAAccount, deleteAccount, getAccountNameHistory, testEmail, getModuleUsage }

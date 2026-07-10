@@ -26,6 +26,7 @@ const getAllTickets = async (req, res) => {
       subject: t.subject, status: t.status, assignedTo: parseJ(t.assigned_to, null),
       takenBy: parseJ(t.taken_by, null), takenAt: t.taken_at || null, priority: t.priority || null,
       eta: t.eta || null, closedAt: t.closed_at || null,
+      assignHistory: isSA ? parseJ(t.assign_history, []) : [],
       notes: isSA ? parseJ(t.notes, []) : [],   // notas internas: solo para super admins
       refs: parseJ(t.refs, []),
       rating: t.rating != null ? Number(t.rating) : null, ratingNote: t.rating_note || '', ratedAt: t.rated_at || null,
@@ -95,13 +96,14 @@ const addMessage = async (req, res) => {
       [id, ticketId, role, authorId, authorName, content, ts, media ? JSON.stringify(media) : null]
     )
     // Get the ticket's accId for targeted emit
-    const [[tkt]] = await pool.query('SELECT account_id, taken_by FROM support_tickets WHERE id=?', [ticketId])
+    const [[tkt]] = await pool.query('SELECT account_id, taken_by, assign_history FROM support_tickets WHERE id=?', [ticketId])
     if (role === 'support') {
       // Responder = TOMAR el ticket (si aún no lo tomó nadie): pasa a ser del asesor que responde.
       const alreadyTaken = parseJ(tkt?.taken_by, null)
       if (!alreadyTaken && (authorId || authorName)) {
         const taker = JSON.stringify({ saId: authorId, saName: authorName })
-        await pool.query('UPDATE support_tickets SET status="in_progress",assigned_to=?,taken_by=?,taken_at=?,updated_at=? WHERE id=?', [taker, taker, ts, ts, ticketId])
+        const hist = histEntry(tkt?.assign_history, { saId: authorId, saName: authorName, action: 'taken', by: { id: authorId, name: authorName } })
+        await pool.query('UPDATE support_tickets SET status="in_progress",assigned_to=?,taken_by=?,taken_at=?,assign_history=?,updated_at=? WHERE id=?', [taker, taker, ts, hist, ts, ticketId])
       } else {
         await pool.query('UPDATE support_tickets SET status="in_progress",updated_at=? WHERE id=?', [ts, ticketId])
       }
@@ -145,15 +147,33 @@ const updateStatus = async (req, res) => {
   } catch (err) { res.status(500).json({ error: 'Error interno' }) }
 }
 
+// Registra una entrada en el historial de tomas/asignaciones del ticket.
+function histEntry(raw, { saId, saName, action, by }) {
+  const hist = parseJ(raw, [])
+  hist.push({ saId: saId || null, saName: saName || '', action, byId: by?.id || null, byName: by?.name || '', at: Date.now() })
+  return JSON.stringify(hist)
+}
+
+// Asignar sincroniza la TOMA: el ticket pasa al nuevo asesor CON toma incluida (y a "en
+// proceso"). Si se desasigna (saId vacío), queda sin asignar/sin tomar y vuelve a "abierto".
+// Todo cambio queda en el historial de asignaciones.
 const assignTicket = async (req, res) => {
   const { ticketId } = req.params
   const { saId, saName } = req.body
   try {
-    const [[tkt]] = await pool.query('SELECT account_id FROM support_tickets WHERE id=?', [ticketId])
-    await pool.query('UPDATE support_tickets SET assigned_to=?,updated_at=? WHERE id=?', [JSON.stringify({ saId, saName }), Date.now(), ticketId])
+    const [[tkt]] = await pool.query('SELECT account_id, assign_history FROM support_tickets WHERE id=?', [ticketId])
+    if (!tkt) return res.status(404).json({ error: 'Ticket no encontrado' })
+    const clearing = !saId
+    const who = clearing ? null : JSON.stringify({ saId, saName })
+    const hist = histEntry(tkt.assign_history, { saId, saName, action: clearing ? 'unassigned' : 'assigned', by: req.user })
+    if (clearing) {
+      await pool.query('UPDATE support_tickets SET assigned_to=NULL,taken_by=NULL,taken_at=NULL,status=IF(status="closed",status,"open"),assign_history=?,updated_at=? WHERE id=?', [hist, Date.now(), ticketId])
+    } else {
+      await pool.query('UPDATE support_tickets SET assigned_to=?,taken_by=?,taken_at=?,status=IF(status="closed",status,"in_progress"),assign_history=?,updated_at=? WHERE id=?', [who, who, Date.now(), hist, Date.now(), ticketId])
+    }
     socket.broadcast('support:updated', { accId: tkt?.account_id })
     res.json({ ok: true })
-  } catch (err) { res.status(500).json({ error: 'Error interno' }) }
+  } catch (err) { console.error('[support assign]', err); res.status(500).json({ error: 'Error interno' }) }
 }
 
 // Calificación (1-10) + nota que deja quien creó el ticket, una vez cerrado.
@@ -185,15 +205,16 @@ const takeTicket = async (req, res) => {
   if (req.user?.type !== 'superadmin') return res.status(403).json({ error: 'Solo un super admin puede tomar tickets.' })
   const saId = req.user.id, saName = req.user.name
   try {
-    const [[tkt]] = await pool.query('SELECT account_id, taken_by FROM support_tickets WHERE id=?', [ticketId])
+    const [[tkt]] = await pool.query('SELECT account_id, taken_by, assign_history FROM support_tickets WHERE id=?', [ticketId])
     if (!tkt) return res.status(404).json({ error: 'Ticket no encontrado' })
     const taken = parseJ(tkt.taken_by, null)
     if (taken && taken.saId && taken.saId !== saId) {
       return res.status(409).json({ error: `Ya lo tomó ${taken.saName || 'otro asesor'}.`, takenBy: taken })
     }
     const me = JSON.stringify({ saId, saName })
+    const hist = histEntry(tkt.assign_history, { saId, saName, action: 'taken', by: req.user })
     // Tomar un ticket lo pasa automáticamente a "en proceso" (si no está cerrado).
-    await pool.query('UPDATE support_tickets SET assigned_to=?,taken_by=?,taken_at=?,status=IF(status="closed",status,"in_progress"),updated_at=? WHERE id=?', [me, me, Date.now(), Date.now(), ticketId])
+    await pool.query('UPDATE support_tickets SET assigned_to=?,taken_by=?,taken_at=?,status=IF(status="closed",status,"in_progress"),assign_history=?,updated_at=? WHERE id=?', [me, me, Date.now(), hist, Date.now(), ticketId])
     socket.broadcast('support:updated', { accId: tkt.account_id })
     res.json({ ok: true })
   } catch (err) { console.error('[support take]', err); res.status(500).json({ error: 'Error interno' }) }

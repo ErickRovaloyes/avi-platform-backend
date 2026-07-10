@@ -441,6 +441,8 @@ app.use('/api',                recontactRoutes)
     // Fecha aproximada de entrega de la solución (ETA) + momento real de cierre (entrega).
     "ALTER TABLE support_tickets ADD COLUMN eta BIGINT",
     "ALTER TABLE support_tickets ADD COLUMN closed_at BIGINT",
+    // Historial de tomas/asignaciones (para supervisar quién ha tomado cada ticket).
+    "ALTER TABLE support_tickets ADD COLUMN assign_history JSON",
     `CREATE TABLE IF NOT EXISTS flow_executions (
        id BIGINT PRIMARY KEY AUTO_INCREMENT,
        account_id VARCHAR(50) NOT NULL,
