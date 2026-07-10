@@ -11,6 +11,7 @@ const getAllTickets = async (req, res) => {
       id: t.id, accId: t.account_id, accountName: t.account_name,
       subject: t.subject, status: t.status, assignedTo: parseJ(t.assigned_to, null),
       refs: parseJ(t.refs, []),
+      rating: t.rating != null ? Number(t.rating) : null, ratingNote: t.rating_note || '', ratedAt: t.rated_at || null,
       messages: messages.filter(m => m.ticket_id === t.id).map(m => ({
         id: m.id, role: m.role, authorId: m.author_id, authorName: m.author_name,
         content: m.content, ts: m.ts, media: parseJ(m.media, null),
@@ -110,4 +111,25 @@ const assignTicket = async (req, res) => {
   } catch (err) { res.status(500).json({ error: 'Error interno' }) }
 }
 
-module.exports = { getAllTickets, createTicket, addMessage, updateTicket, updateStatus, assignTicket }
+// Calificación (1-10) + nota que deja quien creó el ticket, una vez cerrado.
+const submitRating = async (req, res) => {
+  const { ticketId } = req.params
+  const rating = Math.round(Number(req.body?.rating))
+  const note = String(req.body?.note || '').slice(0, 1000)
+  if (!Number.isFinite(rating) || rating < 1 || rating > 10) return res.status(400).json({ error: 'La calificación debe ser del 1 al 10.' })
+  try {
+    const [[tkt]] = await pool.query('SELECT account_id, status, rating FROM support_tickets WHERE id=?', [ticketId])
+    if (!tkt) return res.status(404).json({ error: 'Ticket no encontrado' })
+    // Solo quien pertenece a la cuenta del ticket puede calificar (no el soporte/super admin).
+    if (req.user?.type !== 'superadmin' && req.user?.accountId && req.user.accountId !== tkt.account_id) {
+      return res.status(403).json({ error: 'No puedes calificar este ticket.' })
+    }
+    if (tkt.status !== 'closed') return res.status(400).json({ error: 'Solo puedes calificar un ticket cerrado.' })
+    await pool.query('UPDATE support_tickets SET rating=?, rating_note=?, rated_at=?, updated_at=? WHERE id=?',
+      [rating, note, Date.now(), Date.now(), ticketId])
+    socket.broadcast('support:updated', { accId: tkt.account_id })
+    res.json({ ok: true })
+  } catch (err) { console.error('[support rating]', err); res.status(500).json({ error: 'Error interno' }) }
+}
+
+module.exports = { getAllTickets, createTicket, addMessage, updateTicket, updateStatus, assignTicket, submitRating }

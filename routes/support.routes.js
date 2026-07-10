@@ -9,5 +9,6 @@ router.post('/:ticketId/messages',          authMiddleware, ctrl.addMessage)
 router.put('/:ticketId',                    authMiddleware, ctrl.updateTicket)
 router.put('/:ticketId/status',             authMiddleware, ctrl.updateStatus)
 router.put('/:ticketId/assign',             authMiddleware, ctrl.assignTicket)
+router.put('/:ticketId/rating',             authMiddleware, ctrl.submitRating)
 
 module.exports = router

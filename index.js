@@ -427,6 +427,10 @@ app.use('/api',                recontactRoutes)
      )`,
     "ALTER TABLE crm_tasks ADD COLUMN refs JSON",
     "ALTER TABLE support_tickets ADD COLUMN refs JSON",
+    // Calificación del asesor (1-10) + nota, que deja quien creó el ticket al cerrarse.
+    "ALTER TABLE support_tickets ADD COLUMN rating INT",
+    "ALTER TABLE support_tickets ADD COLUMN rating_note TEXT",
+    "ALTER TABLE support_tickets ADD COLUMN rated_at BIGINT",
     `CREATE TABLE IF NOT EXISTS flow_executions (
        id BIGINT PRIMARY KEY AUTO_INCREMENT,
        account_id VARCHAR(50) NOT NULL,
