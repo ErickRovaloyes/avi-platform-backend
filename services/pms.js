@@ -84,6 +84,19 @@ async function getRoomsCached(accId, cfg) {
   return rooms
 }
 
+// Ficha de la propiedad (con FOTOS) cacheada por cuenta+propiedad.
+const _propCache = new Map()   // accId:propertyId → { at, property }
+async function getPropertyCached(accId, cfg) {
+  const prov = providers.getProvider(cfg.provider)
+  if (!prov || typeof prov.getProperty !== 'function') return null
+  const ck = `${accId}:${cfg.propertyId || 'default'}`
+  const hit = _propCache.get(ck)
+  if (hit && Date.now() - hit.at < ROOMS_TTL) return hit.property
+  const property = await prov.getProperty(cfg).catch(() => null)
+  _propCache.set(ck, { at: Date.now(), property })
+  return property
+}
+
 // Resuelve la propiedad indicada por el asistente (nombre o id) contra la lista
 // del login. Devuelve el cfg con esa propiedad, o null si no la reconoce.
 function resolveProperty(cfg, propArg) {
@@ -224,31 +237,44 @@ async function toolCall(accId, fn, args = {}, { convId, agId } = {}) {
 
   // ── Ver habitaciones (con fotos) ──────────────────────────────────────────
   if (fn === 'ver_habitaciones') {
-    const rooms = await getRoomsCached(accId, scoped)
-    if (!rooms.length) return { text: 'El hotel no tiene habitaciones publicadas en el PMS.' }
+    const [rooms, property] = await Promise.all([
+      getRoomsCached(accId, scoped),
+      getPropertyCached(accId, scoped).catch(() => null),
+    ])
+    const propPhotos = (property?.photos || []).filter(Boolean)
+    const propName = property?.name || cfg.hotelName || ''
+
     const wanted = norm(args.habitacion || '')
-    if (wanted) {
+    if (wanted && rooms.length) {
       const room = rooms.find(r => norm(r.name).includes(wanted) || wanted.includes(norm(r.name))) ||
         rooms.find(r => norm(r.name).split(/\s+/).some(w => wanted.includes(w) && w.length > 3))
       if (!room) return { text: `No encontré una habitación llamada "${args.habitacion}". Las disponibles son: ${rooms.map(r => r.name).join(', ')}.` }
-      const media = room.photos.slice(0, pub.maxPhotos).map((url, i) => ({ url, caption: i === 0 ? `${room.name} (capacidad ${room.capacity})` : '' }))
+      // Fotos de la habitación; si no tiene, usa las de la propiedad.
+      const photos = (room.photos?.length ? room.photos : propPhotos)
+      const media = photos.slice(0, pub.maxPhotos).map((url, i) => ({ url, caption: i === 0 ? `${room.name} (capacidad ${room.capacity})` : '' }))
       const plans = (room.rates || []).map(rt => `• ${rt.name}${rt.mealType === 'breakfast' ? ' (con desayuno)' : ''}`).join('\n')
-      // Si el PMS no expone fotos (p.ej. Kunas), NO afirmes que enviaste fotos.
       const photoTxt = media.length
         ? `Envié ${media.length} foto(s) de "${room.name}" al cliente.`
-        : `Este hotel no tiene fotos publicadas para "${room.name}" en el PMS, así que no hay imágenes para enviar; describe la habitación con la ficha.`
+        : `No hay fotos publicadas para "${room.name}" en el PMS; describe la habitación con la ficha.`
       return {
         text: `${photoTxt} Ficha: capacidad ${room.capacity} persona(s). ${room.description || ''}${plans ? `\nPlanes: \n${plans}` : ''}\nPara precios exactos usa ver_disponibilidad_hotel con las fechas.`,
         media,
       }
     }
-    // Panorama general: 1 foto de portada por habitación (máx 6) si el PMS las expone.
-    const media = rooms.slice(0, 6).filter(r => r.photos[0]).map(r => ({ url: r.photos[0], caption: `${r.name} · ${r.capacity} persona(s)` }))
+
+    // Panorama: portada de cada habitación; si no hay fotos por habitación, envía las de la propiedad.
+    let media = rooms.slice(0, 6).filter(r => r.photos?.[0]).map(r => ({ url: r.photos[0], caption: `${r.name} · ${r.capacity} persona(s)` }))
+    if (!media.length && propPhotos.length) media = propPhotos.slice(0, 6).map((url, i) => ({ url, caption: i === 0 ? propName : '' }))
+
+    if (!rooms.length) {
+      // Sin habitaciones publicadas: al menos envía las fotos de la propiedad.
+      if (media.length) return { text: `Envié ${media.length} foto(s)${propName ? ` de ${propName}` : ''} al cliente.${property?.description ? ` ${property.description}` : ''}\nPara ver disponibilidad y precios usa ver_disponibilidad_hotel con las fechas.`, media }
+      return { text: `El hotel no tiene habitaciones publicadas en el PMS${propName ? ` para ${propName}` : ''}.` }
+    }
+
     const list = rooms.map(r => `• ${r.name} — capacidad ${r.capacity}${r.description ? ` — ${String(r.description).slice(0, 110)}` : ''}`).join('\n')
-    const intro = media.length
-      ? `Habitaciones del hotel (envié una foto de cada una que tiene imagen):`
-      : `Habitaciones del hotel (este PMS no expone fotos por API, así que comparto la ficha sin imágenes):`
-    return { text: `${intro}\n${list}\n\nPide "ver_habitaciones" con el nombre para su ficha completa, o consulta disponibilidad con fechas.`, media }
+    const intro = media.length ? `Habitaciones${propName ? ` de ${propName}` : ' del hotel'} (envié ${media.length} foto(s)):` : `Habitaciones${propName ? ` de ${propName}` : ' del hotel'}:`
+    return { text: `${intro}\n${list}\n\nPide "ver_habitaciones" con el nombre para su ficha, o consulta disponibilidad con fechas.`, media }
   }
 
   // ── Disponibilidad + cotización ───────────────────────────────────────────
