@@ -32,7 +32,9 @@ function publicConfig(cfg) {
     ? !!(c.token && (c.apiKey || (c.username && c.password)))
     : !!c.token
   const connected = !!(c.provider && prov && !prov.comingSoon && hasCreds)
-  const props = Array.isArray(c.properties) ? c.properties.map(p => ({ id: String(p.id), name: p.name || `Propiedad ${p.id}` })) : []
+  const blockedProps = (Array.isArray(c.blockedProperties) ? c.blockedProperties : []).map(String)
+  const allProps = Array.isArray(c.properties) ? c.properties.map(p => ({ id: String(p.id), name: p.name || `Propiedad ${p.id}` })) : []
+  const props = allProps.filter(p => !blockedProps.includes(p.id))   // solo NO bloqueadas para la IA
   return {
     connected,
     provider: c.provider || '',
@@ -131,11 +133,21 @@ function sendPhotoBatch(pool, key, { maxPhotos, reset, label, extra }) {
   return { text: `${head}${tail}${extra ? `\n${extra}` : ''}`, media }
 }
 
+// Bloqueo: propiedad completa o alojamiento (habitación) dentro de una propiedad.
+const roomBlockKey = (propId, roomId) => `${propId || 'default'}::${roomId}`
+function isRoomBlocked(cfg, propId, roomId) {
+  return (Array.isArray(cfg.blockedRooms) ? cfg.blockedRooms : []).includes(roomBlockKey(propId, roomId))
+}
+function filterBlockedRooms(cfg, propId, rooms) {
+  return (rooms || []).filter(r => !isRoomBlocked(cfg, propId, r.id))
+}
+
 // Resuelve la propiedad indicada por el asistente (nombre o id) contra la lista
-// del login. Devuelve el cfg con esa propiedad, o null si no la reconoce.
+// del login (excluyendo las BLOQUEADAS). Devuelve el cfg con esa propiedad, o null.
 function resolveProperty(cfg, propArg) {
-  const props = Array.isArray(cfg.properties) ? cfg.properties : []
-  if (!propArg || props.length <= 1) return { id: cfg.propertyId, name: cfg.hotelName || (props[0]?.name || ''), cfg }
+  const blocked = (Array.isArray(cfg.blockedProperties) ? cfg.blockedProperties : []).map(String)
+  const props = (Array.isArray(cfg.properties) ? cfg.properties : []).filter(p => !blocked.includes(String(p.id)))
+  if (!propArg || props.length <= 1) return { id: props[0]?.id || cfg.propertyId, name: cfg.hotelName || (props[0]?.name || ''), cfg: props[0]?.id ? { ...cfg, propertyId: String(props[0].id) } : cfg }
   const q = norm(propArg)
   const p = props.find(x => norm(x.name) === q)
     || props.find(x => norm(x.name).includes(q) || q.includes(norm(x.name)))
@@ -251,8 +263,8 @@ async function toolCall(accId, fn, args = {}, { convId, agId } = {}) {
   if (!pub.connected) return { text: 'El PMS no está conectado. El equipo debe configurarlo en Zona IA → PMS.' }
   const prov = providers.getProvider(cfg.provider)
   const currency = pub.currency
-  const props = Array.isArray(cfg.properties) ? cfg.properties : []
-  const multi = props.length > 1
+  const props = pub.properties        // ya excluye las propiedades BLOQUEADAS
+  const multi = pub.multiProperty
 
   // ── Ver propiedades (hoteles del grupo, p.ej. Kunas multi-propiedad) ──────
   if (fn === 'ver_propiedades') {
@@ -273,10 +285,11 @@ async function toolCall(accId, fn, args = {}, { convId, agId } = {}) {
   // Cada llamada envía fotos NUEVAS (no repetidas). Al agotarse, avisa; con
   // desde_inicio=true reenvía desde el principio.
   if (fn === 'ver_habitaciones') {
-    const [rooms, property] = await Promise.all([
+    const [roomsAll, property] = await Promise.all([
       getRoomsCached(accId, scoped),
       getPropertyCached(accId, scoped).catch(() => null),
     ])
+    const rooms = filterBlockedRooms(cfg, scoped.propertyId, roomsAll)   // oculta alojamientos bloqueados
     const propPhotos = (property?.photos || []).filter(Boolean)
     const propName = property?.name || cfg.hotelName || ''
     const reset = args.desde_inicio === true || /^(true|1|si|sí)$/i.test(String(args.desde_inicio || ''))
@@ -287,11 +300,13 @@ async function toolCall(accId, fn, args = {}, { convId, agId } = {}) {
       const room = rooms.find(r => norm(r.name).includes(wanted) || wanted.includes(norm(r.name))) ||
         rooms.find(r => norm(r.name).split(/\s+/).some(w => wanted.includes(w) && w.length > 3))
       if (!room) return { text: `No encontré una habitación llamada "${args.habitacion}". Las disponibles son: ${rooms.map(r => r.name).join(', ')}.` }
-      // Pool de fotos de la habitación; si no tiene, usa las de la propiedad.
-      const pool = (room.photos?.length ? room.photos : propPhotos)
       const plans = (room.rates || []).map(rt => `• ${rt.name}${rt.mealType === 'breakfast' ? ' (con desayuno)' : ''}`).join('\n')
-      const extra = `Ficha: capacidad ${room.capacity} persona(s). ${room.description || ''}${plans ? `\nPlanes: \n${plans}` : ''}`
-      return sendPhotoBatch(pool, photoKey(convId, scoped.propertyId, room.id), { maxPhotos, reset, label: room.name, extra })
+      const ficha = `Ficha: capacidad ${room.capacity} persona(s). ${room.description || ''}${plans ? `\nPlanes: \n${plans}` : ''}`
+      // SOLO las fotos propias del alojamiento (no las de la propiedad, para no confundirlas).
+      if (!room.photos?.length) {
+        return { text: `El alojamiento "${room.name}" no tiene fotos propias publicadas en el PMS. ${ficha}\nNO envíes fotos de la propiedad como si fueran de esta habitación. Si el cliente quiere ver fotos generales del hotel, ofrécele "ver_habitaciones" sin especificar habitación.` }
+      }
+      return sendPhotoBatch(room.photos, photoKey(convId, scoped.propertyId, room.id), { maxPhotos, reset, label: room.name, extra: ficha })
     }
 
     // Panorama / propiedad: pool = TODAS las fotos de las habitaciones + de la propiedad.
@@ -312,7 +327,7 @@ async function toolCall(accId, fn, args = {}, { convId, agId } = {}) {
     const adults = Math.max(1, Number(args.adultos) || 1)
     const children = Number(args.ninos) || 0
     const query = { checkin, checkout, adults, children, infants: Number(args.infantes) || 0, rooms: Number(args.habitaciones) || undefined, promoCode: args.codigo_promocional || undefined }
-    const { rooms: availRooms } = await prov.getAvailability(scoped, query)
+    const availRooms = filterBlockedRooms(cfg, scoped.propertyId, (await prov.getAvailability(scoped, query)).rooms)
     let options = buildOptions(availRooms, { adults, children })
 
     if (!options.length) {
@@ -324,7 +339,7 @@ async function toolCall(accId, fn, args = {}, { convId, agId } = {}) {
         const co = addDays(ci, nights)
         try {
           const r = await prov.getAvailability(scoped, { ...query, checkin: ci, checkout: co })
-          const opts = buildOptions(r.rooms, { adults, children })
+          const opts = buildOptions(filterBlockedRooms(cfg, scoped.propertyId, r.rooms), { adults, children })
           if (opts.length) { alts.push({ checkin: ci, checkout: co, best: opts[0] }); if (alts.length >= 2) break }
         } catch {}
       }
@@ -364,7 +379,7 @@ async function toolCall(accId, fn, args = {}, { convId, agId } = {}) {
     const cacheValid = cached && Date.now() - cached.at < OPTIONS_TTL && cached.checkin === checkin && cached.checkout === checkout
     let target = null
     if (args.opcion && cacheValid) target = cached.options.find(o => o.n === Number(args.opcion)) || null
-    const { rooms: liveRooms } = await prov.getAvailability(scoped, { checkin, checkout, adults, children, promoCode: args.codigo_promocional || cached?.promoCode || undefined })
+    const liveRooms = filterBlockedRooms(cfg, scoped.propertyId, (await prov.getAvailability(scoped, { checkin, checkout, adults, children, promoCode: args.codigo_promocional || cached?.promoCode || undefined })).rooms)
     const liveOptions = buildOptions(liveRooms, { adults, children })
     if (!liveOptions.length) return { text: `Ya no hay disponibilidad del ${checkin} al ${checkout}. Consulta otras fechas con ver_disponibilidad_hotel.` }
     if (target) {
@@ -467,19 +482,20 @@ const mapRoomPublic = r => ({
 })
 
 // Propiedades accesibles (Kunas puede tener varias). HosRoom: 0/1 (el propio hotel).
-// Estable: primero usa las propiedades PERSISTIDAS (sin login); solo si no hay,
-// consulta al proveedor (login) y las persiste para las próximas veces.
+// Para el PANEL admin: devuelve TODAS con su flag `blocked` (para poder togglear).
 async function listProperties(accId) {
   const cfg = await loadConfig(accId)
-  if (Array.isArray(cfg?.properties) && cfg.properties.length) return cfg.properties
-  const prov = providers.getProvider(cfg?.provider)
-  if (!prov) return []
-  if (typeof prov.listProperties === 'function') {
-    const list = (await prov.listProperties(cfg).catch(() => [])).map(p => ({ id: String(p.id), name: p.name || `Propiedad ${p.id}` }))
-    if (list.length) await saveConfig(accId, { ...cfg, properties: list }).catch(() => {})
-    return list
+  const blocked = (Array.isArray(cfg?.blockedProperties) ? cfg.blockedProperties : []).map(String)
+  let list = []
+  if (Array.isArray(cfg?.properties) && cfg.properties.length) list = cfg.properties
+  else {
+    const prov = providers.getProvider(cfg?.provider)
+    if (prov && typeof prov.listProperties === 'function') {
+      list = (await prov.listProperties(cfg).catch(() => [])).map(p => ({ id: String(p.id), name: p.name || `Propiedad ${p.id}` }))
+      if (list.length) await saveConfig(accId, { ...cfg, properties: list }).catch(() => {})
+    } else if (cfg?.hotelName) list = [{ id: cfg.propertyId || 'default', name: cfg.hotelName }]
   }
-  return cfg?.hotelName ? [{ id: cfg.propertyId || 'default', name: cfg.hotelName }] : []
+  return list.map(p => ({ id: String(p.id), name: p.name || `Propiedad ${p.id}`, blocked: blocked.includes(String(p.id)) }))
 }
 
 // Habitaciones con ficha, fotos y planes (opcionalmente de una propiedad concreta).
@@ -490,13 +506,16 @@ async function listRooms(accId, { propertyId } = {}) {
   if (!publicConfig(cfg).connected) throw new Error('El PMS no está conectado.')
   const prov = providers.getProvider(cfg.provider)
   const c = propertyId ? { ...cfg, propertyId: String(propertyId) } : cfg
+  const propId = c.propertyId || (Array.isArray(cfg.properties) && cfg.properties[0]?.id) || 'default'
+  const blockedProps = (Array.isArray(cfg.blockedProperties) ? cfg.blockedProperties : []).map(String)
   let property = null
   if (typeof prov.getProperty === 'function') {
     const p = await prov.getProperty(c).catch(() => null)
-    if (p) property = { name: p.name || '', description: p.description || '', photos: Array.isArray(p.photos) ? p.photos.filter(Boolean) : [] }
+    if (p) property = { id: String(propId), name: p.name || '', description: p.description || '', photos: Array.isArray(p.photos) ? p.photos.filter(Boolean) : [], blocked: blockedProps.includes(String(propId)) }
   }
   const rooms = await prov.getRooms(c)
-  return { rooms: rooms.map(mapRoomPublic), property }
+  // Panel admin: TODAS las habitaciones con su flag `blocked` (para togglear).
+  return { rooms: rooms.map(r => ({ ...mapRoomPublic(r), blocked: isRoomBlocked(cfg, propId, r.id) })), property, propertyId: String(propId) }
 }
 
 // Disponibilidad para un rango (una sola consulta): habitaciones con precio.

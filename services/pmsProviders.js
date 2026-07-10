@@ -445,12 +445,12 @@ const kunas = {
     return this._post(cfg, '/api/calendar/data/calendar', body)
   },
   // Mapea un room_type del calendario a la ficha normalizada (tolerante de campos).
-  // Las fotos pueden estar en el tipo o en sus habitaciones físicas anidadas.
-  _mapRoomType(rt, propImages = []) {
+  // Las fotos son SOLO las del alojamiento (propias o de sus habitaciones físicas
+  // anidadas). NO se sustituyen por las de la propiedad (eso confundía las fotos).
+  _mapRoomType(rt) {
     let photos = imagesOf(rt)
     for (const rm of (Array.isArray(rt.rooms) ? rt.rooms : [])) photos = photos.concat(imagesOf(rm))
     photos = [...new Set(photos)]
-    if (!photos.length && propImages.length) photos = propImages.slice(0, 6)
     return {
       id: String(first(rt.id_room_types, rt.id, rt.id_room_type, '')),
       name: first(rt.name, rt.shortname, rt.room_type, 'Habitación'),
@@ -478,17 +478,12 @@ const kunas = {
     }
   },
 
-  // Habitaciones (tipos) desde el calendario. Respaldo de fotos = fotos de ESTA
-  // propiedad (ya filtradas por photoSkip), para no mezclar con otras.
+  // Habitaciones (tipos) desde el calendario, con SUS fotos propias.
   async getRooms(cfg) {
     const date = new Date().toISOString().slice(0, 10)
-    const [data, prop] = await Promise.all([
-      this._calendar(cfg, date),
-      this.getProperty(cfg).catch(() => ({ photos: [] })),
-    ])
-    const propImages = prop.photos || []
+    const data = await this._calendar(cfg, date)
     const list = deepFindArray(data, 'room_types') || (Array.isArray(data) ? data : arr(first(data?.data, data?.rooms, [])))
-    return (list || []).map(rt => this._mapRoomType(rt, propImages)).filter(r => r.id || r.name)
+    return (list || []).map(rt => this._mapRoomType(rt)).filter(r => r.id || r.name)
   },
 
   // Disponibilidad real por rango: /api/avail/data/avail → { roomTypeId: { fecha: cupo } }.
