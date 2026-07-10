@@ -462,15 +462,21 @@ const kunas = {
     }
   },
 
-  // Datos de la propiedad (incluye sus FOTOS): /api/property/data/property.
-  // Aplica photoSkip: descarta las primeras X fotos (p.ej. el logo de la empresa).
+  // Datos de la propiedad + sus FOTOS: /api/property/data/property.
+  // PRECISO: las fotos reales están en property.images[].url. El logo (engine_logo)
+  // es un campo aparte y NO se incluye. photoSkip descarta las primeras X.
   async getProperty(cfg) {
     const data = await this._post(cfg, '/api/property/data/property', {})
     const p = (data && typeof data === 'object' && !Array.isArray(data)) ? (data.property || data.data || data) : {}
-    let photos = imagesOf(data, cfg.baseUrl)   // recorre TODA la respuesta de ESTA propiedad
+    let photos = (Array.isArray(p.images) ? p.images : [])
+      .map(im => (typeof im === 'string' ? im : first(im.url, im.src, im.image, im.path, im.original)))
+      .filter(Boolean)
+    // Respaldo tolerante si no vino el array images (otra forma), SIN logos.
+    if (!photos.length) photos = imagesOf(data, cfg.baseUrl).filter(u => !/logo|favicon/i.test(u))
     const skip = Math.max(0, Number(cfg.photoSkip) || 0)
     if (skip) photos = photos.slice(skip)
     return {
+      id: String(first(p.id_properties, p.id, '')),
       name: first(p.name, p.shortname, cfg.hotelName, ''),
       description: first(p.description, p.desc, '') || '',
       photos,
