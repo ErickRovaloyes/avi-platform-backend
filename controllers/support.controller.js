@@ -26,6 +26,7 @@ const getAllTickets = async (req, res) => {
       subject: t.subject, status: t.status, assignedTo: parseJ(t.assigned_to, null),
       takenBy: parseJ(t.taken_by, null), takenAt: t.taken_at || null, priority: t.priority || null,
       eta: t.eta || null, closedAt: t.closed_at || null,
+      reported: !!t.reported, reportNote: t.report_note || '', reportedAt: t.reported_at || null, reportedBy: parseJ(t.reported_by, null),
       assignHistory: isSA ? parseJ(t.assign_history, []) : [],
       notes: isSA ? parseJ(t.notes, []) : [],   // notas internas: solo para super admins
       refs: parseJ(t.refs, []),
@@ -294,4 +295,35 @@ const setEta = async (req, res) => {
   } catch (err) { console.error('[support eta]', err); res.status(500).json({ error: 'Error interno' }) }
 }
 
-module.exports = { getAllTickets, createTicket, addMessage, updateTicket, updateStatus, assignTicket, submitRating, takeTicket, setPriority, addNote, deleteNote, setEta }
+// Reporte del ticket. El cliente (dueño de la cuenta) lo reporta con una nota; el super
+// admin puede resolver/limpiar el reporte. Deja constancia en el chat (mensaje de sistema).
+const reportTicket = async (req, res) => {
+  const { ticketId } = req.params
+  const reported = req.body?.reported !== false
+  const note = String(req.body?.note || '').trim().slice(0, 1000)
+  try {
+    const [[tkt]] = await pool.query('SELECT account_id FROM support_tickets WHERE id=?', [ticketId])
+    if (!tkt) return res.status(404).json({ error: 'Ticket no encontrado' })
+    const isSA = req.user?.type === 'superadmin'
+    const ts = Date.now()
+    if (reported) {
+      // Reportar: cliente de la cuenta (o super admin).
+      if (!isSA && req.user?.accountId && req.user.accountId !== tkt.account_id) return res.status(403).json({ error: 'No puedes reportar este ticket.' })
+      if (!note) return res.status(400).json({ error: 'Escribe una nota del reporte.' })
+      const by = JSON.stringify({ id: req.user?.id || null, name: req.user?.name || '' })
+      await pool.query('UPDATE support_tickets SET reported=1, report_note=?, reported_at=?, reported_by=?, updated_at=? WHERE id=?', [note, ts, by, ts, ticketId])
+      await pool.query('INSERT INTO support_messages (id,ticket_id,role,author_id,author_name,content,ts,media) VALUES (?,?,?,?,?,?,?,?)',
+        ['msg_' + uid(), ticketId, 'system', req.user?.id || null, req.user?.name || '', `⚠ El cliente reportó este ticket: ${note}`, ts, null])
+    } else {
+      // Resolver/limpiar el reporte: solo super admin.
+      if (!isSA) return res.status(403).json({ error: 'Solo un super admin puede resolver el reporte.' })
+      await pool.query('UPDATE support_tickets SET reported=0, updated_at=? WHERE id=?', [ts, ticketId])
+      await pool.query('INSERT INTO support_messages (id,ticket_id,role,author_id,author_name,content,ts,media) VALUES (?,?,?,?,?,?,?,?)',
+        ['msg_' + uid(), ticketId, 'system', req.user.id, req.user.name, '✅ El reporte del ticket fue atendido por soporte.', ts, null])
+    }
+    socket.broadcast('support:updated', { accId: tkt.account_id, lastRole: 'system' })
+    res.json({ ok: true })
+  } catch (err) { console.error('[support report]', err); res.status(500).json({ error: 'Error interno' }) }
+}
+
+module.exports = { getAllTickets, createTicket, addMessage, updateTicket, updateStatus, assignTicket, submitRating, takeTicket, setPriority, addNote, deleteNote, setEta, reportTicket }

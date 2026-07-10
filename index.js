@@ -443,6 +443,11 @@ app.use('/api',                recontactRoutes)
     "ALTER TABLE support_tickets ADD COLUMN closed_at BIGINT",
     // Historial de tomas/asignaciones (para supervisar quién ha tomado cada ticket).
     "ALTER TABLE support_tickets ADD COLUMN assign_history JSON",
+    // Reporte del ticket por el cliente (con nota). Los reportados salen en su sección.
+    "ALTER TABLE support_tickets ADD COLUMN reported TINYINT(1) DEFAULT 0",
+    "ALTER TABLE support_tickets ADD COLUMN report_note TEXT",
+    "ALTER TABLE support_tickets ADD COLUMN reported_at BIGINT",
+    "ALTER TABLE support_tickets ADD COLUMN reported_by JSON",
     `CREATE TABLE IF NOT EXISTS flow_executions (
        id BIGINT PRIMARY KEY AUTO_INCREMENT,
        account_id VARCHAR(50) NOT NULL,
