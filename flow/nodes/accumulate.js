@@ -46,6 +46,9 @@ async function interpretMsg(ctx, node, m) {
 const accumulateNodes = [
   {
     type: 'accumulate_messages', category: 'conversation', label: 'Acumular mensajes',
+    // Este nodo ESPERA a propósito (debounce de ráfagas + análisis de medios), así
+    // que necesita mucho más que el timeout por defecto de 30 s del motor.
+    timeoutMs: 6 * 60 * 1000,
     async exec(node, ctx) {
       const waitMs = Math.max(0, Math.round((Number(node.data?.waitSeconds) || 0) * 1000))
       const sep = node.data?.separator != null ? node.data.separator : '\n'
