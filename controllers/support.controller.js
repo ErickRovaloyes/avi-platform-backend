@@ -25,6 +25,7 @@ const getAllTickets = async (req, res) => {
       id: t.id, accId: t.account_id, accountName: t.account_name,
       subject: t.subject, status: t.status, assignedTo: parseJ(t.assigned_to, null),
       takenBy: parseJ(t.taken_by, null), takenAt: t.taken_at || null, priority: t.priority || null,
+      notes: isSA ? parseJ(t.notes, []) : [],   // notas internas: solo para super admins
       refs: parseJ(t.refs, []),
       rating: t.rating != null ? Number(t.rating) : null, ratingNote: t.rating_note || '', ratedAt: t.rated_at || null,
       messages: messages.filter(m => m.ticket_id === t.id).map(m => ({
@@ -186,7 +187,8 @@ const takeTicket = async (req, res) => {
       return res.status(409).json({ error: `Ya lo tomó ${taken.saName || 'otro asesor'}.`, takenBy: taken })
     }
     const me = JSON.stringify({ saId, saName })
-    await pool.query('UPDATE support_tickets SET assigned_to=?,taken_by=?,taken_at=?,updated_at=? WHERE id=?', [me, me, Date.now(), Date.now(), ticketId])
+    // Tomar un ticket lo pasa automáticamente a "en proceso" (si no está cerrado).
+    await pool.query('UPDATE support_tickets SET assigned_to=?,taken_by=?,taken_at=?,status=IF(status="closed",status,"in_progress"),updated_at=? WHERE id=?', [me, me, Date.now(), Date.now(), ticketId])
     socket.broadcast('support:updated', { accId: tkt.account_id })
     res.json({ ok: true })
   } catch (err) { console.error('[support take]', err); res.status(500).json({ error: 'Error interno' }) }
@@ -208,4 +210,35 @@ const setPriority = async (req, res) => {
   } catch (err) { console.error('[support priority]', err); res.status(500).json({ error: 'Error interno' }) }
 }
 
-module.exports = { getAllTickets, createTicket, addMessage, updateTicket, updateStatus, assignTicket, submitRating, takeTicket, setPriority }
+// Notas internas del super admin sobre el ticket (no visibles para el cliente).
+const addNote = async (req, res) => {
+  const { ticketId } = req.params
+  if (req.user?.type !== 'superadmin') return res.status(403).json({ error: 'Solo un super admin puede agregar notas.' })
+  const text = String(req.body?.text || '').trim()
+  if (!text) return res.status(400).json({ error: 'La nota está vacía.' })
+  try {
+    const [[tkt]] = await pool.query('SELECT account_id, notes FROM support_tickets WHERE id=?', [ticketId])
+    if (!tkt) return res.status(404).json({ error: 'Ticket no encontrado' })
+    const notes = parseJ(tkt.notes, [])
+    const note = { id: 'note_' + uid(), saId: req.user.id, saName: req.user.name, text: text.slice(0, 2000), ts: Date.now() }
+    notes.push(note)
+    // No toca updated_at: la nota es interna y no debe parecer actividad para el cliente.
+    await pool.query('UPDATE support_tickets SET notes=? WHERE id=?', [JSON.stringify(notes), ticketId])
+    socket.broadcast('support:updated', { accId: tkt.account_id })
+    res.json({ note })
+  } catch (err) { console.error('[support addNote]', err); res.status(500).json({ error: 'Error interno' }) }
+}
+const deleteNote = async (req, res) => {
+  const { ticketId, noteId } = req.params
+  if (req.user?.type !== 'superadmin') return res.status(403).json({ error: 'Solo un super admin puede borrar notas.' })
+  try {
+    const [[tkt]] = await pool.query('SELECT account_id, notes FROM support_tickets WHERE id=?', [ticketId])
+    if (!tkt) return res.status(404).json({ error: 'Ticket no encontrado' })
+    const notes = parseJ(tkt.notes, []).filter(n => n.id !== noteId)
+    await pool.query('UPDATE support_tickets SET notes=? WHERE id=?', [JSON.stringify(notes), ticketId])
+    socket.broadcast('support:updated', { accId: tkt.account_id })
+    res.json({ ok: true })
+  } catch (err) { console.error('[support delNote]', err); res.status(500).json({ error: 'Error interno' }) }
+}
+
+module.exports = { getAllTickets, createTicket, addMessage, updateTicket, updateStatus, assignTicket, submitRating, takeTicket, setPriority, addNote, deleteNote }
