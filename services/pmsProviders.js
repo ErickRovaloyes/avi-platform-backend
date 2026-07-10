@@ -22,6 +22,19 @@ const arr = x => (Array.isArray(x) ? x : (x ? [x] : []))
 // Suma días a una fecha YYYY-MM-DD (usada por Kunas: rangos y disponibilidad).
 function addDays(dateStr, n) { const d = new Date(`${dateStr}T12:00:00Z`); d.setUTCDate(d.getUTCDate() + n); return d.toISOString().slice(0, 10) }
 
+// fetch con TIMEOUT (evita que una llamada al PMS se quede colgada y degrade el
+// backend). Aborta a los `ms` y lanza un error claro.
+async function tfetch(url, opts = {}, ms = 12000) {
+  const ctl = new AbortController()
+  const t = setTimeout(() => ctl.abort(), ms)
+  try {
+    return await fetch(url, { ...opts, signal: ctl.signal })
+  } catch (e) {
+    if (e.name === 'AbortError') throw Object.assign(new Error('El PMS no respondió a tiempo (timeout).'), { status: 504 })
+    throw e
+  } finally { clearTimeout(t) }
+}
+
 // ── Transporte HosRoom ─────────────────────────────────────────────────────────
 // La API de HosRoom usa Authorization: Bearer <token del hotel>. El token debe ser
 // el del HOTEL (no el de un usuario) y el hotel debe tener habilitada la integración
@@ -32,7 +45,7 @@ async function hosFetch(cfg, path, { method = 'GET', body, query } = {}) {
   for (const [k, v] of Object.entries(query || {})) { if (v !== undefined && v !== null && v !== '') url.searchParams.set(k, String(v)) }
   const headers = { 'Accept': 'application/json', 'Authorization': `Bearer ${cfg.token}` }
   if (body) headers['Content-Type'] = 'application/json'
-  const res = await fetch(url, { method, headers, body: body ? JSON.stringify(body) : undefined })
+  const res = await tfetch(url, { method, headers, body: body ? JSON.stringify(body) : undefined })
   const text = await res.text()
   let data = null; try { data = text ? JSON.parse(text) : null } catch { data = text }
   if (!res.ok) {
@@ -277,7 +290,7 @@ const kunas = {
   // Fetch de bajo nivel: envía EXACTAMENTE el cuerpo dado (para el login, que solo lleva token).
   async _rawFetch(cfg, path, body) {
     const base = (cfg.baseUrl || this.defaultBaseUrl).replace(/\/$/, '')
-    const res = await fetch(`${base}${path}`, {
+    const res = await tfetch(`${base}${path}`, {
       method: 'POST', headers: { 'Content-Type': 'application/json', 'Accept': 'application/json' },
       body: JSON.stringify(body || {}),
     })
@@ -319,7 +332,7 @@ const kunas = {
     for (const path of ['/api/user/auth/login', '/api/login/login', '/api/auth/login']) {
       let res, text
       try {
-        res = await fetch(`${base}${path}`, {
+        res = await tfetch(`${base}${path}`, {
           method: 'POST', headers: { 'Content-Type': 'application/json', 'Accept': 'application/json' },
           body: JSON.stringify(loginBody),
         })
