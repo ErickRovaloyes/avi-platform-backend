@@ -63,11 +63,9 @@ const updateMember = async (req, res) => {
   }
 }
 
+// Quita a un miembro de UNA cuenta (nivel cuenta). El owner puede gestionar su equipo.
 const deleteMember = async (req, res) => {
   const { accId, memId } = req.params
-  // Solo un super admin (directo o impersonando) puede eliminar usuarios.
-  const isSA = req.user?.type === 'superadmin' || req.user?.isImpersonating
-  if (!isSA) return res.status(403).json({ error: 'Solo un super admin puede eliminar usuarios.' })
   try {
     await pool.query('DELETE FROM members WHERE id=? AND account_id=?', [memId, accId])
     socket.emit(accId, 'account:updated', { accId })
