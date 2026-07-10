@@ -25,5 +25,7 @@ router.put('/orders/:accId/orders/:id',        authMiddleware, ctrl.updateOrder)
 
 // Proxy del asistente (webchat-en-navegador y motor): mismo patrón que scheduling/pms.
 router.post('/orders/:accId/tool',             ctrl.tool)
+// Seguimiento público del pedido por código (sin auth, rate-limited).
+router.get('/orders/:accId/track/:code',       ctrl.track)
 
 module.exports = router

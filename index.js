@@ -260,6 +260,8 @@ app.use('/api',                recontactRoutes)
     // Datos del cliente en el propio pedido (para el tablero operativo sin join).
     "ALTER TABLE orders ADD COLUMN customer_name VARCHAR(160)",
     "ALTER TABLE orders ADD COLUMN customer_phone VARCHAR(40)",
+    // Referencia del intento de pago (para confirmar el pedido desde el webhook).
+    "ALTER TABLE orders ADD COLUMN payment_ref VARCHAR(80)",
     // Conciencia temporal de la IA: zona horaria local + (opcional) fecha/hora base fija.
     "ALTER TABLE accounts ADD COLUMN ai_timezone VARCHAR(64) DEFAULT 'America/Lima'",
     "ALTER TABLE accounts ADD COLUMN ai_datetime_enabled TINYINT(1) DEFAULT 1",

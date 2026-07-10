@@ -212,6 +212,11 @@ async function upsertCrmContact(accId, { name, phone }, note) {
 }
 
 function shortCode() { return 'P-' + Math.random().toString(36).slice(2, 7).toUpperCase() }
+// Link público de seguimiento del pedido (página /track/:accId/:code).
+function trackUrl(accId, code) {
+  const base = (process.env.PUBLIC_URL || process.env.BASE_URL || 'https://platform.aviasistente.com').replace(/\/$/, '')
+  return `${base}/track/${accId}/${code}`
+}
 
 // ── Despachador de funciones del asistente ─────────────────────────────────────
 async function toolCall(accId, fn, args = {}, { convId, agId } = {}) {
@@ -357,13 +362,15 @@ async function toolCall(accId, fn, args = {}, { convId, agId } = {}) {
     )
     socket.emit(accId, 'orders:updated', { accId })
 
-    // Pago en línea (link Wompi) si aplica.
+    // Pago en línea (link Wompi) si aplica. Guarda la referencia para que el webhook
+    // confirme el pedido automáticamente al aprobarse el pago.
     let paymentUrl = ''
     if (paymentMethod === 'online') {
       try {
         const payments = require('./payments')
         const r = await payments.createPaymentLink(accId, { amount: t.total, description: `Pedido ${code}`, currency, convId, agId })
         paymentUrl = r?.url || ''
+        if (r?.reference) await pool.query('UPDATE orders SET payment_ref=? WHERE id=? AND account_id=?', [r.reference, draft.id, accId]).catch(() => {})
       } catch (e) { /* si falla el link, se entrega igual y se cobra contra entrega */ }
     }
 
@@ -375,9 +382,10 @@ async function toolCall(accId, fn, args = {}, { convId, agId } = {}) {
     }
 
     const changeTxt = cashAmount && cashAmount > t.total ? ` Vuelto: ${fmtMoney(cashAmount - t.total, currency)}.` : ''
+    const track = trackUrl(accId, code)
     return {
-      text: `✅ Pedido CONFIRMADO — código ${code}.\n${draft.items.map(it => `• ${it.qty}× ${it.name}`).join('\n')}\n${draft.type === 'delivery' && t.deliveryFee ? `Envío: ${fmtMoney(t.deliveryFee, currency)}\n` : ''}TOTAL: ${fmtMoney(t.total, currency)}\nPago: ${paymentMethod === 'online' ? 'en línea' : 'contra entrega'}.${changeTxt}${paymentUrl ? `\nLink de pago: ${paymentUrl}` : ''}\nConfírmale al cliente el código ${code}${paymentUrl ? ' y envíale el link de pago' : ''}.`,
-      ordered: true, orderCode: code, paymentUrl,
+      text: `✅ Pedido CONFIRMADO — código ${code}.\n${draft.items.map(it => `• ${it.qty}× ${it.name}`).join('\n')}\n${draft.type === 'delivery' && t.deliveryFee ? `Envío: ${fmtMoney(t.deliveryFee, currency)}\n` : ''}TOTAL: ${fmtMoney(t.total, currency)}\nPago: ${paymentMethod === 'online' ? 'en línea' : 'contra entrega'}.${changeTxt}${paymentUrl ? `\nLink de pago: ${paymentUrl}` : ''}\nSeguimiento en vivo: ${track}\nConfírmale al cliente el código ${code}${paymentUrl ? ', envíale el link de pago' : ''} y el link de seguimiento.`,
+      ordered: true, orderCode: code, paymentUrl, trackUrl: track,
     }
   }
 
@@ -389,7 +397,7 @@ async function toolCall(accId, fn, args = {}, { convId, agId } = {}) {
     if (!o) return { text: `No encontré un pedido con el código ${code}. Verifícalo con el cliente.` }
     const ord = mapOrder(o)
     const label = { received: 'recibido', confirmed: 'confirmado', preparing: 'en preparación', ready: 'listo', on_the_way: 'en camino', delivered: 'entregado', canceled: 'cancelado' }[ord.status] || ord.status
-    return { text: `Pedido ${code}: ${label}. ${ord.items.map(it => `${it.qty}× ${it.name}`).join(', ')} · Total ${fmtMoney(ord.total, currency)}.` }
+    return { text: `Pedido ${code}: ${label}. ${ord.items.map(it => `${it.qty}× ${it.name}`).join(', ')} · Total ${fmtMoney(ord.total, currency)}.\nSeguimiento en vivo: ${trackUrl(accId, code)}` }
   }
 
   return { text: `Función de pedidos desconocida: ${fn}` }
@@ -427,9 +435,30 @@ async function notifyCustomerStatus(accId, order, status) {
   } catch (e) { /* no crítico */ }
 }
 
+// ── Pago aprobado → marca el pedido pagado + lo confirma + avisa al cliente ──────
+// Lo invoca el webhook de la pasarela con la `reference` del intento de pago.
+async function markPaidByRef(accId, reference) {
+  try {
+    if (!reference) return
+    const [[o]] = await pool.query('SELECT * FROM orders WHERE account_id=? AND payment_ref=? LIMIT 1', [accId, String(reference)])
+    if (!o || o.payment_status === 'paid') return
+    const wasReceived = o.status === 'received'
+    const tl = parseJ(o.timeline, [])
+    const sets = ['payment_status=?']; const vals = ['paid']
+    if (wasReceived) { sets.push('status=?'); vals.push('confirmed'); tl.push({ status: 'confirmed', at: Date.now(), by: 'pago' }) }
+    sets.push('timeline=?'); vals.push(JSON.stringify(tl))
+    sets.push('updated_at=?'); vals.push(Date.now(), o.id, accId)
+    await pool.query(`UPDATE orders SET ${sets.join(',')} WHERE id=? AND account_id=?`, vals)
+    socket.emit(accId, 'orders:updated', { accId })
+    // Nota interna + aviso de confirmación al cliente (si el pago lo confirmó).
+    internalNote(accId, o.agent_id, o.conv_id, `💳 PAGO CONFIRMADO del pedido ${o.code} — ${fmtMoney(o.total, o.currency)}.`).catch(() => {})
+    if (wasReceived) await notifyCustomerStatus(accId, { conv_id: o.conv_id, code: o.code, total: o.total, currency: o.currency, type: o.type }, 'confirmed')
+  } catch (e) { /* no crítico */ }
+}
+
 module.exports = {
   ORDER_TYPES, TYPE_LABEL, STATUSES,
   loadConfig, saveConfig, publicConfig, publicConfigAsync, normConfig,
   listProducts, listGroups, listZones, listCouriers, mapOrder,
-  toolCall, notifyCustomerStatus,
+  toolCall, notifyCustomerStatus, markPaidByRef,
 }

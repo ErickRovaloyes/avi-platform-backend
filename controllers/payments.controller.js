@@ -72,6 +72,10 @@ const webhook = async (req, res) => {
     if (!out?.matched) return
     const intent = out.intent
     const convId = intent.conv_id, agId = intent.agent_id
+    // Si el pago corresponde a un PEDIDO, lo marca pagado + confirmado + avisa.
+    if (out.status === 'approved' && intent.reference) {
+      try { require('../services/orders').markPaidByRef(accId, intent.reference) } catch {}
+    }
     const amt = `${intent.amount} ${intent.currency}`
     if (convId) {
       const msg = out.status === 'approved'

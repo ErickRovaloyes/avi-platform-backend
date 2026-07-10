@@ -173,7 +173,30 @@ const tool = async (req, res) => {
   } catch (e) { res.status(400).json({ error: e.message }) }
 }
 
+// ── Seguimiento público del pedido por código (rate-limited, solo campos seguros) ─
+const track = async (req, res) => {
+  const ip = String(req.headers['x-forwarded-for'] || '').split(',')[0].trim() || req.socket?.remoteAddress || 'ip'
+  if (tooMany(ip)) return res.status(429).json({ error: 'Demasiadas solicitudes.' })
+  const { accId, code } = req.params
+  try {
+    const [[o]] = await pool.query("SELECT * FROM orders WHERE account_id=? AND UPPER(code)=? AND status<>'draft' LIMIT 1", [accId, String(code || '').toUpperCase()])
+    if (!o) return res.status(404).json({ error: 'No encontramos un pedido con ese código.' })
+    const m = orders.mapOrder(o)
+    const cfg = orders.normConfig(await orders.loadConfig(accId))
+    res.json({
+      code: m.code, status: m.status, type: m.type,
+      items: (m.items || []).map(it => ({ name: it.name, qty: it.qty })),
+      total: m.total, currency: m.currency,
+      paymentStatus: m.paymentStatus, paymentMethod: m.paymentMethod,
+      timeline: m.timeline, createdAt: m.createdAt, updatedAt: m.updatedAt,
+      businessName: cfg.businessName || '',
+      address: m.address?.text ? { text: m.address.text } : null,
+      tableLabel: m.tableLabel || '', scheduledFor: m.scheduledFor || '',
+    })
+  } catch { res.status(500).json({ error: 'Error interno' }) }
+}
+
 module.exports = {
   getConfig, saveConfig, listMenu, saveProduct, deleteProduct, saveGroup, deleteGroup,
-  saveZone, deleteZone, saveCourier, deleteCourier, listOrders, getOrder, updateOrder, tool,
+  saveZone, deleteZone, saveCourier, deleteCourier, listOrders, getOrder, updateOrder, tool, track,
 }
