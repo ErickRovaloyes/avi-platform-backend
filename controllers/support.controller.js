@@ -5,8 +5,22 @@ const { uid, parseJ } = require('../utils')
 
 const getAllTickets = async (req, res) => {
   try {
-    const [tickets]  = await pool.query('SELECT * FROM support_tickets ORDER BY updated_at DESC')
-    const [messages] = await pool.query('SELECT * FROM support_messages ORDER BY ts ASC')
+    // Solo el super admin (panel) ve TODOS los tickets. Un usuario de cuenta (o el super
+    // admin en modo vista) solo ve los tickets de SU cuenta — así no recibe las
+    // calificaciones ni tickets de otras cuentas/asesores.
+    const isSA = req.user?.type === 'superadmin'
+    let tickets
+    if (isSA) {
+      [tickets] = await pool.query('SELECT * FROM support_tickets ORDER BY updated_at DESC')
+    } else {
+      const accId = req.user?.accountId
+      if (!accId) return res.json([])
+      ;[tickets] = await pool.query('SELECT * FROM support_tickets WHERE account_id=? ORDER BY updated_at DESC', [accId])
+    }
+    const ids = tickets.map(t => t.id)
+    const messages = ids.length
+      ? (await pool.query(`SELECT * FROM support_messages WHERE ticket_id IN (${ids.map(() => '?').join(',')}) ORDER BY ts ASC`, ids))[0]
+      : []
     res.json(tickets.map(t => ({
       id: t.id, accId: t.account_id, accountName: t.account_name,
       subject: t.subject, status: t.status, assignedTo: parseJ(t.assigned_to, null),
