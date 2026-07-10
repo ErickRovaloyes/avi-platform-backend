@@ -13,15 +13,27 @@ async function buildSessionFor(email, password) {
     const sa = sas[0]
     return { type: 'superadmin', id: sa.id, name: sa.name, email: sa.email, photo: sa.photo || null }
   }
-  const [rows] = await pool.query(
+  // 1) Verifica la credencial: al menos una fila de miembro activa con email+password.
+  const [authRows] = await pool.query(
     `SELECT m.*, a.name AS accountName, a.id AS accId
      FROM members m JOIN accounts a ON m.account_id = a.id
      WHERE m.email=? AND m.password=? AND m.status='active'`,
     [email, password]
   )
-  if (!rows.length) return null
+  if (!authRows.length) return null
+  // 2) La identidad de un miembro es su EMAIL (puede pertenecer a varias cuentas, y las
+  //    contraseñas entre filas pueden haber quedado desincronizadas por datos legados).
+  //    Una vez verificada la credencial, reunimos TODAS las cuentas activas de ese email
+  //    para que el selector de "cambiar cuenta" las muestre todas (igual que refreshSession).
+  const [rows] = await pool.query(
+    `SELECT m.*, a.name AS accountName, a.id AS accId
+     FROM members m JOIN accounts a ON m.account_id = a.id
+     WHERE m.email=? AND m.status='active'`,
+    [email]
+  )
   const allAccountIds = [...new Set(rows.map(r => r.accId))]
-  const first         = rows[0]
+  // La cuenta activa es aquella cuya credencial se validó (donde el usuario "entró").
+  const first         = authRows[0]
   const [roleRows]    = await pool.query('SELECT * FROM roles WHERE id=?', [first.role_id])
   const role          = roleRows[0]
   return {
