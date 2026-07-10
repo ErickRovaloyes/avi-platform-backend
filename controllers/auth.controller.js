@@ -133,17 +133,25 @@ const impersonate = async (req, res) => {
   try {
     const [[acc]] = await pool.query('SELECT * FROM accounts WHERE id=?', [accountId])
     if (!acc) return res.status(404).json({ error: 'Cuenta no encontrada' })
-    // Modo VISTA: el super admin entra con SU PROPIA identidad (hay varios super admins,
-    // cada uno la suya). No es una impersonación genérica: el perfil muestra a su usuario
-    // super admin real. `isImpersonating` solo activa la barra de "vista" y el botón Volver.
+    // Identidad FRESCA del super admin logueado (desde la BD por su id), por si el token
+    // trae datos viejos. Hay varios super admins: cada uno entra en la vista con SU correo
+    // y nombre, no con una cuenta genérica.
+    const [[sa]] = await pool.query('SELECT id, name, email, photo FROM super_admins WHERE id=?', [req.user.id])
+    const saId    = sa?.id    || req.user.id
+    const saName  = sa?.name  || req.user.name  || 'Super Admin'
+    const saEmail = sa?.email || req.user.email || ''
+    const saPhoto = sa?.photo || req.user.photo || null
+    // Modo VISTA: el super admin entra con SU PROPIA identidad. No es una impersonación
+    // genérica: el perfil muestra a su usuario super admin real. `isImpersonating` solo
+    // activa la barra de "vista" y el botón Volver.
     const session = {
-      type: 'member', id: req.user.id, name: req.user.name, email: req.user.email, photo: req.user.photo || null,
+      type: 'member', id: saId, name: saName, email: saEmail, photo: saPhoto,
       accountId, accountName: acc.name,
       roleId: 'role_owner', allAccountIds: [accountId],
       permissions: { inbox:true, agents:true, channels:true, crm:true, pipeline:true, config:true, admins:true, flows:true, variables:true, tools:true, knowledge:true },
       agentAccess: [], isImpersonating: true,
       // Identidad del super admin que está en la vista (para acciones que la necesitan).
-      saId: req.user.id, saEmail: req.user.email, saName: req.user.name,
+      saId, saEmail, saName,
     }
     res.json({ token: sign(session), session })
   } catch (err) {
