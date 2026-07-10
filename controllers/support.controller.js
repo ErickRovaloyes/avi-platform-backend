@@ -123,6 +123,14 @@ const updateTicket = async (req, res) => {
   try {
     const [[tkt]] = await pool.query('SELECT account_id FROM support_tickets WHERE id=?', [ticketId])
     if (!tkt) return res.status(404).json({ error: 'Ticket no encontrado' })
+    // Solo un super admin puede cambiar el ESTADO (cerrar / reactivar). El cliente no puede
+    // reabrir un ticket cerrado — solo edita cosas propias (p. ej. chats referenciados).
+    if (status !== undefined && req.user?.type !== 'superadmin') {
+      return res.status(403).json({ error: 'Solo un super admin puede cambiar el estado del ticket.' })
+    }
+    if (assignedTo !== undefined && req.user?.type !== 'superadmin') {
+      return res.status(403).json({ error: 'Solo un super admin puede reasignar el ticket.' })
+    }
     const sets = ['updated_at=?']; const vals = [Date.now()]
     if (status     !== undefined) { sets.push('status=?');      vals.push(status) }
     if (assignedTo !== undefined) { sets.push('assigned_to=?'); vals.push(JSON.stringify(assignedTo)) }
@@ -140,6 +148,8 @@ const updateTicket = async (req, res) => {
 const updateStatus = async (req, res) => {
   const { ticketId } = req.params
   const { status } = req.body
+  // Cambiar el estado (cerrar / reactivar) es exclusivo del super admin.
+  if (req.user?.type !== 'superadmin') return res.status(403).json({ error: 'Solo un super admin puede cambiar el estado del ticket.' })
   try {
     const [[tkt]] = await pool.query('SELECT account_id FROM support_tickets WHERE id=?', [ticketId])
     const closedSet = status === 'closed' ? ', closed_at=' + Date.now() : (status ? ', closed_at=NULL' : '')
