@@ -8,11 +8,28 @@ const { uid, parseJ } = require('../utils')
 const createMember = async (req, res) => {
   const { accId } = req.params
   const { id: gId, name, email, password, roleId, agentAccess = [], avatar } = req.body
-  const id = gId || ('mem_' + uid())
+  const cleanEmail = String(email || '').trim()
   try {
+    // Idempotencia: una identidad (email) solo puede tener UNA membresía por cuenta.
+    // Si ya existe, se actualiza (fusiona accesos a agentes) en vez de crear un duplicado.
+    if (cleanEmail) {
+      const [[existing]] = await pool.query('SELECT * FROM members WHERE account_id=? AND email=? LIMIT 1', [accId, cleanEmail])
+      if (existing) {
+        const mergedAccess = [...new Set([...(parseJ(existing.agent_access, [])), ...(Array.isArray(agentAccess) ? agentAccess : [])])]
+        const sets = ['agent_access=?', 'status=?']; const vals = [JSON.stringify(mergedAccess), 'active']
+        if (name)     { sets.push('name=?');    vals.push(name) }
+        if (roleId)   { sets.push('role_id=?'); vals.push(roleId) }
+        if (password) { sets.push('password=?'); vals.push(password) }
+        vals.push(existing.id, accId)
+        await pool.query(`UPDATE members SET ${sets.join(',')} WHERE id=? AND account_id=?`, vals)
+        socket.emit(accId, 'account:updated', { accId })
+        return res.json({ id: existing.id, existed: true })
+      }
+    }
+    const id = gId || ('mem_' + uid())
     await pool.query(
       'INSERT INTO members (id,account_id,name,email,password,avatar,role_id,agent_access,status) VALUES (?,?,?,?,?,?,?,?,?)',
-      [id, accId, name, email, password || '', avatar || (name || '').slice(0, 2).toUpperCase(), roleId, JSON.stringify(agentAccess), 'active']
+      [id, accId, name, cleanEmail, password || '', avatar || (name || '').slice(0, 2).toUpperCase(), roleId, JSON.stringify(agentAccess), 'active']
     )
     socket.emit(accId, 'account:updated', { accId })
     res.json({ id })
@@ -48,11 +65,29 @@ const updateMember = async (req, res) => {
 
 const deleteMember = async (req, res) => {
   const { accId, memId } = req.params
+  // Solo un super admin (directo o impersonando) puede eliminar usuarios.
+  const isSA = req.user?.type === 'superadmin' || req.user?.isImpersonating
+  if (!isSA) return res.status(403).json({ error: 'Solo un super admin puede eliminar usuarios.' })
   try {
     await pool.query('DELETE FROM members WHERE id=? AND account_id=?', [memId, accId])
     socket.emit(accId, 'account:updated', { accId })
     res.json({ ok: true })
   } catch (err) { res.status(500).json({ error: 'Error interno' }) }
+}
+
+// Elimina un usuario por completo (todas sus membresías) — solo super admin.
+// Útil para limpiar identidades duplicadas o dar de baja a alguien de toda la plataforma.
+const deleteUserEverywhere = async (req, res) => {
+  const isSA = req.user?.type === 'superadmin' || req.user?.isImpersonating
+  if (!isSA) return res.status(403).json({ error: 'Solo un super admin puede eliminar usuarios.' })
+  const email = String(req.body?.email || req.params?.email || '').trim()
+  if (!email) return res.status(400).json({ error: 'Email requerido' })
+  try {
+    const [rows] = await pool.query('SELECT DISTINCT account_id FROM members WHERE email=?', [email])
+    const [r] = await pool.query('DELETE FROM members WHERE email=?', [email])
+    for (const { account_id } of rows) socket.emit(account_id, 'account:updated', { accId: account_id })
+    res.json({ ok: true, removed: r.affectedRows || 0 })
+  } catch (err) { console.error('[DELETE USER]', err); res.status(500).json({ error: 'Error interno' }) }
 }
 
 // ── Roles ─────────────────────────────────────────────────────────────────────
@@ -125,7 +160,7 @@ const deleteLabel = async (req, res) => {
 }
 
 module.exports = {
-  createMember, updateMember, deleteMember,
+  createMember, updateMember, deleteMember, deleteUserEverywhere,
   createRole, updateRole, deleteRole,
   createLabel, updateLabel, deleteLabel,
 }

@@ -1109,6 +1109,28 @@ app.use('/api',                recontactRoutes)
   for (const sql of migrations) {
     try { await pool.query(sql) } catch (e) { /* column exists or unsupported */ }
   }
+  // Dedup de membresías: una identidad (email) solo debe tener UNA fila por cuenta.
+  // Datos legados podían tener duplicados (p. ej. invitarse a una cuenta donde ya se era
+  // miembro) → se fusiona el acceso a agentes en la fila que se conserva y se borran las demás.
+  try {
+    const [dups] = await pool.query(
+      `SELECT account_id, email FROM members
+       WHERE email IS NOT NULL AND email<>''
+       GROUP BY account_id, email HAVING COUNT(*) > 1`
+    )
+    const safeArr = v => { try { const x = JSON.parse(v || '[]'); return Array.isArray(x) ? x : [] } catch { return [] } }
+    for (const d of dups) {
+      const [rows] = await pool.query('SELECT * FROM members WHERE account_id=? AND email=? ORDER BY (password IS NULL OR password=\'\'), id', [d.account_id, d.email])
+      if (rows.length < 2) continue
+      const keep = rows[0]
+      const merged = [...new Set(rows.flatMap(r => safeArr(r.agent_access)))]
+      await pool.query('UPDATE members SET agent_access=? WHERE id=?', [JSON.stringify(merged), keep.id])
+      const drop = rows.slice(1).map(r => r.id)
+      if (drop.length) await pool.query(`DELETE FROM members WHERE id IN (${drop.map(() => '?').join(',')})`, drop)
+    }
+    // Índice único para impedir futuros duplicados (email por cuenta).
+    await pool.query('ALTER TABLE members ADD UNIQUE KEY uniq_members_acc_email (account_id, email)').catch(() => {})
+  } catch (e) { console.warn('[members dedup] ', e.message) }
   // Seed default token limits if NULL
   try {
     await pool.query(

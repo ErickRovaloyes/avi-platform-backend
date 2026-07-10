@@ -4,6 +4,9 @@ const { authMiddleware } = require('../auth')
 const ctrl = require('../controllers/members.controller')
 
 // ── Members ───────────────────────────────────────────────────────────────────
+// Eliminar un usuario por completo (todas sus cuentas) — solo super admin.
+// Debe ir ANTES de `/members/:accId` para que no lo capture esa ruta genérica.
+router.post('/members/delete-user',                 authMiddleware, ctrl.deleteUserEverywhere)
 router.post('/accounts/:accId/members',             authMiddleware, ctrl.createMember)
 router.put('/accounts/:accId/members/:memId',       authMiddleware, ctrl.updateMember)
 router.delete('/accounts/:accId/members/:memId',    authMiddleware, ctrl.deleteMember)
