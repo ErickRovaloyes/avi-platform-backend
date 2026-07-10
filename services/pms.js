@@ -70,9 +70,12 @@ async function testConnection(accId) {
 }
 
 // ── Cachés en memoria ──────────────────────────────────────────────────────────
-// Habitaciones: 5 min por cuenta (la disponibilidad NUNCA se cachea).
-const _roomsCache = new Map()   // accId → { at, rooms }
+// Habitaciones: 5 min por cuenta (la disponibilidad NUNCA se cachea). Si la llamada
+// FALLA (p.ej. HosRoom no responde), se cachea el fallo 30 s para NO repetir esperas
+// largas (evita que el modelo reintente y acumule timeouts).
+const _roomsCache = new Map()   // accId:propId → { at, rooms } | { at, error }
 const ROOMS_TTL = 5 * 60 * 1000
+const ROOMS_ERR_TTL = 30 * 1000
 // Últimas opciones de disponibilidad por conversación (para reservar por número).
 const _optionsCache = new Map() // convId → { at, checkin, checkout, adults, children, options: [{n, rateId, roomName, rateName, total}] }
 const OPTIONS_TTL = 20 * 60 * 1000
@@ -80,11 +83,19 @@ const OPTIONS_TTL = 20 * 60 * 1000
 async function getRoomsCached(accId, cfg) {
   const ck = `${accId}:${cfg.propertyId || 'default'}`
   const hit = _roomsCache.get(ck)
-  if (hit && Date.now() - hit.at < ROOMS_TTL) return hit.rooms
+  if (hit && Date.now() - hit.at < (hit.error ? ROOMS_ERR_TTL : ROOMS_TTL)) {
+    if (hit.error) throw hit.error
+    return hit.rooms
+  }
   const prov = providers.getProvider(cfg.provider)
-  const rooms = await prov.getRooms(cfg)
-  _roomsCache.set(ck, { at: Date.now(), rooms })
-  return rooms
+  try {
+    const rooms = await prov.getRooms(cfg)
+    _roomsCache.set(ck, { at: Date.now(), rooms })
+    return rooms
+  } catch (e) {
+    _roomsCache.set(ck, { at: Date.now(), error: e })   // fallo cacheado 30 s → falla rápido
+    throw e
+  }
 }
 
 // Ficha de la propiedad (con FOTOS) cacheada por cuenta+propiedad.
@@ -94,7 +105,7 @@ async function getPropertyCached(accId, cfg) {
   if (!prov || typeof prov.getProperty !== 'function') return null
   const ck = `${accId}:${cfg.propertyId || 'default'}`
   const hit = _propCache.get(ck)
-  if (hit && Date.now() - hit.at < ROOMS_TTL) return hit.property
+  if (hit && Date.now() - hit.at < (hit.property ? ROOMS_TTL : ROOMS_ERR_TTL)) return hit.property
   const property = await prov.getProperty(cfg).catch(() => null)
   _propCache.set(ck, { at: Date.now(), property })
   return property
@@ -509,11 +520,9 @@ async function listRooms(accId, { propertyId } = {}) {
   const propId = c.propertyId || (Array.isArray(cfg.properties) && cfg.properties[0]?.id) || 'default'
   const blockedProps = (Array.isArray(cfg.blockedProperties) ? cfg.blockedProperties : []).map(String)
   let property = null
-  if (typeof prov.getProperty === 'function') {
-    const p = await prov.getProperty(c).catch(() => null)
-    if (p) property = { id: String(propId), name: p.name || '', description: p.description || '', photos: Array.isArray(p.photos) ? p.photos.filter(Boolean) : [], blocked: blockedProps.includes(String(propId)) }
-  }
-  const rooms = await prov.getRooms(c)
+  const p = await getPropertyCached(accId, c).catch(() => null)
+  if (p) property = { id: String(propId), name: p.name || '', description: p.description || '', photos: Array.isArray(p.photos) ? p.photos.filter(Boolean) : [], blocked: blockedProps.includes(String(propId)) }
+  const rooms = await getRoomsCached(accId, c)
   // Kunas expone las fotos SOLO a nivel de propiedad: si el alojamiento no trae
   // fotos propias, usa la galería de su propiedad (para que no salga vacío).
   const propPhotos = property?.photos || []

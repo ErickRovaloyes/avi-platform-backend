@@ -24,7 +24,7 @@ function addDays(dateStr, n) { const d = new Date(`${dateStr}T12:00:00Z`); d.set
 
 // fetch con TIMEOUT (evita que una llamada al PMS se quede colgada y degrade el
 // backend). Aborta a los `ms` y lanza un error claro.
-async function tfetch(url, opts = {}, ms = 12000) {
+async function tfetch(url, opts = {}, ms = 10000) {
   const ctl = new AbortController()
   const t = setTimeout(() => ctl.abort(), ms)
   try {
