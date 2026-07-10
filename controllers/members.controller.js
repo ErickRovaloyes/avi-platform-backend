@@ -2,6 +2,9 @@
 const pool   = require('../db')
 const socket = require('../services/socket')
 const { uid, parseJ } = require('../utils')
+const { sign } = require('../auth')
+
+const OWNER_PERMS = { inbox: true, agents: true, channels: true, crm: true, pipeline: true, config: true, admins: true, flows: true, variables: true, tools: true, knowledge: true }
 
 // ── Members ───────────────────────────────────────────────────────────────────
 
@@ -82,31 +85,47 @@ const joinAsOwner = async (req, res) => {
   const name  = (req.user?.type === 'superadmin' ? req.user.name  : req.user?.saName)  || email
   if (!isSA || !email) return res.status(403).json({ error: 'Solo un super admin puede unirse como owner.' })
   try {
-    const [[acc]] = await pool.query('SELECT id FROM accounts WHERE id=?', [accId])
+    const [[acc]] = await pool.query('SELECT id, name FROM accounts WHERE id=?', [accId])
     if (!acc) return res.status(404).json({ error: 'Cuenta no encontrada' })
     // Rol Owner de la cuenta (creado al crear la cuenta). Si no existe, se crea.
     let [[ownerRole]] = await pool.query("SELECT * FROM roles WHERE account_id=? AND name='Owner' ORDER BY is_system DESC LIMIT 1", [accId])
     if (!ownerRole) {
       const rid = 'role_owner_' + uid()
       await pool.query('INSERT INTO roles (id,account_id,name,is_system,permissions) VALUES (?,?,?,1,?)',
-        [rid, accId, 'Owner', '{"inbox":true,"agents":true,"channels":true,"crm":true,"pipeline":true,"config":true,"admins":true,"flows":true,"variables":true,"tools":true,"knowledge":true}'])
-      ownerRole = { id: rid }
+        [rid, accId, 'Owner', JSON.stringify(OWNER_PERMS)])
+      ownerRole = { id: rid, permissions: JSON.stringify(OWNER_PERMS) }
     }
+    // Foto/nombre reales del super admin (para el perfil).
+    const [[sa]] = await pool.query('SELECT name, photo, password FROM super_admins WHERE email=?', [email])
+    let memberId
     const [[existing]] = await pool.query('SELECT * FROM members WHERE account_id=? AND email=? LIMIT 1', [accId, email])
     if (existing) {
+      memberId = existing.id
       await pool.query('UPDATE members SET role_id=?, status=? WHERE id=? AND account_id=?', [ownerRole.id, 'active', existing.id, accId])
-      socket.emit(accId, 'account:updated', { accId })
-      return res.json({ id: existing.id, existed: true })
+    } else {
+      // Contraseña: reutiliza la de otra cuenta del mismo email; si no hay, la del super admin.
+      const [[sibling]] = await pool.query("SELECT password FROM members WHERE email=? AND password IS NOT NULL AND password<>'' LIMIT 1", [email])
+      const password = sibling?.password || sa?.password || ''
+      memberId = 'mem_' + uid()
+      await pool.query('INSERT INTO members (id,account_id,name,email,password,avatar,role_id,agent_access,status) VALUES (?,?,?,?,?,?,?,?,?)',
+        [memberId, accId, name, email, password, String(name || email).slice(0, 2).toUpperCase(), ownerRole.id, '[]', 'active'])
     }
-    // Contraseña: reutiliza la de otra cuenta del mismo email; si no hay, la del super admin.
-    const [[sibling]] = await pool.query("SELECT password FROM members WHERE email=? AND password IS NOT NULL AND password<>'' LIMIT 1", [email])
-    let password = sibling?.password || ''
-    if (!password) { const [[sa]] = await pool.query('SELECT password FROM super_admins WHERE email=?', [email]); password = sa?.password || '' }
-    const id = 'mem_' + uid()
-    await pool.query('INSERT INTO members (id,account_id,name,email,password,avatar,role_id,agent_access,status) VALUES (?,?,?,?,?,?,?,?,?)',
-      [id, accId, name, email, password, String(name || email).slice(0, 2).toUpperCase(), ownerRole.id, '[]', 'active'])
     socket.emit(accId, 'account:updated', { accId })
-    res.json({ id })
+
+    // Devuelve una sesión de MIEMBRO real (owner de esta cuenta) con la identidad real del
+    // super admin. Así deja de ser la vista genérica de impersonación: el perfil muestra al
+    // usuario real y cada cuenta es independiente (el selector "cambiar cuenta" trae todas).
+    const [rows] = await pool.query(
+      "SELECT DISTINCT a.id AS accId FROM members m JOIN accounts a ON m.account_id=a.id WHERE m.email=? AND m.status='active'",
+      [email])
+    const session = {
+      type: 'member', id: memberId, name: name || sa?.name || email, email, photo: sa?.photo || null,
+      accountId: accId, accountName: acc.name,
+      allAccountIds: rows.map(r => r.accId),
+      roleId: ownerRole.id, permissions: parseJ(ownerRole.permissions, OWNER_PERMS),
+      agentAccess: [],
+    }
+    res.json({ id: memberId, existed: !!existing, token: sign(session), session })
   } catch (err) { console.error('[JOIN OWNER]', err); res.status(500).json({ error: 'Error interno' }) }
 }
 
