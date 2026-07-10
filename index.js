@@ -265,6 +265,8 @@ app.use('/api',                recontactRoutes)
     "ALTER TABLE orders ADD COLUMN coupon_code VARCHAR(40)",
     // Precio de oferta (promo) opcional por producto.
     "ALTER TABLE order_products ADD COLUMN promo_price DECIMAL(12,2)",
+    // Combo: lista de productos incluidos [{productId,name,qty}] (si tiene, el producto es un combo).
+    "ALTER TABLE order_products ADD COLUMN combo_items MEDIUMTEXT",
     // Cupones de descuento del módulo de pedidos.
     `CREATE TABLE IF NOT EXISTS order_coupons (
        id VARCHAR(50) PRIMARY KEY, account_id VARCHAR(50) NOT NULL,

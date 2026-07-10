@@ -133,9 +133,11 @@ const mapProduct = p => {
   const price = Number(p.price) || 0
   const promo = Number(p.promo_price) || 0
   const onSale = promo > 0 && promo < price
+  const comboItems = parseJ(p.combo_items, []).filter(c => c && c.name)
   return {
     id: p.id, category: p.category || '', name: p.name, description: p.description || '',
     price, promoPrice: onSale ? promo : 0, effPrice: onSale ? promo : price, onSale,
+    comboItems, isCombo: comboItems.length > 0,
     mediaId: p.media_id || null, imageUrl: p.image_url || '',
     modifierGroupIds: parseJ(p.modifier_group_ids, []), available: !!p.available, sort: p.sort || 0,
     source: p.source || 'menu', sourceRef: p.source_ref || '',
@@ -299,7 +301,11 @@ async function toolCall(accId, fn, args = {}, { convId, agId } = {}) {
     const byCat = {}
     for (const p of filtered) { (byCat[p.category || 'Menú'] ||= []).push(p) }
     const lines = Object.entries(byCat).map(([c, items]) =>
-      `▪ ${c}\n` + items.map(p => `   • ${p.name} — ${p.onSale ? `🔥 ${fmtMoney(p.effPrice, currency)} (antes ${fmtMoney(p.price, currency)})` : fmtMoney(p.price, currency)}${p.description ? ` (${String(p.description).slice(0, 80)})` : ''}`).join('\n')
+      `▪ ${c}\n` + items.map(p => {
+        const priceTxt = p.onSale ? `🔥 ${fmtMoney(p.effPrice, currency)} (antes ${fmtMoney(p.price, currency)})` : fmtMoney(p.effPrice, currency)
+        const comboTxt = p.isCombo ? ` — incluye: ${p.comboItems.map(ci => `${ci.qty > 1 ? `${ci.qty}× ` : ''}${ci.name}`).join(', ')}` : ''
+        return `   • ${p.isCombo ? '🍱 ' : ''}${p.name} — ${priceTxt}${p.description ? ` (${String(p.description).slice(0, 80)})` : ''}${comboTxt}`
+      }).join('\n')
     ).join('\n')
     // Envía hasta 6 fotos si se pidió una categoría concreta.
     const media = (cat ? filtered : []).slice(0, 6).filter(p => p.imageUrl || p.mediaId).map(p => ({
@@ -329,11 +335,13 @@ async function toolCall(accId, fn, args = {}, { convId, agId } = {}) {
     const draft = await getDraft(accId, convId, { create: true })
     if (!draft) return { text: 'No pude iniciar el pedido (conversación no válida).' }
     draft.items = draft.items || []
-    draft.items.push({ productId: prod.id, name: prod.name, qty, unitPrice, modifiers, note: String(args.nota || '').slice(0, 140), lineTotal })
+    const combo = prod.isCombo ? prod.comboItems.map(ci => ({ name: ci.name, qty: Number(ci.qty) || 1 })) : []
+    draft.items.push({ productId: prod.id, name: prod.name, qty, unitPrice, modifiers, combo, isCombo: prod.isCombo, note: String(args.nota || '').slice(0, 140), lineTotal })
     await saveDraft(accId, draft)
     const t = cartTotals(draft, cfg)
     const modTxt = modifiers.length ? ` (${modifiers.map(m => m.name).join(', ')})` : ''
-    return { text: `Agregué ${qty}× ${prod.name}${modTxt}. Subtotal del pedido: ${fmtMoney(t.subtotal, currency)}. ¿Algo más o cerramos el pedido?` }
+    const comboTxt = combo.length ? ` — incluye ${combo.map(c => `${c.qty > 1 ? `${c.qty}× ` : ''}${c.name}`).join(', ')}` : ''
+    return { text: `Agregué ${qty}× ${prod.isCombo ? '🍱 ' : ''}${prod.name}${modTxt}${comboTxt}. Subtotal del pedido: ${fmtMoney(t.subtotal, currency)}. ¿Algo más o cerramos el pedido?` }
   }
 
   // ── Ver carrito ───────────────────────────────────────────────────────────
