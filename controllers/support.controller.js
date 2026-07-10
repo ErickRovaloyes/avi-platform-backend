@@ -24,6 +24,7 @@ const getAllTickets = async (req, res) => {
     res.json(tickets.map(t => ({
       id: t.id, accId: t.account_id, accountName: t.account_name,
       subject: t.subject, status: t.status, assignedTo: parseJ(t.assigned_to, null),
+      takenBy: parseJ(t.taken_by, null), takenAt: t.taken_at || null, priority: t.priority || null,
       refs: parseJ(t.refs, []),
       rating: t.rating != null ? Number(t.rating) : null, ratingNote: t.rating_note || '', ratedAt: t.rated_at || null,
       messages: messages.filter(m => m.ticket_id === t.id).map(m => ({
@@ -45,15 +46,32 @@ function previewOf(content, media) {
   return ''
 }
 
+// Round-robin: pre-asigna el ticket al SIGUIENTE super admin después del último asignado.
+// Sin estado extra: se basa en el último ticket con asignación. Devuelve {saId,saName} o null.
+async function nextRoundRobinAssignee() {
+  const [sas] = await pool.query('SELECT id, name FROM super_admins ORDER BY id')
+  if (!sas.length) return null
+  const [[lastT]] = await pool.query('SELECT assigned_to FROM support_tickets WHERE assigned_to IS NOT NULL ORDER BY created_at DESC LIMIT 1')
+  let idx = 0
+  if (lastT) {
+    const last = parseJ(lastT.assigned_to, null)
+    const pos = sas.findIndex(s => s.id === last?.saId)
+    idx = pos === -1 ? 0 : (pos + 1) % sas.length
+  }
+  return { saId: sas[idx].id, saName: sas[idx].name }
+}
+
 const createTicket = async (req, res) => {
   const { accId, accountName, subject, message, authorId, authorName, media = null, refs = [] } = req.body
   const ticketId = 'tkt_' + uid()
   const msgId    = 'msg_' + uid()
   const ts       = Date.now()
   try {
+    // Pre-asignación round-robin entre los super admins (aún sin "tomar").
+    const assignee = await nextRoundRobinAssignee().catch(() => null)
     await pool.query(
       'INSERT INTO support_tickets (id,account_id,account_name,subject,status,assigned_to,refs,created_at,updated_at) VALUES (?,?,?,?,?,?,?,?,?)',
-      [ticketId, accId, accountName, subject || 'Soporte', 'open', null, JSON.stringify(Array.isArray(refs) ? refs : []), ts, ts]
+      [ticketId, accId, accountName, subject || 'Soporte', 'open', assignee ? JSON.stringify(assignee) : null, JSON.stringify(Array.isArray(refs) ? refs : []), ts, ts]
     )
     await pool.query(
       'INSERT INTO support_messages (id,ticket_id,role,author_id,author_name,content,ts,media) VALUES (?,?,?,?,?,?,?,?)',
@@ -75,9 +93,16 @@ const addMessage = async (req, res) => {
       [id, ticketId, role, authorId, authorName, content, ts, media ? JSON.stringify(media) : null]
     )
     // Get the ticket's accId for targeted emit
-    const [[tkt]] = await pool.query('SELECT account_id FROM support_tickets WHERE id=?', [ticketId])
+    const [[tkt]] = await pool.query('SELECT account_id, taken_by FROM support_tickets WHERE id=?', [ticketId])
     if (role === 'support') {
-      await pool.query('UPDATE support_tickets SET status="in_progress",updated_at=? WHERE id=?', [ts, ticketId])
+      // Responder = TOMAR el ticket (si aún no lo tomó nadie): pasa a ser del asesor que responde.
+      const alreadyTaken = parseJ(tkt?.taken_by, null)
+      if (!alreadyTaken && (authorId || authorName)) {
+        const taker = JSON.stringify({ saId: authorId, saName: authorName })
+        await pool.query('UPDATE support_tickets SET status="in_progress",assigned_to=?,taken_by=?,taken_at=?,updated_at=? WHERE id=?', [taker, taker, ts, ts, ticketId])
+      } else {
+        await pool.query('UPDATE support_tickets SET status="in_progress",updated_at=? WHERE id=?', [ts, ticketId])
+      }
     } else {
       await pool.query('UPDATE support_tickets SET updated_at=? WHERE id=?', [ts, ticketId])
     }
@@ -146,4 +171,41 @@ const submitRating = async (req, res) => {
   } catch (err) { console.error('[support rating]', err); res.status(500).json({ error: 'Error interno' }) }
 }
 
-module.exports = { getAllTickets, createTicket, addMessage, updateTicket, updateStatus, assignTicket, submitRating }
+// Un super admin TOMA el ticket (lo reclama). Cualquier super admin puede tomar un ticket
+// que aún no ha sido tomado (aunque esté pre-asignado a otro por round-robin), para que los
+// tickets que llevan mucho esperando puedan atenderse por otro.
+const takeTicket = async (req, res) => {
+  const { ticketId } = req.params
+  if (req.user?.type !== 'superadmin') return res.status(403).json({ error: 'Solo un super admin puede tomar tickets.' })
+  const saId = req.user.id, saName = req.user.name
+  try {
+    const [[tkt]] = await pool.query('SELECT account_id, taken_by FROM support_tickets WHERE id=?', [ticketId])
+    if (!tkt) return res.status(404).json({ error: 'Ticket no encontrado' })
+    const taken = parseJ(tkt.taken_by, null)
+    if (taken && taken.saId && taken.saId !== saId) {
+      return res.status(409).json({ error: `Ya lo tomó ${taken.saName || 'otro asesor'}.`, takenBy: taken })
+    }
+    const me = JSON.stringify({ saId, saName })
+    await pool.query('UPDATE support_tickets SET assigned_to=?,taken_by=?,taken_at=?,updated_at=? WHERE id=?', [me, me, Date.now(), Date.now(), ticketId])
+    socket.broadcast('support:updated', { accId: tkt.account_id })
+    res.json({ ok: true })
+  } catch (err) { console.error('[support take]', err); res.status(500).json({ error: 'Error interno' }) }
+}
+
+// Prioridad manual (daño al cliente) que fija el super admin que lee el ticket.
+const PRIORITIES = ['baja', 'media', 'alta', 'urgente']
+const setPriority = async (req, res) => {
+  const { ticketId } = req.params
+  if (req.user?.type !== 'superadmin') return res.status(403).json({ error: 'Solo un super admin puede fijar la prioridad.' })
+  const priority = req.body?.priority === null ? null : String(req.body?.priority || '')
+  if (priority !== null && !PRIORITIES.includes(priority)) return res.status(400).json({ error: 'Prioridad inválida.' })
+  try {
+    const [[tkt]] = await pool.query('SELECT account_id FROM support_tickets WHERE id=?', [ticketId])
+    if (!tkt) return res.status(404).json({ error: 'Ticket no encontrado' })
+    await pool.query('UPDATE support_tickets SET priority=?,updated_at=? WHERE id=?', [priority, Date.now(), ticketId])
+    socket.broadcast('support:updated', { accId: tkt.account_id })
+    res.json({ ok: true })
+  } catch (err) { console.error('[support priority]', err); res.status(500).json({ error: 'Error interno' }) }
+}
+
+module.exports = { getAllTickets, createTicket, addMessage, updateTicket, updateStatus, assignTicket, submitRating, takeTicket, setPriority }

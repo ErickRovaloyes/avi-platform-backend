@@ -431,6 +431,11 @@ app.use('/api',                recontactRoutes)
     "ALTER TABLE support_tickets ADD COLUMN rating INT",
     "ALTER TABLE support_tickets ADD COLUMN rating_note TEXT",
     "ALTER TABLE support_tickets ADD COLUMN rated_at BIGINT",
+    // Round-robin + "tomado": assigned_to = pre-asignado; taken_by = quien lo tomó de verdad.
+    "ALTER TABLE support_tickets ADD COLUMN taken_by JSON",
+    "ALTER TABLE support_tickets ADD COLUMN taken_at BIGINT",
+    // Prioridad manual (daño al cliente) que fija el super admin: baja/media/alta/urgente.
+    "ALTER TABLE support_tickets ADD COLUMN priority VARCHAR(10)",
     `CREATE TABLE IF NOT EXISTS flow_executions (
        id BIGINT PRIMARY KEY AUTO_INCREMENT,
        account_id VARCHAR(50) NOT NULL,
