@@ -129,12 +129,18 @@ async function guestIdentity(accId, convId) {
 }
 
 // ── Menú / catálogo (lectura) ──────────────────────────────────────────────────
-const mapProduct = p => ({
-  id: p.id, category: p.category || '', name: p.name, description: p.description || '',
-  price: Number(p.price) || 0, mediaId: p.media_id || null, imageUrl: p.image_url || '',
-  modifierGroupIds: parseJ(p.modifier_group_ids, []), available: !!p.available, sort: p.sort || 0,
-  source: p.source || 'menu', sourceRef: p.source_ref || '',
-})
+const mapProduct = p => {
+  const price = Number(p.price) || 0
+  const promo = Number(p.promo_price) || 0
+  const onSale = promo > 0 && promo < price
+  return {
+    id: p.id, category: p.category || '', name: p.name, description: p.description || '',
+    price, promoPrice: onSale ? promo : 0, effPrice: onSale ? promo : price, onSale,
+    mediaId: p.media_id || null, imageUrl: p.image_url || '',
+    modifierGroupIds: parseJ(p.modifier_group_ids, []), available: !!p.available, sort: p.sort || 0,
+    source: p.source || 'menu', sourceRef: p.source_ref || '',
+  }
+}
 async function listProducts(accId, { onlyAvailable = false } = {}) {
   const [rows] = await pool.query('SELECT * FROM order_products WHERE account_id=? ORDER BY category, sort, name', [accId])
   const list = rows.map(mapProduct)
@@ -293,11 +299,11 @@ async function toolCall(accId, fn, args = {}, { convId, agId } = {}) {
     const byCat = {}
     for (const p of filtered) { (byCat[p.category || 'Menú'] ||= []).push(p) }
     const lines = Object.entries(byCat).map(([c, items]) =>
-      `▪ ${c}\n` + items.map(p => `   • ${p.name} — ${fmtMoney(p.price, currency)}${p.description ? ` (${String(p.description).slice(0, 80)})` : ''}`).join('\n')
+      `▪ ${c}\n` + items.map(p => `   • ${p.name} — ${p.onSale ? `🔥 ${fmtMoney(p.effPrice, currency)} (antes ${fmtMoney(p.price, currency)})` : fmtMoney(p.price, currency)}${p.description ? ` (${String(p.description).slice(0, 80)})` : ''}`).join('\n')
     ).join('\n')
     // Envía hasta 6 fotos si se pidió una categoría concreta.
     const media = (cat ? filtered : []).slice(0, 6).filter(p => p.imageUrl || p.mediaId).map(p => ({
-      url: p.imageUrl || `/api/media/${accId}/${p.mediaId}/raw`, caption: `${p.name} · ${fmtMoney(p.price, currency)}`, needsHost: !p.imageUrl,
+      url: p.imageUrl || `/api/media/${accId}/${p.mediaId}/raw`, caption: `${p.name} · ${fmtMoney(p.effPrice, currency)}${p.onSale ? ' 🔥oferta' : ''}`, needsHost: !p.imageUrl,
     }))
     return { text: `Menú disponible:\n${lines}\n\nPara agregar algo usa agregar_al_pedido con el nombre y la cantidad.`, media }
   }
@@ -318,7 +324,7 @@ async function toolCall(accId, fn, args = {}, { convId, agId } = {}) {
         if (wanted.some(w => norm(m.name).includes(w) || w.includes(norm(m.name)))) { modifiers.push({ groupId: g.id, id: m.id, name: m.name, priceDelta: m.priceDelta }); modTotal += m.priceDelta }
       }
     }
-    const unitPrice = prod.price + modTotal
+    const unitPrice = (prod.effPrice || prod.price) + modTotal
     const lineTotal = unitPrice * qty
     const draft = await getDraft(accId, convId, { create: true })
     if (!draft) return { text: 'No pude iniciar el pedido (conversación no válida).' }

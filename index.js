@@ -263,6 +263,8 @@ app.use('/api',                recontactRoutes)
     // Referencia del intento de pago (para confirmar el pedido desde el webhook).
     "ALTER TABLE orders ADD COLUMN payment_ref VARCHAR(80)",
     "ALTER TABLE orders ADD COLUMN coupon_code VARCHAR(40)",
+    // Precio de oferta (promo) opcional por producto.
+    "ALTER TABLE order_products ADD COLUMN promo_price DECIMAL(12,2)",
     // Cupones de descuento del módulo de pedidos.
     `CREATE TABLE IF NOT EXISTS order_coupons (
        id VARCHAR(50) PRIMARY KEY, account_id VARCHAR(50) NOT NULL,

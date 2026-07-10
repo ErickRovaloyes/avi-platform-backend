@@ -66,12 +66,12 @@ const saveProduct = async (req, res) => {
   const { accId } = req.params; const b = req.body || {}
   try {
     const id = b.id || ('op_' + uid())
-    const vals = { category: String(b.category || '').slice(0, 120), name: String(b.name || '').slice(0, 200), description: String(b.description || ''), price: Number(b.price) || 0, media_id: b.mediaId || null, image_url: String(b.imageUrl || ''), modifier_group_ids: JSON.stringify(Array.isArray(b.modifierGroupIds) ? b.modifierGroupIds : []), available: b.available === false ? 0 : 1, sort: Number(b.sort) || 0 }
+    const vals = { category: String(b.category || '').slice(0, 120), name: String(b.name || '').slice(0, 200), description: String(b.description || ''), price: Number(b.price) || 0, promo_price: Math.max(0, Number(b.promoPrice) || 0), media_id: b.mediaId || null, image_url: String(b.imageUrl || ''), modifier_group_ids: JSON.stringify(Array.isArray(b.modifierGroupIds) ? b.modifierGroupIds : []), available: b.available === false ? 0 : 1, sort: Number(b.sort) || 0 }
     if (b.id) {
       const sets = Object.keys(vals).map(k => `${k}=?`).join(','); await pool.query(`UPDATE order_products SET ${sets} WHERE id=? AND account_id=?`, [...Object.values(vals), id, accId])
     } else {
-      await pool.query('INSERT INTO order_products (id,account_id,category,name,description,price,media_id,image_url,modifier_group_ids,available,sort,source,created_at) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)',
-        [id, accId, vals.category, vals.name, vals.description, vals.price, vals.media_id, vals.image_url, vals.modifier_group_ids, vals.available, vals.sort, 'menu', Date.now()])
+      await pool.query('INSERT INTO order_products (id,account_id,category,name,description,price,promo_price,media_id,image_url,modifier_group_ids,available,sort,source,created_at) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?)',
+        [id, accId, vals.category, vals.name, vals.description, vals.price, vals.promo_price, vals.media_id, vals.image_url, vals.modifier_group_ids, vals.available, vals.sort, 'menu', Date.now()])
     }
     socket.emit(accId, 'account:updated', { accId })
     res.json({ ok: true, id })
