@@ -250,7 +250,10 @@ function imagesOf(o, base = 'https://app.hotelsync.com') {
     if (IMG_EXT_RE.test(s) || s.includes('/')) return b + '/' + s.replace(/^\/+/, '')
     return null
   }
-  return [...new Set(raw.map(norm).filter(Boolean))]
+  // Excluye elementos que NO son fotos reales (íconos de UI, placeholders, banderas,
+  // amenidades…). El LOGO no se filtra aquí: eso lo controla photoSkip por posición.
+  const BAD = /(favicon|sprite|placeholder|no[-_]?image|noimage|not[-_]?found|blank|pixel|spacer|loader|loading|1x1|amenit|icon[s]?[\/._-]|\/flags?\/|default[-_.])/i
+  return [...new Set(raw.map(norm).filter(Boolean))].filter(u => !BAD.test(u))
 }
 function normRoomKunas(rt) {
   return {
@@ -460,27 +463,30 @@ const kunas = {
   },
 
   // Datos de la propiedad (incluye sus FOTOS): /api/property/data/property.
+  // Aplica photoSkip: descarta las primeras X fotos (p.ej. el logo de la empresa).
   async getProperty(cfg) {
     const data = await this._post(cfg, '/api/property/data/property', {})
     const p = (data && typeof data === 'object' && !Array.isArray(data)) ? (data.property || data.data || data) : {}
+    let photos = imagesOf(data, cfg.baseUrl)   // recorre TODA la respuesta de ESTA propiedad
+    const skip = Math.max(0, Number(cfg.photoSkip) || 0)
+    if (skip) photos = photos.slice(skip)
     return {
       name: first(p.name, p.shortname, cfg.hotelName, ''),
       description: first(p.description, p.desc, '') || '',
-      photos: imagesOf(data, cfg.baseUrl),   // recorre TODA la respuesta
+      photos,
       raw: p,
     }
   },
 
-  // Habitaciones (tipos) desde el calendario. Usa fotos de la PROPIEDAD como
-  // respaldo si un tipo no trae imágenes propias.
+  // Habitaciones (tipos) desde el calendario. Respaldo de fotos = fotos de ESTA
+  // propiedad (ya filtradas por photoSkip), para no mezclar con otras.
   async getRooms(cfg) {
     const date = new Date().toISOString().slice(0, 10)
     const [data, prop] = await Promise.all([
       this._calendar(cfg, date),
       this.getProperty(cfg).catch(() => ({ photos: [] })),
     ])
-    const propObj = (data && typeof data === 'object') ? first(data.property, data.data?.property) : null
-    const propImages = [...new Set([...(prop.photos || []), ...(propObj ? imagesOf(propObj) : [])])]
+    const propImages = prop.photos || []
     const list = deepFindArray(data, 'room_types') || (Array.isArray(data) ? data : arr(first(data?.data, data?.rooms, [])))
     return (list || []).map(rt => this._mapRoomType(rt, propImages)).filter(r => r.id || r.name)
   },

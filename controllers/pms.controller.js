@@ -26,7 +26,7 @@ const getConfig = async (req, res) => {
 // Guarda la configuración. El token solo se actualiza si llega uno nuevo no vacío.
 const saveConfig = async (req, res) => {
   const { accId } = req.params
-  const { provider, token, apiKey, username, password, propertyId, pricingPlanId, baseUrl, currency, maxPhotos, notifyTeam, postBookingFlowId } = req.body || {}
+  const { provider, token, apiKey, username, password, propertyId, pricingPlanId, baseUrl, currency, maxPhotos, photoSkip, notifyTeam, postBookingFlowId } = req.body || {}
   try {
     const cur = await pms.loadConfig(accId) || {}
     const next = { ...cur }
@@ -45,6 +45,7 @@ const saveConfig = async (req, res) => {
     if (baseUrl !== undefined) next.baseUrl = String(baseUrl || '').trim()
     if (currency !== undefined) next.currency = String(currency || 'COP').toUpperCase().slice(0, 6)
     if (maxPhotos !== undefined) next.maxPhotos = Math.max(1, Math.min(10, Number(maxPhotos) || 4))
+    if (photoSkip !== undefined) next.photoSkip = Math.max(0, Math.min(20, parseInt(photoSkip) || 0))
     if (notifyTeam !== undefined) next.notifyTeam = !!notifyTeam
     if (postBookingFlowId !== undefined) next.postBookingFlowId = String(postBookingFlowId || '')
     await pms.saveConfig(accId, next)

@@ -40,6 +40,7 @@ function publicConfig(cfg) {
     hotelName: c.hotelName || '',
     currency: c.currency || 'COP',
     maxPhotos: Number(c.maxPhotos) || 4,
+    photoSkip: Math.max(0, Number(c.photoSkip) || 0),
     properties: props,
     multiProperty: props.length > 1,
   }
