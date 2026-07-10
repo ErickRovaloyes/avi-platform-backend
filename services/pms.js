@@ -514,8 +514,14 @@ async function listRooms(accId, { propertyId } = {}) {
     if (p) property = { id: String(propId), name: p.name || '', description: p.description || '', photos: Array.isArray(p.photos) ? p.photos.filter(Boolean) : [], blocked: blockedProps.includes(String(propId)) }
   }
   const rooms = await prov.getRooms(c)
+  // Kunas expone las fotos SOLO a nivel de propiedad: si el alojamiento no trae
+  // fotos propias, usa la galería de su propiedad (para que no salga vacío).
+  const propPhotos = property?.photos || []
   // Panel admin: TODAS las habitaciones con su flag `blocked` (para togglear).
-  return { rooms: rooms.map(r => ({ ...mapRoomPublic(r), blocked: isRoomBlocked(cfg, propId, r.id) })), property, propertyId: String(propId) }
+  return {
+    rooms: rooms.map(r => { const m = mapRoomPublic(r); if (!m.photos.length) m.photos = propPhotos; return { ...m, blocked: isRoomBlocked(cfg, propId, r.id) } }),
+    property, propertyId: String(propId),
+  }
 }
 
 // Disponibilidad para un rango (una sola consulta): habitaciones con precio.
