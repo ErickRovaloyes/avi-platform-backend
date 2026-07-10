@@ -163,6 +163,7 @@ const mapOrder = o => ({
   items: parseJ(o.items, []), subtotal: Number(o.subtotal) || 0, deliveryFee: Number(o.delivery_fee) || 0,
   tax: Number(o.tax) || 0, tip: Number(o.tip) || 0, packagingFee: Number(o.packaging_fee) || 0,
   discount: Number(o.discount) || 0, total: Number(o.total) || 0, currency: o.currency || 'COP',
+  couponCode: o.coupon_code || '',
   address: parseJ(o.address, null), zoneId: o.zone_id || null, tableLabel: o.table_label || '',
   scheduledFor: o.scheduled_for || '', courierId: o.courier_id || null,
   paymentMethod: o.payment_method || '', paymentStatus: o.payment_status || 'pending', cashAmount: o.cash_amount != null ? Number(o.cash_amount) : null,
@@ -188,7 +189,7 @@ async function saveDraft(accId, draft) {
   )
 }
 
-function cartTotals(draft, cfg, zone) {
+function cartTotals(draft, cfg, zone, coupon) {
   const c = normConfig(cfg)
   const subtotal = (draft.items || []).reduce((s, it) => s + (Number(it.lineTotal) || 0), 0)
   let deliveryFee = 0
@@ -199,8 +200,36 @@ function cartTotals(draft, cfg, zone) {
   const packaging = c.packagingFee || 0
   const tax = c.taxPct ? Math.round(subtotal * c.taxPct) / 100 : 0
   const tip = Number(draft.tip) || 0
-  const total = subtotal + deliveryFee + packaging + tax + tip
-  return { subtotal, deliveryFee, packaging, tax, tip, total, currency: c.currency }
+  const discount = couponDiscount(coupon, subtotal)
+  const total = Math.max(0, subtotal + deliveryFee + packaging + tax + tip - discount)
+  return { subtotal, deliveryFee, packaging, tax, tip, discount, total, currency: c.currency }
+}
+
+// ── Cupones de descuento ────────────────────────────────────────────────────────
+const mapCoupon = c => ({ id: c.id, code: c.code, type: c.type || 'percent', value: Number(c.value) || 0, minOrder: Number(c.min_order) || 0, maxDiscount: Number(c.max_discount) || 0, usesMax: c.uses_max || 0, usesCount: c.uses_count || 0, active: !!c.active, expiresAt: c.expires_at || null })
+async function listCoupons(accId) {
+  const [rows] = await pool.query('SELECT * FROM order_coupons WHERE account_id=? ORDER BY created_at DESC', [accId])
+  return rows.map(mapCoupon)
+}
+async function getCoupon(accId, code) {
+  if (!code) return null
+  const [[c]] = await pool.query('SELECT * FROM order_coupons WHERE account_id=? AND UPPER(code)=? LIMIT 1', [accId, String(code).toUpperCase()])
+  return c ? mapCoupon(c) : null
+}
+function couponDiscount(coupon, subtotal) {
+  if (!coupon || !coupon.active) return 0
+  let d = coupon.type === 'fixed' ? coupon.value : (subtotal * coupon.value / 100)
+  if (coupon.maxDiscount) d = Math.min(d, coupon.maxDiscount)
+  return Math.round(Math.max(0, Math.min(d, subtotal)))
+}
+// Devuelve null si el cupón es válido, o el motivo de rechazo.
+function couponError(coupon, subtotal, currency) {
+  if (!coupon) return 'ese cupón no existe'
+  if (!coupon.active) return 'ese cupón está inactivo'
+  if (coupon.expiresAt && Date.now() > Number(coupon.expiresAt)) return 'ese cupón está vencido'
+  if (coupon.usesMax && coupon.usesCount >= coupon.usesMax) return 'ese cupón alcanzó su límite de usos'
+  if (coupon.minOrder && subtotal < coupon.minOrder) return `requiere un pedido mínimo de ${fmtMoney(coupon.minOrder, currency)}`
+  return null
 }
 
 // ── Resolución de producto / adiciones (para agregar al carrito) ────────────────
@@ -305,9 +334,25 @@ async function toolCall(accId, fn, args = {}, { convId, agId } = {}) {
   if (fn === 'ver_carrito' || fn === 'ver_pedido') {
     const draft = await getDraft(accId, convId)
     if (!draft || !draft.items.length) return { text: 'El pedido está vacío. Agrega productos con agregar_al_pedido.' }
-    const t = cartTotals(draft, cfg)
+    const coupon = draft.couponCode ? await getCoupon(accId, draft.couponCode) : null
+    const t = cartTotals(draft, cfg, null, coupon)
     const lines = draft.items.map((it, i) => `${i + 1}. ${it.qty}× ${it.name}${it.modifiers?.length ? ` (${it.modifiers.map(m => m.name).join(', ')})` : ''} — ${fmtMoney(it.lineTotal, currency)}`).join('\n')
-    return { text: `Pedido actual:\n${lines}\n\nSubtotal: ${fmtMoney(t.subtotal, currency)}${draft.type === 'delivery' && t.deliveryFee ? `\nEnvío: ${fmtMoney(t.deliveryFee, currency)}` : ''}${t.packaging ? `\nEmpaque: ${fmtMoney(t.packaging, currency)}` : ''}${t.tax ? `\nImpuesto: ${fmtMoney(t.tax, currency)}` : ''}\nTOTAL: ${fmtMoney(t.total, currency)}` }
+    return { text: `Pedido actual:\n${lines}\n\nSubtotal: ${fmtMoney(t.subtotal, currency)}${t.discount ? `\nDescuento (${draft.couponCode}): -${fmtMoney(t.discount, currency)}` : ''}${draft.type === 'delivery' && t.deliveryFee ? `\nEnvío: ${fmtMoney(t.deliveryFee, currency)}` : ''}${t.packaging ? `\nEmpaque: ${fmtMoney(t.packaging, currency)}` : ''}${t.tax ? `\nImpuesto: ${fmtMoney(t.tax, currency)}` : ''}\nTOTAL: ${fmtMoney(t.total, currency)}` }
+  }
+
+  // ── Aplicar cupón de descuento ────────────────────────────────────────────
+  if (fn === 'aplicar_cupon') {
+    const draft = await getDraft(accId, convId)
+    if (!draft || !draft.items.length) return { text: 'Primero agrega productos al pedido y luego aplica el cupón.' }
+    const code = String(args.codigo || '').trim()
+    if (!code) return { text: 'Pídele al cliente el código del cupón.' }
+    const coupon = await getCoupon(accId, code)
+    const t0 = cartTotals(draft, cfg)
+    const err = couponError(coupon, t0.subtotal, currency)
+    if (err) return { text: `No pude aplicar el cupón "${code}": ${err}.` }
+    await pool.query('UPDATE orders SET coupon_code=? WHERE id=? AND account_id=?', [coupon.code, draft.id, accId])
+    const t = cartTotals(draft, cfg, null, coupon)
+    return { text: `🎟 Cupón "${coupon.code}" aplicado: descuento de ${fmtMoney(t.discount, currency)}. Subtotal con descuento: ${fmtMoney(t.subtotal - t.discount, currency)} (el envío, si es domicilio, se suma al confirmar). Continúa con los datos de entrega y confirma.` }
   }
 
   // ── Quitar del pedido ─────────────────────────────────────────────────────
@@ -369,7 +414,15 @@ async function toolCall(accId, fn, args = {}, { convId, agId } = {}) {
     if (draft.type === 'delivery' && zones.length && !zone) return { text: 'Falta la zona de entrega para calcular el envío. Pídele al cliente su zona/dirección y usa fijar_datos_entrega.' }
     if (draft.type === 'delivery' && !draft.address?.text) return { text: 'Falta la dirección de entrega. Pídesela al cliente y usa fijar_datos_entrega.' }
     if (args.propina != null) draft.tip = Math.max(0, Number(args.propina) || 0)
-    const t = cartTotals(draft, cfg, zone)
+    // Cupón: el pasado en args (nuevo) o el ya aplicado al carrito.
+    let coupon = null
+    const couponCode = String(args.cupon || draft.couponCode || '').trim()
+    if (couponCode) {
+      coupon = await getCoupon(accId, couponCode)
+      const cErr = coupon ? couponError(coupon, cartTotals(draft, cfg, zone).subtotal, currency) : 'ese cupón no existe'
+      if (cErr) return { text: `No se puede confirmar: el cupón "${couponCode}" no es válido (${cErr}). Quítalo o pide otro.` }
+    }
+    const t = cartTotals(draft, cfg, zone, coupon)
     // Mínimo de pedido (global o de la zona).
     const minOrder = Math.max(cfg.minOrder || 0, zone?.minOrder || 0)
     if (minOrder && t.subtotal < minOrder) return { text: `El pedido mínimo${zone ? ` para ${zone.name}` : ''} es ${fmtMoney(minOrder, currency)} y el subtotal es ${fmtMoney(t.subtotal, currency)}. Invita al cliente a agregar algo más.` }
@@ -392,11 +445,13 @@ async function toolCall(accId, fn, args = {}, { convId, agId } = {}) {
     const code = shortCode()
     const timeline = [{ status: 'received', at: Date.now(), by: 'ia' }]
     await pool.query(
-      `UPDATE orders SET code=?, status='received', contact_id=?, customer_name=?, customer_phone=?, subtotal=?, delivery_fee=?, tax=?, tip=?, packaging_fee=?, total=?, currency=?,
+      `UPDATE orders SET code=?, status='received', contact_id=?, customer_name=?, customer_phone=?, subtotal=?, delivery_fee=?, tax=?, tip=?, packaging_fee=?, discount=?, coupon_code=?, total=?, currency=?,
         payment_method=?, payment_status=?, cash_amount=?, notes=?, timeline=?, updated_at=? WHERE id=? AND account_id=?`,
-      [code, contactId, name || null, phone || null, t.subtotal, t.deliveryFee, t.tax, t.tip, t.packaging, t.total, currency,
+      [code, contactId, name || null, phone || null, t.subtotal, t.deliveryFee, t.tax, t.tip, t.packaging, t.discount || 0, coupon ? coupon.code : null, t.total, currency,
        paymentMethod, 'pending', cashAmount, String(args.nota || draft.notes || '').slice(0, 300), JSON.stringify(timeline), Date.now(), draft.id, accId]
     )
+    // Suma un uso al cupón (best-effort).
+    if (coupon) pool.query('UPDATE order_coupons SET uses_count=uses_count+1 WHERE id=? AND account_id=?', [coupon.id, accId]).catch(() => {})
     socket.emit(accId, 'orders:updated', { accId })
 
     // Pago en línea (link Wompi) si aplica. Guarda la referencia para que el webhook
@@ -421,7 +476,7 @@ async function toolCall(accId, fn, args = {}, { convId, agId } = {}) {
     const changeTxt = cashAmount && cashAmount > t.total ? ` Vuelto: ${fmtMoney(cashAmount - t.total, currency)}.` : ''
     const track = trackUrl(accId, code)
     return {
-      text: `✅ Pedido CONFIRMADO — código ${code}.\n${draft.items.map(it => `• ${it.qty}× ${it.name}`).join('\n')}\n${draft.type === 'delivery' && t.deliveryFee ? `Envío: ${fmtMoney(t.deliveryFee, currency)}\n` : ''}TOTAL: ${fmtMoney(t.total, currency)}\nPago: ${paymentMethod === 'online' ? 'en línea' : 'contra entrega'}.${changeTxt}${paymentUrl ? `\nLink de pago: ${paymentUrl}` : ''}\nSeguimiento en vivo: ${track}\nConfírmale al cliente el código ${code}${paymentUrl ? ', envíale el link de pago' : ''} y el link de seguimiento.`,
+      text: `✅ Pedido CONFIRMADO — código ${code}.\n${draft.items.map(it => `• ${it.qty}× ${it.name}`).join('\n')}\n${t.discount ? `Descuento (${coupon.code}): -${fmtMoney(t.discount, currency)}\n` : ''}${draft.type === 'delivery' && t.deliveryFee ? `Envío: ${fmtMoney(t.deliveryFee, currency)}\n` : ''}TOTAL: ${fmtMoney(t.total, currency)}\nPago: ${paymentMethod === 'online' ? 'en línea' : 'contra entrega'}.${changeTxt}${paymentUrl ? `\nLink de pago: ${paymentUrl}` : ''}\nSeguimiento en vivo: ${track}\nConfírmale al cliente el código ${code}${paymentUrl ? ', envíale el link de pago' : ''} y el link de seguimiento.`,
       ordered: true, orderCode: code, paymentUrl, trackUrl: track,
     }
   }
@@ -496,6 +551,6 @@ async function markPaidByRef(accId, reference) {
 module.exports = {
   ORDER_TYPES, TYPE_LABEL, STATUSES,
   loadConfig, saveConfig, publicConfig, publicConfigAsync, normConfig,
-  listProducts, listGroups, listZones, listCouriers, mapOrder,
+  listProducts, listGroups, listZones, listCouriers, listCoupons, mapOrder,
   toolCall, notifyCustomerStatus, markPaidByRef,
 }

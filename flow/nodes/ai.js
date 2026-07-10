@@ -527,7 +527,7 @@ async function pmsExec(ctx, fnName, args) {
 }
 
 // ── Pedidos y domicilios ───────────────────────────────────────────────────────
-const ORDERS_FUNCS = new Set(['ver_menu', 'agregar_al_pedido', 'ver_carrito', 'ver_pedido', 'quitar_del_pedido', 'fijar_datos_entrega', 'confirmar_pedido', 'estado_pedido'])
+const ORDERS_FUNCS = new Set(['ver_menu', 'agregar_al_pedido', 'ver_carrito', 'ver_pedido', 'quitar_del_pedido', 'fijar_datos_entrega', 'aplicar_cupon', 'confirmar_pedido', 'estado_pedido'])
 function buildOrdersToolDefs(account) {
   const o = account?.orders || {}
   const biz = o.businessName ? ` de "${o.businessName}"` : ''
@@ -567,6 +567,11 @@ function buildOrdersToolDefs(account) {
         mesa: { type: 'string', description: 'Número/identificador de mesa (para consumo en el local)' },
         para: { type: 'string', description: 'Fecha/hora para pedido programado' },
       } } } },
+    { type: 'function', function: { name: 'aplicar_cupon',
+      description: 'Aplica un cupón de descuento al pedido actual. Úsalo cuando el cliente dé un código de cupón. Valida el cupón y descuenta del subtotal.',
+      parameters: { type: 'object', properties: {
+        codigo: { type: 'string', description: 'Código del cupón que dio el cliente' },
+      }, required: ['codigo'] } } },
     { type: 'function', function: { name: 'confirmar_pedido',
       description: `Cierra y CONFIRMA el pedido. Úsalo SOLO cuando el pedido tenga productos y, si es domicilio, dirección y zona. Métodos de pago: ${methods}. Devuelve el código del pedido y, si es en línea, el link de pago.`,
       parameters: { type: 'object', properties: {
@@ -575,6 +580,7 @@ function buildOrdersToolDefs(account) {
         metodo_pago: { type: 'string', description: 'en línea | contra entrega (efectivo)' },
         paga_con: { type: 'string', description: 'Con cuánto paga en efectivo, para calcular el vuelto (solo contra entrega)' },
         propina: { type: 'number', description: 'Propina en dinero (opcional)' },
+        cupon: { type: 'string', description: 'Código de cupón a aplicar (opcional si ya se aplicó con aplicar_cupon)' },
         nota: { type: 'string', description: 'Nota general del pedido (opcional)' },
       } } } },
     { type: 'function', function: { name: 'estado_pedido',

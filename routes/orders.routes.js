@@ -17,6 +17,8 @@ router.post('/orders/:accId/zones',            authMiddleware, ctrl.saveZone)
 router.delete('/orders/:accId/zones/:id',      authMiddleware, ctrl.deleteZone)
 router.post('/orders/:accId/couriers',         authMiddleware, ctrl.saveCourier)
 router.delete('/orders/:accId/couriers/:id',   authMiddleware, ctrl.deleteCourier)
+router.post('/orders/:accId/coupons',          authMiddleware, ctrl.saveCoupon)
+router.delete('/orders/:accId/coupons/:id',    authMiddleware, ctrl.deleteCoupon)
 
 // Tablero operativo (autenticado).
 router.get('/orders/:accId/orders',            authMiddleware, ctrl.listOrders)

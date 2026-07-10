@@ -262,6 +262,16 @@ app.use('/api',                recontactRoutes)
     "ALTER TABLE orders ADD COLUMN customer_phone VARCHAR(40)",
     // Referencia del intento de pago (para confirmar el pedido desde el webhook).
     "ALTER TABLE orders ADD COLUMN payment_ref VARCHAR(80)",
+    "ALTER TABLE orders ADD COLUMN coupon_code VARCHAR(40)",
+    // Cupones de descuento del módulo de pedidos.
+    `CREATE TABLE IF NOT EXISTS order_coupons (
+       id VARCHAR(50) PRIMARY KEY, account_id VARCHAR(50) NOT NULL,
+       code VARCHAR(40) NOT NULL, type VARCHAR(10) DEFAULT 'percent',
+       value DECIMAL(12,2) DEFAULT 0, min_order DECIMAL(12,2) DEFAULT 0,
+       max_discount DECIMAL(12,2) DEFAULT 0, uses_max INT DEFAULT 0, uses_count INT DEFAULT 0,
+       active TINYINT(1) DEFAULT 1, expires_at BIGINT, created_at BIGINT,
+       INDEX idx_oc_acc (account_id), INDEX idx_oc_code (account_id, code)
+     )`,
     // Conciencia temporal de la IA: zona horaria local + (opcional) fecha/hora base fija.
     "ALTER TABLE accounts ADD COLUMN ai_timezone VARCHAR(64) DEFAULT 'America/Lima'",
     "ALTER TABLE accounts ADD COLUMN ai_datetime_enabled TINYINT(1) DEFAULT 1",

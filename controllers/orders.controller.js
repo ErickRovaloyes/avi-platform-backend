@@ -29,12 +29,38 @@ const saveConfig = async (req, res) => {
 // ── Menú: productos ─────────────────────────────────────────────────────────────
 const listMenu = async (req, res) => {
   try {
-    const [products, groups, zones, couriers] = await Promise.all([
+    const [products, groups, zones, couriers, coupons] = await Promise.all([
       orders.listProducts(req.params.accId), orders.listGroups(req.params.accId),
-      orders.listZones(req.params.accId), orders.listCouriers(req.params.accId),
+      orders.listZones(req.params.accId), orders.listCouriers(req.params.accId), orders.listCoupons(req.params.accId),
     ])
-    res.json({ products, groups, zones, couriers })
+    res.json({ products, groups, zones, couriers, coupons })
   } catch { res.status(500).json({ error: 'Error interno' }) }
+}
+const saveCoupon = async (req, res) => {
+  const { accId } = req.params; const b = req.body || {}
+  try {
+    const id = b.id || ('ocp_' + uid())
+    const code = String(b.code || '').trim().toUpperCase().slice(0, 40)
+    if (!code) return res.status(400).json({ error: 'El código es obligatorio' })
+    const vals = {
+      code, type: b.type === 'fixed' ? 'fixed' : 'percent', value: Math.max(0, Number(b.value) || 0),
+      min_order: Math.max(0, Number(b.minOrder) || 0), max_discount: Math.max(0, Number(b.maxDiscount) || 0),
+      uses_max: Math.max(0, parseInt(b.usesMax) || 0), active: b.active === false ? 0 : 1,
+      expires_at: b.expiresAt ? Number(b.expiresAt) : null,
+    }
+    if (b.id) {
+      const sets = Object.keys(vals).map(k => `${k}=?`).join(',')
+      await pool.query(`UPDATE order_coupons SET ${sets} WHERE id=? AND account_id=?`, [...Object.values(vals), id, accId])
+    } else {
+      await pool.query('INSERT INTO order_coupons (id,account_id,code,type,value,min_order,max_discount,uses_max,uses_count,active,expires_at,created_at) VALUES (?,?,?,?,?,?,?,?,?,?,?,?)',
+        [id, accId, vals.code, vals.type, vals.value, vals.min_order, vals.max_discount, vals.uses_max, 0, vals.active, vals.expires_at, Date.now()])
+    }
+    res.json({ ok: true, id })
+  } catch (e) { console.error('[orders saveCoupon]', e); res.status(500).json({ error: 'Error interno' }) }
+}
+const deleteCoupon = async (req, res) => {
+  try { await pool.query('DELETE FROM order_coupons WHERE id=? AND account_id=?', [req.params.id, req.params.accId]); res.json({ ok: true }) }
+  catch { res.status(500).json({ error: 'Error interno' }) }
 }
 const saveProduct = async (req, res) => {
   const { accId } = req.params; const b = req.body || {}
@@ -198,5 +224,5 @@ const track = async (req, res) => {
 
 module.exports = {
   getConfig, saveConfig, listMenu, saveProduct, deleteProduct, saveGroup, deleteGroup,
-  saveZone, deleteZone, saveCourier, deleteCourier, listOrders, getOrder, updateOrder, tool, track,
+  saveZone, deleteZone, saveCourier, deleteCourier, saveCoupon, deleteCoupon, listOrders, getOrder, updateOrder, tool, track,
 }
