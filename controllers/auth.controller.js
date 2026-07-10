@@ -133,14 +133,16 @@ const impersonate = async (req, res) => {
   try {
     const [[acc]] = await pool.query('SELECT * FROM accounts WHERE id=?', [accountId])
     if (!acc) return res.status(404).json({ error: 'Cuenta no encontrada' })
+    // Modo VISTA: el super admin entra con SU PROPIA identidad (hay varios super admins,
+    // cada uno la suya). No es una impersonación genérica: el perfil muestra a su usuario
+    // super admin real. `isImpersonating` solo activa la barra de "vista" y el botón Volver.
     const session = {
-      type: 'member', id: 'sa_impersonate', name: 'Super Admin (vista)',
-      email: 'superadmin@avi.com', accountId, accountName: acc.name,
+      type: 'member', id: req.user.id, name: req.user.name, email: req.user.email, photo: req.user.photo || null,
+      accountId, accountName: acc.name,
       roleId: 'role_owner', allAccountIds: [accountId],
       permissions: { inbox:true, agents:true, channels:true, crm:true, pipeline:true, config:true, admins:true, flows:true, variables:true, tools:true, knowledge:true },
       agentAccess: [], isImpersonating: true,
-      // Identidad REAL del super admin detrás de la impersonación (para acciones que la necesitan,
-      // p. ej. "unirse como owner" con el correo verdadero del super admin).
+      // Identidad del super admin que está en la vista (para acciones que la necesitan).
       saId: req.user.id, saEmail: req.user.email, saName: req.user.name,
     }
     res.json({ token: sign(session), session })

@@ -2,7 +2,6 @@
 const pool   = require('../db')
 const socket = require('../services/socket')
 const { uid, parseJ } = require('../utils')
-const { sign } = require('../auth')
 
 const OWNER_PERMS = { inbox: true, agents: true, channels: true, crm: true, pipeline: true, config: true, admins: true, flows: true, variables: true, tools: true, knowledge: true }
 
@@ -95,15 +94,14 @@ const joinAsOwner = async (req, res) => {
         [rid, accId, 'Owner', JSON.stringify(OWNER_PERMS)])
       ownerRole = { id: rid, permissions: JSON.stringify(OWNER_PERMS) }
     }
-    // Foto/nombre reales del super admin (para el perfil).
-    const [[sa]] = await pool.query('SELECT name, photo, password FROM super_admins WHERE email=?', [email])
-    let memberId
+    // Contraseña real del super admin (para que la fila de miembro sea usable si se loguea).
+    const [[sa]] = await pool.query('SELECT password FROM super_admins WHERE email=?', [email])
     const [[existing]] = await pool.query('SELECT * FROM members WHERE account_id=? AND email=? LIMIT 1', [accId, email])
+    let memberId
     if (existing) {
       memberId = existing.id
       await pool.query('UPDATE members SET role_id=?, status=? WHERE id=? AND account_id=?', [ownerRole.id, 'active', existing.id, accId])
     } else {
-      // Contraseña: reutiliza la de otra cuenta del mismo email; si no hay, la del super admin.
       const [[sibling]] = await pool.query("SELECT password FROM members WHERE email=? AND password IS NOT NULL AND password<>'' LIMIT 1", [email])
       const password = sibling?.password || sa?.password || ''
       memberId = 'mem_' + uid()
@@ -111,21 +109,7 @@ const joinAsOwner = async (req, res) => {
         [memberId, accId, name, email, password, String(name || email).slice(0, 2).toUpperCase(), ownerRole.id, '[]', 'active'])
     }
     socket.emit(accId, 'account:updated', { accId })
-
-    // Devuelve una sesión de MIEMBRO real (owner de esta cuenta) con la identidad real del
-    // super admin. Así deja de ser la vista genérica de impersonación: el perfil muestra al
-    // usuario real y cada cuenta es independiente (el selector "cambiar cuenta" trae todas).
-    const [rows] = await pool.query(
-      "SELECT DISTINCT a.id AS accId FROM members m JOIN accounts a ON m.account_id=a.id WHERE m.email=? AND m.status='active'",
-      [email])
-    const session = {
-      type: 'member', id: memberId, name: name || sa?.name || email, email, photo: sa?.photo || null,
-      accountId: accId, accountName: acc.name,
-      allAccountIds: rows.map(r => r.accId),
-      roleId: ownerRole.id, permissions: parseJ(ownerRole.permissions, OWNER_PERMS),
-      agentAccess: [],
-    }
-    res.json({ id: memberId, existed: !!existing, token: sign(session), session })
+    res.json({ id: memberId, existed: !!existing })
   } catch (err) { console.error('[JOIN OWNER]', err); res.status(500).json({ error: 'Error interno' }) }
 }
 
