@@ -97,6 +97,39 @@ async function getPropertyCached(accId, cfg) {
   return property
 }
 
+// ── Cursor de fotos ya enviadas (para no repetir al pedir "más fotos") ──────────
+// Por conversación + propiedad + (habitación | 'all'). En memoria, con TTL/cap.
+const _photoSent = new Map()   // key → { at, urls:Set }
+const PHOTO_TTL = 60 * 60 * 1000
+function photoKey(convId, propId, roomId) { return `${convId || '-'}:${propId || 'default'}:${roomId || 'all'}` }
+function photoState(key, reset) {
+  let st = _photoSent.get(key)
+  if (reset || !st || Date.now() - st.at > PHOTO_TTL) { st = { at: Date.now(), urls: new Set() }; _photoSent.set(key, st) }
+  st.at = Date.now()
+  if (_photoSent.size > 3000) { for (const [k, v] of _photoSent) if (Date.now() - v.at > PHOTO_TTL) _photoSent.delete(k) }
+  return st
+}
+// Envía el siguiente lote de fotos NO enviadas. Al agotarse, avisa y reinicia el
+// cursor para poder reenviar desde el principio si el cliente lo pide.
+function sendPhotoBatch(pool, key, { maxPhotos, reset, label, extra }) {
+  pool = [...new Set((pool || []).filter(Boolean))]
+  if (!pool.length) return { text: `No hay fotos publicadas${label ? ` de ${label}` : ''} en el PMS.${extra ? `\n${extra}` : ''}` }
+  const st = photoState(key, reset)
+  const fresh = pool.filter(u => !st.urls.has(u))
+  if (!fresh.length) {
+    _photoSent.set(key, { at: Date.now(), urls: new Set() })   // reinicia para reenviar desde el principio
+    return { text: `Ya te envié todas las fotos disponibles${label ? ` de ${label}` : ''} (${pool.length} en total) y no hay más nuevas. Dile al cliente que, si quiere, se las puedes reenviar desde el principio (vuelve a llamar ver_habitaciones con desde_inicio=true).` }
+  }
+  const batch = fresh.slice(0, Math.max(1, maxPhotos || 4))
+  batch.forEach(u => st.urls.add(u))
+  const media = batch.map((url, i) => ({ url, caption: i === 0 && label ? label : '' }))
+  const firstBatch = st.urls.size === batch.length
+  const remaining = pool.length - st.urls.size
+  const head = firstBatch ? `Envié ${media.length} foto(s)${label ? ` de ${label}` : ''} al cliente.` : `Envié ${media.length} foto(s) MÁS${label ? ` de ${label}` : ''} (distintas a las anteriores).`
+  const tail = remaining > 0 ? ` Quedan ${remaining} foto(s) más si el cliente quiere ver otras.` : ` Con estas ya se enviaron todas las fotos disponibles.`
+  return { text: `${head}${tail}${extra ? `\n${extra}` : ''}`, media }
+}
+
 // Resuelve la propiedad indicada por el asistente (nombre o id) contra la lista
 // del login. Devuelve el cfg con esa propiedad, o null si no la reconoce.
 function resolveProperty(cfg, propArg) {
@@ -236,6 +269,8 @@ async function toolCall(accId, fn, args = {}, { convId, agId } = {}) {
   }
 
   // ── Ver habitaciones (con fotos) ──────────────────────────────────────────
+  // Cada llamada envía fotos NUEVAS (no repetidas). Al agotarse, avisa; con
+  // desde_inicio=true reenvía desde el principio.
   if (fn === 'ver_habitaciones') {
     const [rooms, property] = await Promise.all([
       getRoomsCached(accId, scoped),
@@ -243,38 +278,29 @@ async function toolCall(accId, fn, args = {}, { convId, agId } = {}) {
     ])
     const propPhotos = (property?.photos || []).filter(Boolean)
     const propName = property?.name || cfg.hotelName || ''
+    const reset = args.desde_inicio === true || /^(true|1|si|sí)$/i.test(String(args.desde_inicio || ''))
+    const maxPhotos = pub.maxPhotos
 
     const wanted = norm(args.habitacion || '')
     if (wanted && rooms.length) {
       const room = rooms.find(r => norm(r.name).includes(wanted) || wanted.includes(norm(r.name))) ||
         rooms.find(r => norm(r.name).split(/\s+/).some(w => wanted.includes(w) && w.length > 3))
       if (!room) return { text: `No encontré una habitación llamada "${args.habitacion}". Las disponibles son: ${rooms.map(r => r.name).join(', ')}.` }
-      // Fotos de la habitación; si no tiene, usa las de la propiedad.
-      const photos = (room.photos?.length ? room.photos : propPhotos)
-      const media = photos.slice(0, pub.maxPhotos).map((url, i) => ({ url, caption: i === 0 ? `${room.name} (capacidad ${room.capacity})` : '' }))
+      // Pool de fotos de la habitación; si no tiene, usa las de la propiedad.
+      const pool = (room.photos?.length ? room.photos : propPhotos)
       const plans = (room.rates || []).map(rt => `• ${rt.name}${rt.mealType === 'breakfast' ? ' (con desayuno)' : ''}`).join('\n')
-      const photoTxt = media.length
-        ? `Envié ${media.length} foto(s) de "${room.name}" al cliente.`
-        : `No hay fotos publicadas para "${room.name}" en el PMS; describe la habitación con la ficha.`
-      return {
-        text: `${photoTxt} Ficha: capacidad ${room.capacity} persona(s). ${room.description || ''}${plans ? `\nPlanes: \n${plans}` : ''}\nPara precios exactos usa ver_disponibilidad_hotel con las fechas.`,
-        media,
-      }
+      const extra = `Ficha: capacidad ${room.capacity} persona(s). ${room.description || ''}${plans ? `\nPlanes: \n${plans}` : ''}`
+      return sendPhotoBatch(pool, photoKey(convId, scoped.propertyId, room.id), { maxPhotos, reset, label: room.name, extra })
     }
 
-    // Panorama: portada de cada habitación; si no hay fotos por habitación, envía las de la propiedad.
-    let media = rooms.slice(0, 6).filter(r => r.photos?.[0]).map(r => ({ url: r.photos[0], caption: `${r.name} · ${r.capacity} persona(s)` }))
-    if (!media.length && propPhotos.length) media = propPhotos.slice(0, 6).map((url, i) => ({ url, caption: i === 0 ? propName : '' }))
-
-    if (!rooms.length) {
-      // Sin habitaciones publicadas: al menos envía las fotos de la propiedad.
-      if (media.length) return { text: `Envié ${media.length} foto(s)${propName ? ` de ${propName}` : ''} al cliente.${property?.description ? ` ${property.description}` : ''}\nPara ver disponibilidad y precios usa ver_disponibilidad_hotel con las fechas.`, media }
-      return { text: `El hotel no tiene habitaciones publicadas en el PMS${propName ? ` para ${propName}` : ''}.` }
-    }
-
-    const list = rooms.map(r => `• ${r.name} — capacidad ${r.capacity}${r.description ? ` — ${String(r.description).slice(0, 110)}` : ''}`).join('\n')
-    const intro = media.length ? `Habitaciones${propName ? ` de ${propName}` : ' del hotel'} (envié ${media.length} foto(s)):` : `Habitaciones${propName ? ` de ${propName}` : ' del hotel'}:`
-    return { text: `${intro}\n${list}\n\nPide "ver_habitaciones" con el nombre para su ficha, o consulta disponibilidad con fechas.`, media }
+    // Panorama / propiedad: pool = TODAS las fotos de las habitaciones + de la propiedad.
+    const poolAll = [...(rooms.flatMap(r => r.photos || [])), ...propPhotos]
+    const list = rooms.length ? rooms.map(r => `• ${r.name} — capacidad ${r.capacity}${r.description ? ` — ${String(r.description).slice(0, 110)}` : ''}`).join('\n') : ''
+    const extra = rooms.length ? `Habitaciones:\n${list}\nPide ver_habitaciones con el nombre para la ficha de una, o consulta disponibilidad con fechas.` : (property?.description || '')
+    const res = sendPhotoBatch(poolAll, photoKey(convId, scoped.propertyId, 'all'), { maxPhotos, reset, label: propName, extra })
+    // Sin fotos pero con habitaciones: al menos lista las habitaciones.
+    if (!res.media?.length && rooms.length && !poolAll.length) return { text: `Habitaciones${propName ? ` de ${propName}` : ''}:\n${list}\n\nEste PMS no tiene fotos publicadas; consulta disponibilidad con fechas.` }
+    return res
   }
 
   // ── Disponibilidad + cotización ───────────────────────────────────────────

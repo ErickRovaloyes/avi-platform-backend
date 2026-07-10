@@ -444,9 +444,10 @@ function buildPmsToolDefs(account) {
   )
   defs.push(
     { type: 'function', function: { name: 'ver_habitaciones',
-      description: `Muestra las habitaciones${hotel} con sus FOTOS reales, capacidad y planes. Úsalo cuando el cliente pregunte por las habitaciones o pida fotos.`,
+      description: `Muestra las habitaciones${hotel} con sus FOTOS reales, capacidad y planes. Úsalo cuando el cliente pregunte por las habitaciones o pida fotos. Cada vez que lo llames envía fotos NUEVAS (distintas a las ya enviadas); si el cliente pide "más fotos", vuelve a llamarlo. Cuando ya no queden más, la herramienta lo indica y puedes reenviarlas desde el principio con desde_inicio=true.`,
       parameters: { type: 'object', properties: {
-        habitacion: { type: 'string', description: 'Nombre de una habitación concreta para enviar todas sus fotos y ficha (vacío = panorama de todas)' },
+        habitacion: { type: 'string', description: 'Nombre de una habitación concreta para enviar sus fotos y ficha (vacío = panorama de la propiedad)' },
+        desde_inicio: { type: 'boolean', description: 'true para reenviar las fotos desde el principio (cuando el cliente ya vio todas y quiere verlas otra vez)' },
         ...propParam,
       } } } },
     { type: 'function', function: { name: 'ver_disponibilidad_hotel',
