@@ -222,7 +222,94 @@ const track = async (req, res) => {
   } catch { res.status(500).json({ error: 'Error interno' }) }
 }
 
+// ── Métricas de pedidos (ventas, ticket, top productos, SLA, zonas) ─────────────
+const DAY = 86400000
+const dayKeyInTz = (ms, tz) => { // 'YYYY-MM-DD' en la zona del negocio
+  try {
+    const p = new Intl.DateTimeFormat('en-CA', { timeZone: tz || 'America/Bogota', year: 'numeric', month: '2-digit', day: '2-digit' }).format(new Date(ms))
+    return p // en-CA => YYYY-MM-DD
+  } catch { return new Date(ms).toISOString().slice(0, 10) }
+}
+const metrics = async (req, res) => {
+  const { accId } = req.params
+  try {
+    const now = Date.now()
+    let to = Number(req.query.to) || now
+    let from = Number(req.query.from) || (to - 30 * DAY)
+    if (from > to) [from, to] = [to, from]
+    // Ventana máxima de seguridad: 400 días.
+    if (to - from > 400 * DAY) from = to - 400 * DAY
+    const [[acc]] = await pool.query('SELECT ai_timezone FROM accounts WHERE id=?', [accId])
+    const tz = acc?.ai_timezone || 'America/Bogota'
+    const cfg = orders.normConfig(await orders.loadConfig(accId))
+    const zones = await orders.listZones(accId).catch(() => [])
+    const zoneName = new Map(zones.map(z => [z.id, z.name]))
+    const [rows] = await pool.query(
+      "SELECT type,status,items,total,currency,zone_id,payment_method,payment_status,timeline,created_at FROM orders WHERE account_id=? AND status<>'draft' AND created_at>=? AND created_at<=? ORDER BY created_at",
+      [accId, from, to])
+
+    const TYPE_LABEL = orders.TYPE_LABEL || {}
+    const STATUS_LABEL = { received: 'Recibido', confirmed: 'Confirmado', preparing: 'Preparando', ready: 'Listo', on_the_way: 'En camino', delivered: 'Entregado', canceled: 'Cancelado' }
+    const currency = rows.find(r => r.currency)?.currency || cfg.currency || 'COP'
+
+    let revenue = 0, canceled = 0, paidOnline = 0, validOrders = 0
+    const byDay = new Map(), byType = new Map(), byStatus = new Map(), byPay = new Map()
+    const products = new Map(), zoneAgg = new Map()
+    const slaSum = new Map(), slaCnt = new Map() // tiempo en cada estado
+    let leadSum = 0, leadCnt = 0 // recibido → entregado
+
+    for (const o of rows) {
+      const total = Number(o.total) || 0
+      const isCanceled = o.status === 'canceled'
+      byStatus.set(o.status, (byStatus.get(o.status) || 0) + 1)
+      if (isCanceled) { canceled++; continue }
+      validOrders++
+      revenue += total
+      if (o.payment_status === 'paid') paidOnline++
+      const dk = dayKeyInTz(Number(o.created_at) || now, tz)
+      const d = byDay.get(dk) || { day: dk, orders: 0, revenue: 0 }; d.orders++; d.revenue += total; byDay.set(dk, d)
+      const t = byType.get(o.type) || { type: o.type, label: TYPE_LABEL[o.type] || o.type, orders: 0, revenue: 0 }; t.orders++; t.revenue += total; byType.set(o.type, t)
+      const pm = o.payment_method || 'sin_dato'; const p = byPay.get(pm) || { method: pm, orders: 0, revenue: 0 }; p.orders++; p.revenue += total; byPay.set(pm, p)
+      if (o.zone_id) { const z = zoneAgg.get(o.zone_id) || { zoneId: o.zone_id, name: zoneName.get(o.zone_id) || 'Zona', orders: 0, revenue: 0 }; z.orders++; z.revenue += total; zoneAgg.set(o.zone_id, z) }
+      for (const it of parseJ(o.items, [])) {
+        const name = String(it.name || '').trim(); if (!name) continue
+        const qty = Number(it.qty) || 1; const line = (Number(it.unitPrice ?? it.price) || 0) * qty
+        const pr = products.get(name) || { name, qty: 0, revenue: 0 }; pr.qty += qty; pr.revenue += line; products.set(name, pr)
+      }
+      // SLA: tiempo en cada estado a partir de la línea de tiempo.
+      const tl = parseJ(o.timeline, []).filter(x => x && x.at).sort((a, b) => a.at - b.at)
+      for (let i = 0; i < tl.length - 1; i++) {
+        const dt = tl[i + 1].at - tl[i].at; if (dt <= 0 || dt > 30 * DAY) continue
+        const k = tl[i].status; slaSum.set(k, (slaSum.get(k) || 0) + dt); slaCnt.set(k, (slaCnt.get(k) || 0) + 1)
+      }
+      const rec = tl.find(x => x.status === 'received'), del = tl.find(x => x.status === 'delivered')
+      if (rec && del && del.at > rec.at) { leadSum += del.at - rec.at; leadCnt++ }
+    }
+
+    const orderCount = validOrders + canceled
+    const sla = [...slaSum.keys()].map(k => ({ status: k, label: STATUS_LABEL[k] || k, avgMs: Math.round(slaSum.get(k) / slaCnt.get(k)), samples: slaCnt.get(k) }))
+      .sort((a, b) => (orders.STATUSES.indexOf(a.status) - orders.STATUSES.indexOf(b.status)))
+
+    res.json({
+      range: { from, to }, tz, currency,
+      summary: {
+        orders: orderCount, valid: validOrders, revenue: Math.round(revenue),
+        avgTicket: validOrders ? Math.round(revenue / validOrders) : 0,
+        canceled, cancelRate: orderCount ? +(canceled / orderCount * 100).toFixed(1) : 0,
+        paidOnline, leadMs: leadCnt ? Math.round(leadSum / leadCnt) : 0,
+      },
+      byDay: [...byDay.values()].sort((a, b) => a.day < b.day ? -1 : 1).map(d => ({ ...d, revenue: Math.round(d.revenue) })),
+      byType: [...byType.values()].sort((a, b) => b.orders - a.orders).map(x => ({ ...x, revenue: Math.round(x.revenue) })),
+      byStatus: [...byStatus.entries()].map(([status, count]) => ({ status, label: STATUS_LABEL[status] || status, count })),
+      byPayment: [...byPay.values()].sort((a, b) => b.orders - a.orders).map(x => ({ ...x, revenue: Math.round(x.revenue) })),
+      topProducts: [...products.values()].sort((a, b) => b.qty - a.qty).slice(0, 15).map(x => ({ ...x, revenue: Math.round(x.revenue) })),
+      topZones: [...zoneAgg.values()].sort((a, b) => b.orders - a.orders).map(x => ({ ...x, revenue: Math.round(x.revenue) })),
+      sla,
+    })
+  } catch (e) { console.error('[orders metrics]', e); res.status(500).json({ error: 'Error interno' }) }
+}
+
 module.exports = {
   getConfig, saveConfig, listMenu, saveProduct, deleteProduct, saveGroup, deleteGroup,
-  saveZone, deleteZone, saveCourier, deleteCourier, saveCoupon, deleteCoupon, listOrders, getOrder, updateOrder, tool, track,
+  saveZone, deleteZone, saveCourier, deleteCourier, saveCoupon, deleteCoupon, listOrders, getOrder, updateOrder, tool, track, metrics,
 }

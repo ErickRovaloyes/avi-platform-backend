@@ -20,6 +20,9 @@ router.delete('/orders/:accId/couriers/:id',   authMiddleware, ctrl.deleteCourie
 router.post('/orders/:accId/coupons',          authMiddleware, ctrl.saveCoupon)
 router.delete('/orders/:accId/coupons/:id',    authMiddleware, ctrl.deleteCoupon)
 
+// Métricas de pedidos (autenticado).
+router.get('/orders/:accId/metrics',           authMiddleware, ctrl.metrics)
+
 // Tablero operativo (autenticado).
 router.get('/orders/:accId/orders',            authMiddleware, ctrl.listOrders)
 router.get('/orders/:accId/orders/:id',        authMiddleware, ctrl.getOrder)
