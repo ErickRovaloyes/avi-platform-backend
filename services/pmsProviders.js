@@ -39,13 +39,13 @@ async function tfetch(url, opts = {}, ms = 10000) {
 // La API de HosRoom usa Authorization: Bearer <token del hotel>. El token debe ser
 // el del HOTEL (no el de un usuario) y el hotel debe tener habilitada la integración
 // "Motor de reservas". Los mensajes de error traducen los casos típicos.
-async function hosFetch(cfg, path, { method = 'GET', body, query } = {}) {
+async function hosFetch(cfg, path, { method = 'GET', body, query, timeoutMs } = {}) {
   const base = (cfg.baseUrl || 'https://sys.hosroom.com').replace(/\/$/, '')
   const url = new URL(`${base}${path}`)
   for (const [k, v] of Object.entries(query || {})) { if (v !== undefined && v !== null && v !== '') url.searchParams.set(k, String(v)) }
   const headers = { 'Accept': 'application/json', 'Authorization': `Bearer ${cfg.token}` }
   if (body) headers['Content-Type'] = 'application/json'
-  const res = await tfetch(url, { method, headers, body: body ? JSON.stringify(body) : undefined })
+  const res = await tfetch(url, { method, headers, body: body ? JSON.stringify(body) : undefined }, timeoutMs)
   const text = await res.text()
   let data = null; try { data = text ? JSON.parse(text) : null } catch { data = text }
   if (!res.ok) {
@@ -107,7 +107,7 @@ const hosroom = {
     }
     // 2) /api/engine/settings confirma que el "Motor de reservas" está habilitado.
     try {
-      const data = await hosFetch(cfg, '/api/engine/settings')
+      const data = await hosFetch(cfg, '/api/engine/settings', { timeoutMs: 25000 })
       const root = data?.settings || data || {}
       const nRooms = arr(first(root.rooms, root.data, [])).length
       return { ok: true, message: `Conexión HosRoom OK${hotelName ? ` — ${hotelName}` : ''}${nRooms ? ` · ${nRooms} habitación(es)` : ''}`, hotelName }
@@ -117,8 +117,10 @@ const hosroom = {
   },
 
   // Habitaciones con ficha completa, fotos y planes.
+  // /api/engine/settings devuelve un payload ENORME (catálogo de amenidades), lento
+  // de generar → timeout amplio (25 s). Se cachea 5 min (getRoomsCached).
   async getRooms(cfg) {
-    const data = await hosFetch(cfg, '/api/engine/settings')
+    const data = await hosFetch(cfg, '/api/engine/settings', { timeoutMs: 25000 })
     const root = data?.settings || data || {}
     return arr(first(root.rooms, root.data, [])).map(normRoom)
   },
