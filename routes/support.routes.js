@@ -14,5 +14,6 @@ router.put('/:ticketId/take',               authMiddleware, ctrl.takeTicket)
 router.put('/:ticketId/priority',           authMiddleware, ctrl.setPriority)
 router.post('/:ticketId/notes',             authMiddleware, ctrl.addNote)
 router.delete('/:ticketId/notes/:noteId',   authMiddleware, ctrl.deleteNote)
+router.put('/:ticketId/eta',                authMiddleware, ctrl.setEta)
 
 module.exports = router

@@ -438,6 +438,9 @@ app.use('/api',                recontactRoutes)
     "ALTER TABLE support_tickets ADD COLUMN priority VARCHAR(10)",
     // Notas internas del super admin sobre el ticket (no visibles para el cliente).
     "ALTER TABLE support_tickets ADD COLUMN notes JSON",
+    // Fecha aproximada de entrega de la solución (ETA) + momento real de cierre (entrega).
+    "ALTER TABLE support_tickets ADD COLUMN eta BIGINT",
+    "ALTER TABLE support_tickets ADD COLUMN closed_at BIGINT",
     `CREATE TABLE IF NOT EXISTS flow_executions (
        id BIGINT PRIMARY KEY AUTO_INCREMENT,
        account_id VARCHAR(50) NOT NULL,

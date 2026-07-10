@@ -25,6 +25,7 @@ const getAllTickets = async (req, res) => {
       id: t.id, accId: t.account_id, accountName: t.account_name,
       subject: t.subject, status: t.status, assignedTo: parseJ(t.assigned_to, null),
       takenBy: parseJ(t.taken_by, null), takenAt: t.taken_at || null, priority: t.priority || null,
+      eta: t.eta || null, closedAt: t.closed_at || null,
       notes: isSA ? parseJ(t.notes, []) : [],   // notas internas: solo para super admins
       refs: parseJ(t.refs, []),
       rating: t.rating != null ? Number(t.rating) : null, ratingNote: t.rating_note || '', ratedAt: t.rated_at || null,
@@ -122,6 +123,9 @@ const updateTicket = async (req, res) => {
     if (status     !== undefined) { sets.push('status=?');      vals.push(status) }
     if (assignedTo !== undefined) { sets.push('assigned_to=?'); vals.push(JSON.stringify(assignedTo)) }
     if (refs       !== undefined) { sets.push('refs=?');        vals.push(JSON.stringify(Array.isArray(refs) ? refs : [])) }
+    // "Entrega" = cierre del ticket: guarda closed_at al cerrar (y lo limpia al reabrir).
+    if (status === 'closed') { sets.push('closed_at=?'); vals.push(Date.now()) }
+    else if (status !== undefined) { sets.push('closed_at=?'); vals.push(null) }
     vals.push(ticketId)
     await pool.query(`UPDATE support_tickets SET ${sets.join(',')} WHERE id=?`, vals)
     socket.broadcast('support:updated', { accId: tkt.account_id })
@@ -134,7 +138,8 @@ const updateStatus = async (req, res) => {
   const { status } = req.body
   try {
     const [[tkt]] = await pool.query('SELECT account_id FROM support_tickets WHERE id=?', [ticketId])
-    await pool.query('UPDATE support_tickets SET status=?,updated_at=? WHERE id=?', [status, Date.now(), ticketId])
+    const closedSet = status === 'closed' ? ', closed_at=' + Date.now() : (status ? ', closed_at=NULL' : '')
+    await pool.query(`UPDATE support_tickets SET status=?,updated_at=?${closedSet} WHERE id=?`, [status, Date.now(), ticketId])
     socket.broadcast('support:updated', { accId: tkt?.account_id })
     res.json({ ok: true })
   } catch (err) { res.status(500).json({ error: 'Error interno' }) }
@@ -241,4 +246,31 @@ const deleteNote = async (req, res) => {
   } catch (err) { console.error('[support delNote]', err); res.status(500).json({ error: 'Error interno' }) }
 }
 
-module.exports = { getAllTickets, createTicket, addMessage, updateTicket, updateStatus, assignTicket, submitRating, takeTicket, setPriority, addNote, deleteNote }
+// Fecha aproximada de entrega (ETA). La fija/edita el super admin; se anuncia en el chat
+// (mensaje de sistema visible para ambos: cliente y soporte).
+function fmtEta(ms) {
+  try { return new Date(ms).toLocaleString('es-CO', { timeZone: 'America/Bogota', day: '2-digit', month: 'short', year: 'numeric', hour: '2-digit', minute: '2-digit' }) }
+  catch { return new Date(ms).toISOString() }
+}
+const setEta = async (req, res) => {
+  const { ticketId } = req.params
+  if (req.user?.type !== 'superadmin') return res.status(403).json({ error: 'Solo un super admin puede fijar la fecha de entrega.' })
+  const eta = req.body?.eta == null ? null : Number(req.body.eta)
+  if (eta !== null && (!Number.isFinite(eta) || eta <= 0)) return res.status(400).json({ error: 'Fecha inválida.' })
+  try {
+    const [[tkt]] = await pool.query('SELECT account_id, eta FROM support_tickets WHERE id=?', [ticketId])
+    if (!tkt) return res.status(404).json({ error: 'Ticket no encontrado' })
+    const had = tkt.eta != null
+    const ts = Date.now()
+    await pool.query('UPDATE support_tickets SET eta=?, updated_at=? WHERE id=?', [eta, ts, ticketId])
+    const content = eta === null
+      ? '📅 Se quitó la fecha aproximada de entrega.'
+      : `📅 ${had ? 'La fecha aproximada de entrega se actualizó a' : 'Se estableció una fecha aproximada de entrega'}: ${fmtEta(eta)}.`
+    await pool.query('INSERT INTO support_messages (id,ticket_id,role,author_id,author_name,content,ts,media) VALUES (?,?,?,?,?,?,?,?)',
+      ['msg_' + uid(), ticketId, 'system', req.user.id, req.user.name, content, ts, null])
+    socket.broadcast('support:updated', { accId: tkt.account_id, lastRole: 'system', preview: content })
+    res.json({ ok: true })
+  } catch (err) { console.error('[support eta]', err); res.status(500).json({ error: 'Error interno' }) }
+}
+
+module.exports = { getAllTickets, createTicket, addMessage, updateTicket, updateStatus, assignTicket, submitRating, takeTicket, setPriority, addNote, deleteNote, setEta }
