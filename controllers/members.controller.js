@@ -73,6 +73,43 @@ const deleteMember = async (req, res) => {
   } catch (err) { res.status(500).json({ error: 'Error interno' }) }
 }
 
+// Un super admin se une a una cuenta como OWNER (crea/actualiza su membresía real).
+// Funciona con sesión de super admin directa o detrás de una impersonación (usa saEmail).
+const joinAsOwner = async (req, res) => {
+  const { accId } = req.params
+  const isSA  = req.user?.type === 'superadmin' || req.user?.isImpersonating
+  const email = (req.user?.type === 'superadmin' ? req.user.email : req.user?.saEmail) || ''
+  const name  = (req.user?.type === 'superadmin' ? req.user.name  : req.user?.saName)  || email
+  if (!isSA || !email) return res.status(403).json({ error: 'Solo un super admin puede unirse como owner.' })
+  try {
+    const [[acc]] = await pool.query('SELECT id FROM accounts WHERE id=?', [accId])
+    if (!acc) return res.status(404).json({ error: 'Cuenta no encontrada' })
+    // Rol Owner de la cuenta (creado al crear la cuenta). Si no existe, se crea.
+    let [[ownerRole]] = await pool.query("SELECT * FROM roles WHERE account_id=? AND name='Owner' ORDER BY is_system DESC LIMIT 1", [accId])
+    if (!ownerRole) {
+      const rid = 'role_owner_' + uid()
+      await pool.query('INSERT INTO roles (id,account_id,name,is_system,permissions) VALUES (?,?,?,1,?)',
+        [rid, accId, 'Owner', '{"inbox":true,"agents":true,"channels":true,"crm":true,"pipeline":true,"config":true,"admins":true,"flows":true,"variables":true,"tools":true,"knowledge":true}'])
+      ownerRole = { id: rid }
+    }
+    const [[existing]] = await pool.query('SELECT * FROM members WHERE account_id=? AND email=? LIMIT 1', [accId, email])
+    if (existing) {
+      await pool.query('UPDATE members SET role_id=?, status=? WHERE id=? AND account_id=?', [ownerRole.id, 'active', existing.id, accId])
+      socket.emit(accId, 'account:updated', { accId })
+      return res.json({ id: existing.id, existed: true })
+    }
+    // Contraseña: reutiliza la de otra cuenta del mismo email; si no hay, la del super admin.
+    const [[sibling]] = await pool.query("SELECT password FROM members WHERE email=? AND password IS NOT NULL AND password<>'' LIMIT 1", [email])
+    let password = sibling?.password || ''
+    if (!password) { const [[sa]] = await pool.query('SELECT password FROM super_admins WHERE email=?', [email]); password = sa?.password || '' }
+    const id = 'mem_' + uid()
+    await pool.query('INSERT INTO members (id,account_id,name,email,password,avatar,role_id,agent_access,status) VALUES (?,?,?,?,?,?,?,?,?)',
+      [id, accId, name, email, password, String(name || email).slice(0, 2).toUpperCase(), ownerRole.id, '[]', 'active'])
+    socket.emit(accId, 'account:updated', { accId })
+    res.json({ id })
+  } catch (err) { console.error('[JOIN OWNER]', err); res.status(500).json({ error: 'Error interno' }) }
+}
+
 // Elimina un usuario por completo (todas sus membresías) — solo super admin.
 // Útil para limpiar identidades duplicadas o dar de baja a alguien de toda la plataforma.
 const deleteUserEverywhere = async (req, res) => {
@@ -158,7 +195,7 @@ const deleteLabel = async (req, res) => {
 }
 
 module.exports = {
-  createMember, updateMember, deleteMember, deleteUserEverywhere,
+  createMember, updateMember, deleteMember, deleteUserEverywhere, joinAsOwner,
   createRole, updateRole, deleteRole,
   createLabel, updateLabel, deleteLabel,
 }

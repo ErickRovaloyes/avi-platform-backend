@@ -139,6 +139,9 @@ const impersonate = async (req, res) => {
       roleId: 'role_owner', allAccountIds: [accountId],
       permissions: { inbox:true, agents:true, channels:true, crm:true, pipeline:true, config:true, admins:true, flows:true, variables:true, tools:true, knowledge:true },
       agentAccess: [], isImpersonating: true,
+      // Identidad REAL del super admin detrás de la impersonación (para acciones que la necesitan,
+      // p. ej. "unirse como owner" con el correo verdadero del super admin).
+      saId: req.user.id, saEmail: req.user.email, saName: req.user.name,
     }
     res.json({ token: sign(session), session })
   } catch (err) {

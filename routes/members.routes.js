@@ -7,6 +7,8 @@ const ctrl = require('../controllers/members.controller')
 // Eliminar un usuario por completo (todas sus cuentas) — solo super admin.
 // Debe ir ANTES de `/members/:accId` para que no lo capture esa ruta genérica.
 router.post('/members/delete-user',                 authMiddleware, ctrl.deleteUserEverywhere)
+// Un super admin se une a la cuenta como owner (crea su membresía real).
+router.post('/accounts/:accId/join-as-owner',       authMiddleware, ctrl.joinAsOwner)
 router.post('/accounts/:accId/members',             authMiddleware, ctrl.createMember)
 router.put('/accounts/:accId/members/:memId',       authMiddleware, ctrl.updateMember)
 router.delete('/accounts/:accId/members/:memId',    authMiddleware, ctrl.deleteMember)
