@@ -17,7 +17,7 @@ const saveConfig = async (req, res) => {
     const cur = orders.normConfig(await orders.loadConfig(accId))
     const b = req.body || {}
     const next = { ...cur }
-    for (const k of ['enabled', 'orderTypes', 'currency', 'taxPct', 'packagingFee', 'minOrder', 'freeDeliveryThreshold', 'paymentMethods', 'notifyTeam', 'postOrderFlowId', 'tips', 'businessName']) {
+    for (const k of ['enabled', 'orderTypes', 'currency', 'taxPct', 'packagingFee', 'minOrder', 'freeDeliveryThreshold', 'paymentMethods', 'notifyTeam', 'postOrderFlowId', 'tips', 'businessName', 'notifyCustomer', 'statusMessages']) {
       if (b[k] !== undefined) next[k] = b[k]
     }
     await orders.saveConfig(accId, orders.normConfig(next))
@@ -141,6 +141,7 @@ const updateOrder = async (req, res) => {
     const [[o]] = await pool.query('SELECT * FROM orders WHERE id=? AND account_id=?', [id, accId])
     if (!o) return res.status(404).json({ error: 'No encontrado' })
     const sets = [], vals = []
+    const statusChanged = b.status && orders.STATUSES.includes(b.status) && b.status !== o.status
     if (b.status && orders.STATUSES.includes(b.status)) {
       sets.push('status=?'); vals.push(b.status)
       const tl = parseJ(o.timeline, []); tl.push({ status: b.status, at: Date.now(), by: req.user?.name || 'equipo' }); sets.push('timeline=?'); vals.push(JSON.stringify(tl))
@@ -151,6 +152,10 @@ const updateOrder = async (req, res) => {
     sets.push('updated_at=?'); vals.push(Date.now(), id, accId)
     await pool.query(`UPDATE orders SET ${sets.join(',')} WHERE id=? AND account_id=?`, vals)
     socket.emit(accId, 'orders:updated', { accId })
+    // Avisa al cliente por su canal el nuevo estado (no bloquea la respuesta).
+    if (statusChanged) {
+      orders.notifyCustomerStatus(accId, { conv_id: o.conv_id, code: o.code, total: o.total, currency: o.currency, type: o.type }, b.status).catch(() => {})
+    }
     res.json({ ok: true })
   } catch (e) { console.error('[orders updateOrder]', e); res.status(500).json({ error: 'Error interno' }) }
 }

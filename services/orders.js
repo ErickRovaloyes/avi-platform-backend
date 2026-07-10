@@ -11,11 +11,24 @@
 const pool = require('../db')
 const { uid, parseJ } = require('../utils')
 const socket = require('./socket')
+const { sendBotMsg } = require('../flow/common')
+const { buildOutbound } = require('./calendarNotify')
 
 const ORDER_TYPES = ['delivery', 'pickup', 'dinein', 'scheduled']
 const TYPE_LABEL = { delivery: 'domicilio', pickup: 'para recoger', dinein: 'en el local', scheduled: 'programado' }
 // Ciclo de vida de un pedido (el tablero operativo los mueve entre estados).
 const STATUSES = ['draft', 'received', 'confirmed', 'preparing', 'ready', 'on_the_way', 'delivered', 'canceled']
+const STATUS_LABEL = { received: 'recibido', confirmed: 'confirmado', preparing: 'en preparación', ready: 'listo', on_the_way: 'en camino', delivered: 'entregado', canceled: 'cancelado' }
+const EXTERNAL_CHANNELS = new Set(['whatsapp', 'messenger', 'instagram'])
+// Plantillas por estado que se avisan al cliente (editables en la config).
+const STATUS_MSG_DEFAULT = {
+  confirmed:  '✅ ¡Tu pedido {code} fue confirmado! Ya lo empezamos a preparar.',
+  preparing:  '👨‍🍳 Tu pedido {code} está en preparación.',
+  ready:      '📦 Tu pedido {code} ya está listo.',
+  on_the_way: '🛵 ¡Tu pedido {code} va en camino!',
+  delivered:  '🎉 Tu pedido {code} fue entregado. ¡Gracias por tu compra!',
+  canceled:   '❌ Tu pedido {code} fue cancelado. Cualquier duda, escríbenos.',
+}
 
 // ── Config por cuenta ──────────────────────────────────────────────────────────
 async function loadConfig(accId) {
@@ -45,6 +58,9 @@ function normConfig(cfg) {
     postOrderFlowId: c.postOrderFlowId || '',
     tips: Array.isArray(c.tips) ? c.tips : [0, 10, 15],
     businessName: c.businessName || '',
+    // Avisar al cliente por su canal cuando cambia el estado del pedido.
+    notifyCustomer: c.notifyCustomer !== false,
+    statusMessages: (c.statusMessages && typeof c.statusMessages === 'object' && !Array.isArray(c.statusMessages)) ? c.statusMessages : {},
   }
 }
 
@@ -379,9 +395,41 @@ async function toolCall(accId, fn, args = {}, { convId, agId } = {}) {
   return { text: `Función de pedidos desconocida: ${fn}` }
 }
 
+// ── Aviso al cliente cuando cambia el estado del pedido ─────────────────────────
+// Envía un mensaje por el canal de la conversación (WhatsApp/Messenger/IG por API,
+// webchat/otros por socket). No crítico: cualquier fallo se ignora.
+async function notifyCustomerStatus(accId, order, status) {
+  try {
+    const cfg = normConfig(await loadConfig(accId))
+    if (cfg.notifyCustomer === false) return
+    if (!order?.conv_id) return
+    const tmpl = (cfg.statusMessages && cfg.statusMessages[status]) || STATUS_MSG_DEFAULT[status]
+    if (!tmpl || !String(tmpl).trim()) return   // estado sin plantilla → no se avisa
+
+    const [[conv]] = await pool.query('SELECT * FROM conversations WHERE id=? AND account_id=? LIMIT 1', [order.conv_id, accId])
+    if (!conv) return
+    const agId = conv.agent_id
+    const [[ag]] = await pool.query('SELECT * FROM agents WHERE id=? AND account_id=? LIMIT 1', [agId, accId])
+    const agent = ag ? { id: ag.id, channels: parseJ(ag.channels, []), whatsapp: parseJ(ag.whatsapp, null) } : null
+
+    const text = String(tmpl)
+      .replace(/\{code\}/g, order.code || '')
+      .replace(/\{estado\}/g, STATUS_LABEL[status] || status)
+      .replace(/\{negocio\}/g, cfg.businessName || '')
+      .replace(/\{tipo\}/g, TYPE_LABEL[order.type] || '')
+      .replace(/\{total\}/g, fmtMoney(order.total, cfg.currency))
+
+    const isExternal = EXTERNAL_CHANNELS.has(conv.channel_type)
+    const to = conv.wa_from || conv.messenger_from || conv.ig_from
+    const outbound = (isExternal && agent) ? buildOutbound(agent, conv.channel_type, conv.channel_id, to) : null
+    if (isExternal && !outbound) return   // canal externo sin credenciales/destino
+    await sendBotMsg({ accId, agId, convId: conv.id, _outbound: outbound }, text, { orderNotify: true, orderCode: order.code })
+  } catch (e) { /* no crítico */ }
+}
+
 module.exports = {
   ORDER_TYPES, TYPE_LABEL, STATUSES,
   loadConfig, saveConfig, publicConfig, publicConfigAsync, normConfig,
   listProducts, listGroups, listZones, listCouriers, mapOrder,
-  toolCall,
+  toolCall, notifyCustomerStatus,
 }
