@@ -11,9 +11,19 @@ const store = require('../flow/store')
 const engine = require('../flow/engine')
 const { resolveWhatsAppChannel, buildOutbound } = require('./calendarNotify')
 
-// Audiencia: contactos con teléfono, opcionalmente filtrados por etiquetas (any-of).
-// SIEMPRE se excluyen los contactos que se dieron de baja (opt-out) — nunca reciben masivos.
+// Audiencia: contactos con teléfono, opcionalmente filtrados por etiquetas (any-of) o por
+// un SEGMENTO guardado (audience.segmentId). SIEMPRE se excluyen los que se dieron de baja.
 async function resolveAudience(accId, audience) {
+  // Segmento dinámico: resuelve por sus reglas (forzando teléfono + suscritos).
+  if (audience?.segmentId) {
+    try {
+      const [[seg]] = await pool.query('SELECT rules FROM contact_segments WHERE id=? AND account_id=?', [audience.segmentId, accId])
+      if (seg) {
+        const rules = { ...parseJ(seg.rules, {}), requirePhone: true, subscribedOnly: true }
+        return (await require('./segments').resolveSegment(accId, rules)).map(c => ({ id: c.id, name: c.name, phone: c.phone, tags: c.tags }))
+      }
+    } catch {}
+  }
   const [rows] = await pool.query('SELECT id, name, phone, extra FROM contacts WHERE account_id=?', [accId])
   const tags = (audience?.tags || []).map(t => String(t).trim().toLowerCase()).filter(Boolean)
   return rows

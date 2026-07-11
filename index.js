@@ -210,6 +210,12 @@ app.use('/api',                recontactRoutes)
        pipeline_id VARCHAR(50), card_id VARCHAR(50), from_stage VARCHAR(50), to_stage VARCHAR(50), at BIGINT,
        INDEX idx_dsh (account_id, card_id), INDEX idx_dsh_pipe (account_id, pipeline_id)
      )`,
+    // Segmentos dinámicos de contactos (listas vivas reutilizables en campañas y reportes).
+    `CREATE TABLE IF NOT EXISTS contact_segments (
+       id VARCHAR(50) PRIMARY KEY, account_id VARCHAR(50) NOT NULL,
+       name VARCHAR(120), rules JSON, created_at BIGINT,
+       INDEX idx_seg (account_id)
+     )`,
     // Publicidad en cuentas Demo: código de anuncio (embed) gestionado por el super admin.
     "ALTER TABLE platform_settings ADD COLUMN demo_ads_enabled TINYINT(1) DEFAULT 0",
     "ALTER TABLE platform_settings ADD COLUMN demo_ads_html MEDIUMTEXT",
