@@ -218,6 +218,19 @@ app.use('/api',                recontactRoutes)
        name VARCHAR(120), rules JSON, created_at BIGINT,
        INDEX idx_seg (account_id)
      )`,
+    // Reglas/playbooks no-code: "si pasa X, haz Y" (evaluadas por un worker).
+    `CREATE TABLE IF NOT EXISTS crm_rules (
+       id VARCHAR(50) PRIMARY KEY, account_id VARCHAR(50) NOT NULL,
+       name VARCHAR(140), trigger_type VARCHAR(30), trigger_days INT DEFAULT 7,
+       action_type VARCHAR(30) DEFAULT 'create_task', action_params JSON,
+       enabled TINYINT(1) DEFAULT 1, last_run BIGINT, created_at BIGINT,
+       INDEX idx_rules (account_id)
+     )`,
+    // Registro de disparos (evita que una regla actúe dos veces sobre el mismo objetivo).
+    `CREATE TABLE IF NOT EXISTS crm_rule_fires (
+       rule_id VARCHAR(50), target_id VARCHAR(80), fired_at BIGINT,
+       PRIMARY KEY (rule_id, target_id)
+     )`,
     // Publicidad en cuentas Demo: código de anuncio (embed) gestionado por el super admin.
     "ALTER TABLE platform_settings ADD COLUMN demo_ads_enabled TINYINT(1) DEFAULT 0",
     "ALTER TABLE platform_settings ADD COLUMN demo_ads_html MEDIUMTEXT",
@@ -1207,6 +1220,8 @@ app.use('/api',                recontactRoutes)
   try { require('./services/storeRecovery').start() } catch (e) { console.warn('[store recovery] no iniciado:', e.message) }
   // Worker de mensajes masivos: procesa campañas programadas vencidas.
   try { require('./services/campaigns').startWorker() } catch (e) { console.warn('[campaigns] worker no iniciado:', e.message) }
+  // Reglas/playbooks del CRM: evalúa disparadores y crea tareas automáticamente.
+  try { require('./services/crmRules').startWorker() } catch (e) { console.warn('[crm rules] worker no iniciado:', e.message) }
   // Procesador del outbox de eventos de dominio (Core Booking Engine, Fase 0)
   try { require('./core/events').startProcessor() } catch (e) { console.warn('[events] no iniciado:', e.message) }
   // Worker que libera los holds (bloqueos de asiento) vencidos — Cine (Fase 3)

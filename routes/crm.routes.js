@@ -3,6 +3,7 @@ const router = require('express').Router()
 const { authMiddleware } = require('../auth')
 const ctrl = require('../controllers/crm.controller')
 const seg = require('../controllers/segments.controller')
+const rules = require('../controllers/crmRules.controller')
 
 router.get('/accounts/:accId/crm/notes',                authMiddleware, ctrl.listNotes)
 router.post('/accounts/:accId/crm/notes',               authMiddleware, ctrl.createNote)
@@ -27,6 +28,13 @@ router.post('/accounts/:accId/crm/segments',            authMiddleware, seg.crea
 router.post('/accounts/:accId/crm/segments/preview',    authMiddleware, seg.preview)
 router.put('/accounts/:accId/crm/segments/:id',         authMiddleware, seg.update)
 router.delete('/accounts/:accId/crm/segments/:id',      authMiddleware, seg.remove)
+
+// Reglas / playbooks no-code
+router.get('/accounts/:accId/crm/rules',                authMiddleware, rules.list)
+router.post('/accounts/:accId/crm/rules',               authMiddleware, rules.create)
+router.put('/accounts/:accId/crm/rules/:id',            authMiddleware, rules.update)
+router.delete('/accounts/:accId/crm/rules/:id',         authMiddleware, rules.remove)
+router.post('/accounts/:accId/crm/rules/:id/run',       authMiddleware, rules.run)
 router.post('/accounts/:accId/crm/classify',            authMiddleware, ctrl.classifyConversations)
 router.get('/accounts/:accId/crm/executive-summary',    authMiddleware, ctrl.previewExecutiveSummary)
 router.post('/accounts/:accId/crm/executive-summary',   authMiddleware, ctrl.sendExecutiveSummary)
