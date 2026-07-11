@@ -2,6 +2,29 @@
 const pool = require('../db')
 const { uid, parseJ } = require('../utils')
 const convClassify = require('../services/convClassify')
+const execSummary = require('../services/execSummary')
+const { sendEmail } = require('../services/email')
+
+// ── Resumen ejecutivo (preview + envío por email al dueño) ───────────────────
+const previewExecutiveSummary = async (req, res) => {
+  const { accId } = req.params
+  const days = Math.min(Math.max(parseInt(req.query.days) || 7, 1), 90)
+  try { res.json(await execSummary.buildSummary(accId, days)) }
+  catch (err) { console.error('[exec summary]', err); res.status(500).json({ error: 'Error interno' }) }
+}
+const sendExecutiveSummary = async (req, res) => {
+  const { accId } = req.params
+  const days = Math.min(Math.max(parseInt(req.body?.days) || 7, 1), 90)
+  try {
+    const sm = await execSummary.buildSummary(accId, days)
+    const to = String(req.body?.to || sm.ownerEmail || '').trim()
+    if (!to) return res.status(400).json({ error: 'No hay correo destino. Indica uno o configura el correo de la cuenta.', summary: sm })
+    const html = execSummary.buildHtml(sm)
+    const r = await sendEmail({ to, subject: `Resumen ejecutivo · ${sm.account}`, html })
+    if (!r.ok) return res.status(502).json({ error: r.error || 'No se pudo enviar el correo', summary: sm })
+    res.json({ ok: true, to, summary: sm })
+  } catch (err) { console.error('[exec summary send]', err); res.status(500).json({ error: 'Error interno' }) }
+}
 
 // ── Clasificación IA de conversaciones (tema + sentimiento) ─────────────────
 // Corre por lotes incrementales usando el Modelo IA de Negocio del Super Panel.
@@ -263,4 +286,4 @@ const kpis = async (req, res) => {
   }
 }
 
-module.exports = { listNotes, createNote, deleteNote, listTasks, createTask, updateTask, deleteTask, listActivity, kpis, logActivity, classifyConversations }
+module.exports = { listNotes, createNote, deleteNote, listTasks, createTask, updateTask, deleteTask, listActivity, kpis, logActivity, classifyConversations, previewExecutiveSummary, sendExecutiveSummary }
