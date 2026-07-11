@@ -201,6 +201,9 @@ app.use('/api',                recontactRoutes)
     "ALTER TABLE conversations ADD COLUMN sentiment VARCHAR(12)",
     "ALTER TABLE conversations ADD COLUMN classified_at BIGINT",
     "ALTER TABLE conversations ADD INDEX idx_conv_topic (account_id, topic)",
+    // Métricas de atención: tiempo de 1ª respuesta (ms) y desenlace (atendido/derivado/sin_respuesta).
+    "ALTER TABLE conversations ADD COLUMN first_response_ms BIGINT",
+    "ALTER TABLE conversations ADD COLUMN outcome VARCHAR(16)",
     // Publicidad en cuentas Demo: código de anuncio (embed) gestionado por el super admin.
     "ALTER TABLE platform_settings ADD COLUMN demo_ads_enabled TINYINT(1) DEFAULT 0",
     "ALTER TABLE platform_settings ADD COLUMN demo_ads_html MEDIUMTEXT",

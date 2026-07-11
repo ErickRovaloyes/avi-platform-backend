@@ -231,8 +231,20 @@ const kpis = async (req, res) => {
       const [[u]] = await pool.query("SELECT COUNT(*) AS n FROM conversations WHERE account_id=? AND classified_at IS NULL", [accId])
       unclassified = Number(u?.n || 0)
     } catch {}
+    // Atención: tiempo de 1ª respuesta + desenlace (outcome).
+    let avgFirstResponseMs = null, outcomes = [], attendedPct = 0
+    try {
+      const [[fr]] = await pool.query("SELECT AVG(first_response_ms) AS avg FROM conversations WHERE account_id=? AND first_response_ms IS NOT NULL AND created_at BETWEEN ? AND ?", [accId, fromMs, toMs])
+      avgFirstResponseMs = fr?.avg != null ? Math.round(Number(fr.avg)) : null
+      const [orow] = await pool.query("SELECT outcome, COUNT(*) AS n FROM conversations WHERE account_id=? AND outcome IS NOT NULL AND created_at BETWEEN ? AND ? GROUP BY outcome", [accId, fromMs, toMs])
+      outcomes = orow.map(r => ({ outcome: r.outcome, count: Number(r.n) }))
+      const tot = outcomes.reduce((s, o) => s + o.count, 0)
+      const att = outcomes.find(o => o.outcome === 'atendido')?.count || 0
+      attendedPct = tot ? Math.round(att / tot * 100) : 0
+    } catch {}
     res.json({
       topics, sentiment, classifiedTotal, unclassified,
+      avgFirstResponseMs, outcomes, attendedPct,
       totalConversations: Number(convStats.total),
       humanHandoffs:      Number(convStats.humanHandoff),
       contactsAdded:      Number(contactsCount.total),
