@@ -8,12 +8,14 @@ const { callAI, detectProvider, resolveProviderKey, extractJson } = require('../
 
 const TOPICS = ['ventas', 'soporte', 'queja', 'informacion', 'agendamiento', 'pedido', 'otro']
 const SENTIMENTS = ['positivo', 'neutral', 'negativo']
+const INTENTS = ['nula', 'baja', 'media', 'alta']
 
 const SYS = `Eres un clasificador de conversaciones de atención al cliente de un negocio.
-Devuelve SOLO un JSON con dos campos:
-{"tema": <uno de: ${TOPICS.join(', ')}>, "sentimiento": <uno de: ${SENTIMENTS.join(', ')}>}
+Devuelve SOLO un JSON con tres campos:
+{"tema": <uno de: ${TOPICS.join(', ')}>, "sentimiento": <uno de: ${SENTIMENTS.join(', ')}>, "intencion": <uno de: ${INTENTS.join(', ')}>}
 - "tema" = el motivo principal por el que el cliente escribió.
-- "sentimiento" = el ánimo general del cliente en la conversación.
+- "sentimiento" = el ánimo general del cliente.
+- "intencion" = qué tan cerca está el cliente de comprar/contratar (nula = no aplica; alta = quiere comprar ya).
 No expliques nada, solo el JSON.`
 
 async function businessModel() {
@@ -63,15 +65,16 @@ async function classifyBatch(accId, { limit = 25 } = {}) {
         text += `${m.sender === 'user' ? 'Cliente' : 'Negocio'}: ${String(m.content).slice(0, 400)}\n`
         if (text.length > 2400) break
       }
-      let topic = 'otro', sentiment = 'neutral'
+      let topic = 'otro', sentiment = 'neutral', intent = 'nula'
       if (text.trim()) {
-        const r = await callAI({ provider, model, apiKey, systemPrompt: SYS, userPrompt: text.trim(), maxTokens: 80, temperature: 0, jsonMode: provider !== 'anthropic' })
+        const r = await callAI({ provider, model, apiKey, systemPrompt: SYS, userPrompt: text.trim(), maxTokens: 90, temperature: 0, jsonMode: provider !== 'anthropic' })
         const parsed = extractJson(r.text || '') || {}
         topic = TOPICS.includes(String(parsed.tema || '').toLowerCase()) ? String(parsed.tema).toLowerCase() : 'otro'
         sentiment = SENTIMENTS.includes(String(parsed.sentimiento || '').toLowerCase()) ? String(parsed.sentimiento).toLowerCase() : 'neutral'
+        intent = INTENTS.includes(String(parsed.intencion || '').toLowerCase()) ? String(parsed.intencion).toLowerCase() : 'nula'
       }
-      await pool.query('UPDATE conversations SET topic=?, sentiment=?, first_response_ms=?, outcome=?, classified_at=? WHERE id=?',
-        [topic, sentiment, frt, outcome, Date.now(), conv.id])
+      await pool.query('UPDATE conversations SET topic=?, sentiment=?, buying_intent=?, first_response_ms=?, outcome=?, classified_at=? WHERE id=?',
+        [topic, sentiment, intent, frt, outcome, Date.now(), conv.id])
       classified++
     } catch (e) { /* deja la conversación sin marcar; se reintenta en el próximo lote */ }
   }

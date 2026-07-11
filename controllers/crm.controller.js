@@ -6,6 +6,47 @@ const execSummary = require('../services/execSummary')
 const businessCopilot = require('../services/businessCopilot')
 const { sendEmail } = require('../services/email')
 
+// ── Pipeline conversacional: crea deals desde chats con intención de compra ────
+const socket = require('../services/socket')
+const detectOpportunities = async (req, res) => {
+  const { accId } = req.params
+  try {
+    const [pipes] = await pool.query('SELECT id, stages, cards FROM pipelines WHERE account_id=? ORDER BY id', [accId])
+    if (!pipes.length) return res.status(400).json({ error: 'No hay pipeline. Crea uno primero en el CRM.' })
+    const pipe = pipes[0]   // pipeline por defecto = el primero
+    const stages = parseJ(pipe.stages, [])
+    if (!stages.length) return res.status(400).json({ error: 'El pipeline no tiene etapas.' })
+    const firstStage = [...stages].sort((a, b) => (a.order ?? 0) - (b.order ?? 0))[0]
+
+    // Conversaciones que ya tienen un deal (por convId), en cualquier pipeline.
+    const withDeal = new Set()
+    for (const p of pipes) for (const c of parseJ(p.cards, [])) if (c.convId) withDeal.add(c.convId)
+
+    const [convos] = await pool.query(
+      "SELECT id, agent_id, guest_name, local_vars FROM conversations WHERE account_id=? AND buying_intent IN('media','alta') ORDER BY updated_at DESC LIMIT 150",
+      [accId])
+    let cards = parseJ(pipe.cards, [])
+    const newCards = [], hist = []
+    for (const cv of convos) {
+      if (withDeal.has(cv.id) || newCards.length >= 50) continue
+      const lv = parseJ(cv.local_vars, {})
+      let contactName = cv.guest_name || ''
+      if (lv.contact_id) { try { const [[ct]] = await pool.query('SELECT name FROM contacts WHERE id=? AND account_id=?', [lv.contact_id, accId]); if (ct?.name) contactName = ct.name } catch {} }
+      const cardId = 'card_' + uid()
+      newCards.push({ id: cardId, stageId: firstStage.id, title: `Oportunidad — ${contactName || 'Cliente'}`, contact: contactName, convId: cv.id, agentId: cv.agent_id, source: 'ia', createdAt: Date.now() })
+      hist.push([accId, pipe.id, cardId, null, firstStage.id, Date.now()])
+      withDeal.add(cv.id)
+    }
+    if (newCards.length) {
+      cards = [...cards, ...newCards]
+      await pool.query('UPDATE pipelines SET cards=? WHERE id=?', [JSON.stringify(cards), pipe.id])
+      try { await pool.query('INSERT INTO deal_stage_history (account_id,pipeline_id,card_id,from_stage,to_stage,at) VALUES ?', [hist]) } catch {}
+      socket.emit(accId, 'account:updated', { accId })
+    }
+    res.json({ ok: true, created: newCards.length, pipeline: pipe.id })
+  } catch (err) { console.error('[detect opportunities]', err); res.status(500).json({ error: 'Error interno' }) }
+}
+
 // ── Copiloto de negocio: pregunta → respuesta con base en los datos del CRM ────
 const copilotAsk = async (req, res) => {
   const { accId } = req.params
@@ -383,4 +424,4 @@ const kpis = async (req, res) => {
   }
 }
 
-module.exports = { listNotes, createNote, deleteNote, listTasks, createTask, updateTask, deleteTask, listActivity, kpis, logActivity, classifyConversations, previewExecutiveSummary, sendExecutiveSummary, pipelineVelocity, retention, copilotAsk }
+module.exports = { listNotes, createNote, deleteNote, listTasks, createTask, updateTask, deleteTask, listActivity, kpis, logActivity, classifyConversations, previewExecutiveSummary, sendExecutiveSummary, pipelineVelocity, retention, copilotAsk, detectOpportunities }

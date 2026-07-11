@@ -204,6 +204,8 @@ app.use('/api',                recontactRoutes)
     // Métricas de atención: tiempo de 1ª respuesta (ms) y desenlace (atendido/derivado/sin_respuesta).
     "ALTER TABLE conversations ADD COLUMN first_response_ms BIGINT",
     "ALTER TABLE conversations ADD COLUMN outcome VARCHAR(16)",
+    // Intención de compra detectada por la IA (nula/baja/media/alta) → pipeline conversacional.
+    "ALTER TABLE conversations ADD COLUMN buying_intent VARCHAR(10)",
     // Historial de movimientos de deals entre etapas (para velocidad/conversión del embudo).
     `CREATE TABLE IF NOT EXISTS deal_stage_history (
        id BIGINT PRIMARY KEY AUTO_INCREMENT, account_id VARCHAR(50) NOT NULL,
