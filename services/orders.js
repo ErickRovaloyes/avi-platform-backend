@@ -61,6 +61,10 @@ function normConfig(cfg) {
     // Avisar al cliente por su canal cuando cambia el estado del pedido.
     notifyCustomer: c.notifyCustomer !== false,
     statusMessages: (c.statusMessages && typeof c.statusMessages === 'object' && !Array.isArray(c.statusMessages)) ? c.statusMessages : {},
+    // Reseña automática al entregar el pedido (Google/redes).
+    reviewEnabled: !!c.reviewEnabled,
+    reviewUrl: c.reviewUrl || '',
+    reviewMessage: c.reviewMessage || '🌟 ¿Nos ayudas con una reseña? Cuéntanos cómo te fue con {negocio}: {link}',
     // Horario de atención: si enabled, solo se confirman pedidos dentro del horario
     // (los programados no se bloquean). Rango(s) "HH:MM-HH:MM" por día ('' = cerrado).
     hours: (() => {
@@ -538,6 +542,15 @@ async function notifyCustomerStatus(accId, order, status) {
     const outbound = (isExternal && agent) ? buildOutbound(agent, conv.channel_type, conv.channel_id, to) : null
     if (isExternal && !outbound) return   // canal externo sin credenciales/destino
     await sendBotMsg({ accId, agId, convId: conv.id, _outbound: outbound }, text, { orderNotify: true, orderCode: order.code })
+
+    // Reseña automática al entregar: segundo mensaje con el enlace de reseña.
+    if (status === 'delivered' && cfg.reviewEnabled && String(cfg.reviewUrl || '').trim() && String(cfg.reviewMessage || '').trim()) {
+      const reviewText = String(cfg.reviewMessage)
+        .replace(/\{negocio\}/g, cfg.businessName || '')
+        .replace(/\{link\}/g, cfg.reviewUrl)
+        .replace(/\{code\}/g, order.code || '')
+      await sendBotMsg({ accId, agId, convId: conv.id, _outbound: outbound }, reviewText, { orderReview: true, orderCode: order.code }).catch(() => {})
+    }
   } catch (e) { /* no crítico */ }
 }
 
