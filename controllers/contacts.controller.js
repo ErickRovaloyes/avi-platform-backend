@@ -105,6 +105,60 @@ const listConversations = async (req, res) => {
   }
 }
 
+// ── Ficha 360°: perfil + métricas derivadas + línea de tiempo unificada ──────────
+// Reúne en un solo lugar todo lo del cliente: chats, pedidos, reservas, notas y tareas.
+const profile360 = async (req, res) => {
+  const { accId, id } = req.params
+  try {
+    const [[c]] = await pool.query('SELECT * FROM contacts WHERE id=? AND account_id=?', [id, accId])
+    if (!c) return res.status(404).json({ error: 'Contacto no encontrado' })
+    const contact = mapContact(c)
+    const phone = c.phone || ''
+
+    const [convos] = await pool.query(
+      `SELECT id, agent_id, channel_type, preview, ai_enabled, created_at, updated_at
+       FROM conversations WHERE account_id=? AND JSON_UNQUOTE(JSON_EXTRACT(local_vars,'$.contact_id'))=?
+       ORDER BY created_at DESC LIMIT 100`, [accId, id])
+
+    let orders = []
+    try { [orders] = await pool.query("SELECT id, code, status, total, currency, type, payment_status, created_at FROM orders WHERE account_id=? AND contact_id=? AND status<>'draft' ORDER BY created_at DESC LIMIT 100", [accId, id]) } catch {}
+
+    let bookings = []
+    try { [bookings] = await pool.query('SELECT id, status, created_at FROM calendar_bookings WHERE account_id=? AND (customer_id=? OR (phone IS NOT NULL AND phone<>"" AND phone=?)) ORDER BY created_at DESC LIMIT 50', [accId, id, phone]) } catch {}
+
+    const [notes] = await pool.query('SELECT id, content, author_name, ts FROM crm_notes WHERE account_id=? AND target_type="contact" AND target_id=? ORDER BY ts DESC LIMIT 100', [accId, id])
+    const [tasks] = await pool.query('SELECT id, title, status, due_at, assignee_name, created_at, completed_at FROM crm_tasks WHERE account_id=? AND target_type="contact" AND target_id=? ORDER BY created_at DESC LIMIT 100', [accId, id])
+
+    const notCanceled = orders.filter(o => o.status !== 'canceled')
+    const revenue = notCanceled.reduce((s, o) => s + (Number(o.total) || 0), 0)
+    const tsAll = [c.created_at, ...convos.map(x => x.created_at), ...orders.map(x => x.created_at), ...bookings.map(x => x.created_at)].filter(Boolean)
+    const tsLast = [c.created_at, ...convos.map(x => x.updated_at || x.created_at), ...orders.map(x => x.created_at), ...bookings.map(x => x.created_at)].filter(Boolean)
+    const currency = orders.find(o => o.currency)?.currency || 'COP'
+    const metrics = {
+      conversations: convos.length,
+      orders: notCanceled.length,
+      revenue: Math.round(revenue),
+      avgTicket: notCanceled.length ? Math.round(revenue / notCanceled.length) : 0,
+      bookings: bookings.length,
+      openTasks: tasks.filter(t => t.status === 'open').length,
+      currency,
+      firstInteraction: tsAll.length ? Math.min(...tsAll) : c.created_at,
+      lastInteraction: tsLast.length ? Math.max(...tsLast) : c.created_at,
+      aiHandled: convos.filter(x => x.ai_enabled).length,
+    }
+
+    const timeline = []
+    for (const cv of convos) timeline.push({ type: 'conversation', ts: cv.created_at, agentId: cv.agent_id, channel: cv.channel_type, detail: cv.preview || '', convId: cv.id })
+    for (const o of orders) timeline.push({ type: 'order', ts: o.created_at, code: o.code, status: o.status, amount: Number(o.total) || 0, currency: o.currency, paymentStatus: o.payment_status })
+    for (const b of bookings) timeline.push({ type: 'booking', ts: b.created_at, status: b.status || '' })
+    for (const n of notes) timeline.push({ type: 'note', ts: n.ts, author: n.author_name || '', detail: n.content || '' })
+    for (const t of tasks) timeline.push({ type: 'task', ts: t.created_at, title: t.title, status: t.status, assignee: t.assignee_name || '', dueAt: t.due_at })
+    timeline.sort((a, b) => (b.ts || 0) - (a.ts || 0))
+
+    res.json({ contact, metrics, timeline: timeline.slice(0, 150) })
+  } catch (err) { console.error('[CONTACT 360]', err); res.status(500).json({ error: 'Error interno' }) }
+}
+
 // ── Exportar a CSV ──────────────────────────────────────────────────────────────
 const exportCsv = async (req, res) => {
   const { accId } = req.params
@@ -158,4 +212,4 @@ const importContacts = async (req, res) => {
   } catch (err) { console.error('[IMPORT CONTACTS]', err); res.status(500).json({ error: err.message || 'Error interno' }) }
 }
 
-module.exports = { list, getOne, create, update, remove, listConversations, exportCsv, importContacts }
+module.exports = { list, getOne, create, update, remove, listConversations, profile360, exportCsv, importContacts }

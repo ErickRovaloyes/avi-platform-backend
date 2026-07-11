@@ -288,6 +288,8 @@ app.use('/api',                recontactRoutes)
     "ALTER TABLE platform_settings ADD COLUMN email_from_name VARCHAR(160)",
     "ALTER TABLE platform_settings ADD COLUMN signup_verify_enabled TINYINT(1) DEFAULT 0",
     "ALTER TABLE platform_settings ADD COLUMN login_2fa_enabled TINYINT(1) DEFAULT 0",
+    // Modelo IA que ejecuta las acciones IA del CRM/negocio (clasificación, resúmenes, copiloto…).
+    "ALTER TABLE platform_settings ADD COLUMN business_ai_model VARCHAR(60) DEFAULT 'gpt-4o-mini'",
     `CREATE TABLE IF NOT EXISTS email_codes (
        id         VARCHAR(50) PRIMARY KEY,
        email      VARCHAR(200) NOT NULL,

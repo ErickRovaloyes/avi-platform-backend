@@ -78,6 +78,7 @@ const getSettings = async (req, res) => {
           defaultPromptProvider: r.default_prompt_provider || 'deepseek',
           defaultPromptModel: r.default_prompt_model || 'deepseek-v4-flash',
           optimizerModel: r.optimizer_model || 'gpt-4o-mini',
+          businessAiModel: r.business_ai_model || 'gpt-4o-mini',
           demoAdsEnabled: !!r.demo_ads_enabled,
           demoAdsHtml: r.demo_ads_html || '',
           emailProvider: r.email_provider || 'none',
@@ -136,7 +137,7 @@ const updateSettings = async (req, res) => {
     promptGeneratorMaxFileMb,
     platformOpenaiKey, platformDeepseekKey, platformAnthropicKey,
     mediaMaxSizeMb, transcriptionModel,
-    defaultPromptProvider, defaultPromptModel, optimizerModel,
+    defaultPromptProvider, defaultPromptModel, optimizerModel, businessAiModel,
     demoAdsEnabled, demoAdsHtml,
     emailProvider, emailApiKey, emailFrom, emailFromName, signupVerifyEnabled, login2faEnabled,
   } = req.body
@@ -167,6 +168,7 @@ const updateSettings = async (req, res) => {
     if (defaultPromptProvider     !== undefined) { sets.push('default_prompt_provider=?');      vals.push(String(defaultPromptProvider || 'deepseek')) }
     if (defaultPromptModel        !== undefined) { sets.push('default_prompt_model=?');         vals.push(String(defaultPromptModel || 'deepseek-v4-flash')) }
     if (optimizerModel            !== undefined) { sets.push('optimizer_model=?');               vals.push(String(optimizerModel || 'gpt-4o-mini')) }
+    if (businessAiModel           !== undefined) { sets.push('business_ai_model=?');             vals.push(String(businessAiModel || 'gpt-4o-mini')) }
     if (demoAdsEnabled            !== undefined) { sets.push('demo_ads_enabled=?');              vals.push(demoAdsEnabled ? 1 : 0) }
     if (demoAdsHtml               !== undefined) { sets.push('demo_ads_html=?');                 vals.push(demoAdsHtml || null) }
     if (emailProvider             !== undefined) { sets.push('email_provider=?');                vals.push(String(emailProvider || 'none')) }
