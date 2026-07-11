@@ -12,21 +12,44 @@ const engine = require('../flow/engine')
 const { resolveWhatsAppChannel, buildOutbound } = require('./calendarNotify')
 
 // Audiencia: contactos con teléfono, opcionalmente filtrados por etiquetas (any-of).
+// SIEMPRE se excluyen los contactos que se dieron de baja (opt-out) — nunca reciben masivos.
 async function resolveAudience(accId, audience) {
   const [rows] = await pool.query('SELECT id, name, phone, extra FROM contacts WHERE account_id=?', [accId])
   const tags = (audience?.tags || []).map(t => String(t).trim().toLowerCase()).filter(Boolean)
   return rows
-    .map(r => ({
+    .map(r => { const ex = parseJ(r.extra, {}); return {
       id: r.id, name: r.name || '',
       phone: String(r.phone || '').replace(/[^\d]/g, ''),
-      tags: (parseJ(r.extra, {}).tags || []).map(x => String(x).toLowerCase()),
-    }))
-    .filter(r => r.phone)
+      tags: (ex.tags || []).map(x => String(x).toLowerCase()),
+      optOut: ex.optOut === true || ex.optOut === 1,
+    } })
+    .filter(r => r.phone && !r.optOut)
     .filter(r => !tags.length || r.tags.some(t => tags.includes(t)))
 }
 
 async function audienceCount(accId, audience) {
   return (await resolveAudience(accId, audience)).length
+}
+
+// Auto opt-out: si el cliente escribe una palabra de baja, se marca para no recibir masivos.
+const OPTOUT_RE = /^\s*(baja|stop|cancelar|desuscribir|desuscribirme|unsubscribe|no\s*mas|no\s*más|no\s*mensajes|no\s*quiero\s*mensajes|salir)\b/i
+async function maybeOptOut(accId, phone, text) {
+  try {
+    if (!text || !OPTOUT_RE.test(String(text))) return false
+    const p = String(phone || '').replace(/[^\d]/g, '')
+    if (p.length < 6) return false
+    const tail = p.slice(-8)
+    const [rows] = await pool.query('SELECT id, phone, extra FROM contacts WHERE account_id=?', [accId])
+    let changed = false
+    for (const r of rows) {
+      const rp = String(r.phone || '').replace(/[^\d]/g, '')
+      if (rp && rp.slice(-8) === tail) {
+        const ex = parseJ(r.extra, {})
+        if (!ex.optOut) { ex.optOut = true; ex.optOutAt = Date.now(); ex.optOutBy = 'cliente'; await pool.query('UPDATE contacts SET extra=? WHERE id=?', [JSON.stringify(ex), r.id]); changed = true }
+      }
+    }
+    return changed
+  } catch { return false }
 }
 
 // Ejecuta una campaña: corre el flujo por cada contacto de la audiencia.
@@ -90,4 +113,4 @@ function startWorker() {
   setTimeout(processScheduled, 8000)
 }
 
-module.exports = { resolveAudience, audienceCount, runCampaign, processScheduled, startWorker }
+module.exports = { resolveAudience, audienceCount, maybeOptOut, runCampaign, processScheduled, startWorker }

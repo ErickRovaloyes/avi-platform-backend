@@ -121,6 +121,9 @@ async function processWhatsApp(accId, agentId, body) {
       } : {}),
     })
 
+    // Auto opt-out: si el cliente pide la baja (BAJA/STOP/…), no recibe más masivos.
+    try { require('../services/campaigns').maybeOptOut(accId, msg.from, msg.text || '') } catch {}
+
     if (!(await shouldRun(accId, agentId, convId))) continue
 
     // Indicador "escribiendo…" mientras el flujo genera la respuesta (y marca leído).
