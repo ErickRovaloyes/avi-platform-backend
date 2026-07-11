@@ -211,6 +211,7 @@ const kpis = async (req, res) => {
     // Pipelines: walk every pipeline's cards (stored as JSON) and total their value
     const [pipelines] = await pool.query('SELECT * FROM pipelines WHERE account_id=?', [accId])
     let dealsTotal = 0, dealsValue = 0, dealsByStage = {}, dealsWon = 0, wonValue = 0
+    let forecast = 0, dealsLost = 0, lostValue = 0, lostReasons = {}
     for (const p of pipelines) {
       let stages = []; let cards = []
       try { stages = JSON.parse(p.stages) || [] } catch {}
@@ -227,8 +228,15 @@ const kpis = async (req, res) => {
         if (!dealsByStage[key]) dealsByStage[key] = { count: 0, value: 0, color: stage?.color }
         dealsByStage[key].count += 1
         dealsByStage[key].value += v
-        if (stage?.name?.toLowerCase().match(/(ganado|cerrado|won)/) || c.won) {
-          dealsWon += 1; wonValue += v
+        // Estado del deal: explícito (card.status) o inferido por el nombre de la etapa.
+        const wonByStage = stage?.name?.toLowerCase().match(/(ganado|cerrado|won)/) || c.won
+        const lostByStage = stage?.name?.toLowerCase().match(/(perdido|lost)/)
+        const status = c.status || (wonByStage ? 'won' : (lostByStage ? 'lost' : 'open'))
+        if (status === 'won') { dealsWon += 1; wonValue += v }
+        else if (status === 'lost') { dealsLost += 1; lostValue += v; const r = c.lostReason || 'Sin motivo'; lostReasons[r] = (lostReasons[r] || 0) + 1 }
+        else { // abierto → contribuye al forecast ponderado
+          const prob = Number(c.probability)
+          forecast += v * (Number.isFinite(prob) ? Math.max(0, Math.min(100, prob)) / 100 : 0.5)
         }
       }
     }
@@ -275,7 +283,9 @@ const kpis = async (req, res) => {
       dealsValue,
       dealsWon,
       wonValue,
-      dealsConversionPct: dealsTotal > 0 ? (dealsWon / dealsTotal * 100) : 0,
+      dealsLost, lostValue, forecast: Math.round(forecast),
+      lostReasons: Object.entries(lostReasons).map(([reason, count]) => ({ reason, count })).sort((a, b) => b.count - a.count),
+      dealsConversionPct: (dealsWon + dealsLost) > 0 ? (dealsWon / (dealsWon + dealsLost) * 100) : 0,
       dealsByStage: Object.entries(dealsByStage).map(([name, x]) => ({ name, count: x.count, value: x.value, color: x.color })),
       tasksOpen:    Number(tasksOpen.total),
       tasksOverdue: Number(tasksOverdue.total),

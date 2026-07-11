@@ -204,6 +204,12 @@ app.use('/api',                recontactRoutes)
     // Métricas de atención: tiempo de 1ª respuesta (ms) y desenlace (atendido/derivado/sin_respuesta).
     "ALTER TABLE conversations ADD COLUMN first_response_ms BIGINT",
     "ALTER TABLE conversations ADD COLUMN outcome VARCHAR(16)",
+    // Historial de movimientos de deals entre etapas (para velocidad/conversión del embudo).
+    `CREATE TABLE IF NOT EXISTS deal_stage_history (
+       id BIGINT PRIMARY KEY AUTO_INCREMENT, account_id VARCHAR(50) NOT NULL,
+       pipeline_id VARCHAR(50), card_id VARCHAR(50), from_stage VARCHAR(50), to_stage VARCHAR(50), at BIGINT,
+       INDEX idx_dsh (account_id, card_id), INDEX idx_dsh_pipe (account_id, pipeline_id)
+     )`,
     // Publicidad en cuentas Demo: código de anuncio (embed) gestionado por el super admin.
     "ALTER TABLE platform_settings ADD COLUMN demo_ads_enabled TINYINT(1) DEFAULT 0",
     "ALTER TABLE platform_settings ADD COLUMN demo_ads_html MEDIUMTEXT",
