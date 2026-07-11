@@ -3,7 +3,21 @@ const pool = require('../db')
 const { uid, parseJ } = require('../utils')
 const convClassify = require('../services/convClassify')
 const execSummary = require('../services/execSummary')
+const businessCopilot = require('../services/businessCopilot')
 const { sendEmail } = require('../services/email')
+
+// ── Copiloto de negocio: pregunta → respuesta con base en los datos del CRM ────
+const copilotAsk = async (req, res) => {
+  const { accId } = req.params
+  const question = String(req.body?.question || '').trim()
+  const days = Math.min(Math.max(parseInt(req.body?.days) || 30, 1), 365)
+  if (!question) return res.status(400).json({ error: 'Escribe una pregunta.' })
+  try {
+    const r = await businessCopilot.ask(accId, question, days)
+    if (!r.ok) return res.status(400).json({ error: r.error })
+    res.json(r)
+  } catch (err) { console.error('[copilot]', err); res.status(500).json({ error: 'Error interno' }) }
+}
 
 // ── Resumen ejecutivo (preview + envío por email al dueño) ───────────────────
 const previewExecutiveSummary = async (req, res) => {
@@ -369,4 +383,4 @@ const kpis = async (req, res) => {
   }
 }
 
-module.exports = { listNotes, createNote, deleteNote, listTasks, createTask, updateTask, deleteTask, listActivity, kpis, logActivity, classifyConversations, previewExecutiveSummary, sendExecutiveSummary, pipelineVelocity, retention }
+module.exports = { listNotes, createNote, deleteNote, listTasks, createTask, updateTask, deleteTask, listActivity, kpis, logActivity, classifyConversations, previewExecutiveSummary, sendExecutiveSummary, pipelineVelocity, retention, copilotAsk }

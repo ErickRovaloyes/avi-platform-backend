@@ -17,6 +17,7 @@ router.get('/accounts/:accId/crm/activity',             authMiddleware, ctrl.lis
 router.get('/accounts/:accId/crm/kpis',                 authMiddleware, ctrl.kpis)
 router.get('/accounts/:accId/crm/pipeline-velocity',    authMiddleware, ctrl.pipelineVelocity)
 router.get('/accounts/:accId/crm/retention',            authMiddleware, ctrl.retention)
+router.post('/accounts/:accId/crm/copilot',             authMiddleware, ctrl.copilotAsk)
 
 // Segmentos dinámicos de contactos
 router.get('/accounts/:accId/crm/segments',             authMiddleware, seg.list)
