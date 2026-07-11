@@ -14,5 +14,6 @@ router.delete('/accounts/:accId/crm/tasks/:id',         authMiddleware, ctrl.del
 
 router.get('/accounts/:accId/crm/activity',             authMiddleware, ctrl.listActivity)
 router.get('/accounts/:accId/crm/kpis',                 authMiddleware, ctrl.kpis)
+router.post('/accounts/:accId/crm/classify',            authMiddleware, ctrl.classifyConversations)
 
 module.exports = router

@@ -1,6 +1,19 @@
 'use strict'
 const pool = require('../db')
 const { uid, parseJ } = require('../utils')
+const convClassify = require('../services/convClassify')
+
+// ── Clasificación IA de conversaciones (tema + sentimiento) ─────────────────
+// Corre por lotes incrementales usando el Modelo IA de Negocio del Super Panel.
+const classifyConversations = async (req, res) => {
+  const { accId } = req.params
+  const limit = Math.min(Math.max(parseInt(req.body?.limit) || 25, 1), 50)
+  try {
+    const r = await convClassify.classifyBatch(accId, { limit })
+    if (!r.ok) return res.status(400).json({ error: r.error })
+    res.json(r)
+  } catch (err) { console.error('[crm classify]', err); res.status(500).json({ error: 'Error interno' }) }
+}
 
 // Targets: 'contact' | 'deal' | 'conversation' | 'company'
 
@@ -207,7 +220,19 @@ const kpis = async (req, res) => {
       "SELECT COUNT(*) AS total FROM crm_tasks WHERE account_id=? AND status='open' AND due_at IS NOT NULL AND due_at < ?",
       [accId, Date.now()]
     )
+    // Voz del cliente: distribución de temas + sentimiento (de la clasificación IA).
+    let topics = [], sentiment = [], classifiedTotal = 0, unclassified = 0
+    try {
+      const [tr] = await pool.query("SELECT topic, COUNT(*) AS n FROM conversations WHERE account_id=? AND topic IS NOT NULL AND created_at BETWEEN ? AND ? GROUP BY topic ORDER BY n DESC", [accId, fromMs, toMs])
+      topics = tr.map(r => ({ topic: r.topic, count: Number(r.n) }))
+      const [sr] = await pool.query("SELECT sentiment, COUNT(*) AS n FROM conversations WHERE account_id=? AND sentiment IS NOT NULL AND created_at BETWEEN ? AND ? GROUP BY sentiment", [accId, fromMs, toMs])
+      sentiment = sr.map(r => ({ sentiment: r.sentiment, count: Number(r.n) }))
+      classifiedTotal = topics.reduce((s, t) => s + t.count, 0)
+      const [[u]] = await pool.query("SELECT COUNT(*) AS n FROM conversations WHERE account_id=? AND classified_at IS NULL", [accId])
+      unclassified = Number(u?.n || 0)
+    } catch {}
     res.json({
+      topics, sentiment, classifiedTotal, unclassified,
       totalConversations: Number(convStats.total),
       humanHandoffs:      Number(convStats.humanHandoff),
       contactsAdded:      Number(contactsCount.total),
@@ -226,4 +251,4 @@ const kpis = async (req, res) => {
   }
 }
 
-module.exports = { listNotes, createNote, deleteNote, listTasks, createTask, updateTask, deleteTask, listActivity, kpis, logActivity }
+module.exports = { listNotes, createNote, deleteNote, listTasks, createTask, updateTask, deleteTask, listActivity, kpis, logActivity, classifyConversations }

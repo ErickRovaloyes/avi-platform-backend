@@ -196,6 +196,11 @@ app.use('/api',                recontactRoutes)
     "ALTER TABLE conversations ADD COLUMN blocked TINYINT(1) DEFAULT 0",
     // Chats en seguimiento: marcados con estrella + avatar con animación de respiración.
     "ALTER TABLE conversations ADD COLUMN followup TINYINT(1) DEFAULT 0",
+    // Clasificación IA (CRM): tema/motivo y sentimiento de la conversación.
+    "ALTER TABLE conversations ADD COLUMN topic VARCHAR(40)",
+    "ALTER TABLE conversations ADD COLUMN sentiment VARCHAR(12)",
+    "ALTER TABLE conversations ADD COLUMN classified_at BIGINT",
+    "ALTER TABLE conversations ADD INDEX idx_conv_topic (account_id, topic)",
     // Publicidad en cuentas Demo: código de anuncio (embed) gestionado por el super admin.
     "ALTER TABLE platform_settings ADD COLUMN demo_ads_enabled TINYINT(1) DEFAULT 0",
     "ALTER TABLE platform_settings ADD COLUMN demo_ads_html MEDIUMTEXT",

@@ -87,7 +87,7 @@ const listConversations = async (req, res) => {
   const { accId, id } = req.params
   try {
     const [rows] = await pool.query(
-      `SELECT id, agent_id, channel_type, guest_name, preview, created_at, updated_at
+      `SELECT id, agent_id, channel_type, guest_name, preview, topic, sentiment, created_at, updated_at
        FROM conversations
        WHERE account_id=? AND JSON_UNQUOTE(JSON_EXTRACT(local_vars, '$.contact_id'))=?
        ORDER BY updated_at DESC
@@ -96,7 +96,7 @@ const listConversations = async (req, res) => {
     )
     res.json(rows.map(c => ({
       id: c.id, agentId: c.agent_id, channel: c.channel_type,
-      guestName: c.guest_name, preview: c.preview,
+      guestName: c.guest_name, preview: c.preview, topic: c.topic || null, sentiment: c.sentiment || null,
       createdAt: c.created_at, updatedAt: c.updated_at,
     })))
   } catch (err) {
@@ -116,7 +116,7 @@ const profile360 = async (req, res) => {
     const phone = c.phone || ''
 
     const [convos] = await pool.query(
-      `SELECT id, agent_id, channel_type, preview, ai_enabled, created_at, updated_at
+      `SELECT id, agent_id, channel_type, preview, ai_enabled, topic, sentiment, created_at, updated_at
        FROM conversations WHERE account_id=? AND JSON_UNQUOTE(JSON_EXTRACT(local_vars,'$.contact_id'))=?
        ORDER BY created_at DESC LIMIT 100`, [accId, id])
 
@@ -148,7 +148,7 @@ const profile360 = async (req, res) => {
     }
 
     const timeline = []
-    for (const cv of convos) timeline.push({ type: 'conversation', ts: cv.created_at, agentId: cv.agent_id, channel: cv.channel_type, detail: cv.preview || '', convId: cv.id })
+    for (const cv of convos) timeline.push({ type: 'conversation', ts: cv.created_at, agentId: cv.agent_id, channel: cv.channel_type, detail: cv.preview || '', convId: cv.id, topic: cv.topic || null, sentiment: cv.sentiment || null })
     for (const o of orders) timeline.push({ type: 'order', ts: o.created_at, code: o.code, status: o.status, amount: Number(o.total) || 0, currency: o.currency, paymentStatus: o.payment_status })
     for (const b of bookings) timeline.push({ type: 'booking', ts: b.created_at, status: b.status || '' })
     for (const n of notes) timeline.push({ type: 'note', ts: n.ts, author: n.author_name || '', detail: n.content || '' })
