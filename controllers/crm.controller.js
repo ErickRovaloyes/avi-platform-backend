@@ -6,6 +6,40 @@ const execSummary = require('../services/execSummary')
 const businessCopilot = require('../services/businessCopilot')
 const { sendEmail } = require('../services/email')
 
+// ── Lead scoring: puntúa cada deal (0-100) por probabilidad de cierre ─────────
+const leadScores = async (req, res) => {
+  const { accId } = req.params
+  const DAY = 86400000, now = Date.now()
+  try {
+    const [pipes] = await pool.query('SELECT cards FROM pipelines WHERE account_id=?', [accId])
+    const allCards = [], convIds = new Set()
+    for (const p of pipes) for (const c of parseJ(p.cards, [])) { allCards.push(c); if (c.convId) convIds.add(c.convId) }
+    const convById = {}
+    if (convIds.size) {
+      const [convos] = await pool.query('SELECT id, buying_intent, sentiment, updated_at FROM conversations WHERE account_id=? AND id IN (?)', [accId, [...convIds]])
+      for (const cv of convos) convById[cv.id] = cv
+    }
+    const INTENT = { alta: 45, media: 30, baja: 12, nula: 0 }
+    const SENT = { positivo: 15, neutral: 5, negativo: -12 }
+    const scores = {}
+    for (const c of allCards) {
+      if (c.status === 'won') { scores[c.id] = 100; continue }
+      if (c.status === 'lost') { scores[c.id] = 0; continue }
+      let sc = 20
+      const cv = convById[c.convId]
+      if (cv) {
+        sc += INTENT[cv.buying_intent] ?? 0
+        sc += SENT[cv.sentiment] ?? 0
+        const days = (now - Number(cv.updated_at || 0)) / DAY
+        if (days <= 3) sc += 15; else if (days <= 14) sc += 5; else sc -= 8
+      }
+      if (c.probability != null && c.probability !== '') sc = Math.round((sc + Number(c.probability)) / 2)
+      scores[c.id] = Math.max(0, Math.min(100, Math.round(sc)))
+    }
+    res.json({ scores })
+  } catch (err) { console.error('[lead scores]', err); res.status(500).json({ error: 'Error interno' }) }
+}
+
 // ── Pipeline conversacional: crea deals desde chats con intención de compra ────
 const socket = require('../services/socket')
 const detectOpportunities = async (req, res) => {
@@ -424,4 +458,4 @@ const kpis = async (req, res) => {
   }
 }
 
-module.exports = { listNotes, createNote, deleteNote, listTasks, createTask, updateTask, deleteTask, listActivity, kpis, logActivity, classifyConversations, previewExecutiveSummary, sendExecutiveSummary, pipelineVelocity, retention, copilotAsk, detectOpportunities }
+module.exports = { listNotes, createNote, deleteNote, listTasks, createTask, updateTask, deleteTask, listActivity, kpis, logActivity, classifyConversations, previewExecutiveSummary, sendExecutiveSummary, pipelineVelocity, retention, copilotAsk, detectOpportunities, leadScores }
