@@ -60,7 +60,7 @@ const update = async (req, res) => {
     type: 'type', vertical: 'vertical', name: 'name', description: 'description', timezone: 'timezone',
     color: 'color', status: 'status', flowId: 'flow_id',
   }
-  const jsonMap = { availability: 'availability', exceptions: 'exceptions', appointment: 'appointment', formConfig: 'form_config', notifications: 'notifications', integrations: 'integrations' }
+  const jsonMap = { availability: 'availability', exceptions: 'exceptions', appointment: 'appointment', formConfig: 'form_config', notifications: 'notifications', integrations: 'integrations', payment: 'payment' }
   const sets = []; const vals = []
   for (const [k, col] of Object.entries(map)) if (b[k] !== undefined) { sets.push(`${col}=?`); vals.push(b[k]) }
   for (const [k, col] of Object.entries(jsonMap)) if (b[k] !== undefined) { sets.push(`${col}=?`); vals.push(JSON.stringify(b[k])) }
@@ -177,14 +177,19 @@ const exportBookings = async (req, res) => {
 }
 
 // ── Público (página de reservas) ─────────────────────────────────────────────
-function publicCalendar(cal) {
+function publicCalendar(cal, gatewayOn = false) {
   if (!cal) return null
+  const p = cal.payment || {}
+  const payRequired = !!p.enabled && Number(p.amount) > 0 && gatewayOn
   // Solo lo necesario para reservar (no exponemos flowId interno, etc.)
   return {
     id: cal.id, type: cal.type, vertical: cal.vertical || 'appointment', name: cal.name, description: cal.description,
     timezone: cal.timezone, color: cal.color, status: cal.status,
     appointment: { defaultDuration: cal.appointment?.defaultDuration || 30, types: cal.appointment?.types || [], maxPartySize: cal.appointment?.maxPartySize || 12 },
     formConfig: cal.formConfig || {},
+    payment: payRequired
+      ? { required: true, amount: Number(p.amount), currency: (p.currency || 'COP').toUpperCase(), description: p.description || '' }
+      : { required: false },
   }
 }
 
@@ -192,7 +197,9 @@ const getPublic = async (req, res) => {
   try {
     const cal = await bookings.getCalendar(req.params.accId, req.params.calId)
     if (!cal || cal.status === 'inactive') return res.status(404).json({ error: 'Calendario no disponible' })
-    res.json(publicCalendar(cal))
+    let gatewayOn = false
+    try { const payments = require('../services/payments'); gatewayOn = payments.isEnabled(await payments.loadConfig(req.params.accId)) } catch {}
+    res.json(publicCalendar(cal, gatewayOn))
   } catch (err) { res.status(500).json({ error: 'Error interno' }) }
 }
 
@@ -224,6 +231,40 @@ const createPublicBooking = async (req, res) => {
       whatsappConsentAt: b.whatsappConsent ? Date.now() : null,
       whatsappConsentText: 'Autorizo ser contactado por WhatsApp para recibir información relacionada con mi reserva.',
     }
+
+    // ── Pago previo: si el calendario lo exige y la pasarela está conectada, la
+    // reserva nace 'pending' (retiene el cupo) y se confirma cuando llega el pago.
+    const payments = require('../services/payments')
+    const payCfg = cal.payment || {}
+    const pcfg = await payments.loadConfig(accId)
+    const paymentRequired = !!payCfg.enabled && Number(payCfg.amount) > 0 && payments.isEnabled(pcfg)
+
+    if (paymentRequired) {
+      const holdMinutes = Math.max(5, Number(payCfg.holdMinutes) || 30)
+      const bk = await bookings.createBooking(accId, calId, {
+        ...b, channel: b.channel || 'form', status: 'pending',
+        meta: { ...meta, awaitingPayment: true, awaitingSince: Date.now(), holdMinutes },
+      }, { validate: true, emit: false })
+      try {
+        const link = await payments.createPaymentLink(accId, {
+          amount: Number(payCfg.amount),
+          currency: payCfg.currency || undefined,
+          description: (payCfg.description || `Reserva ${cal.name || ''} ${bk.date} ${bk.time}`).slice(0, 120),
+          meta: { bookingId: bk.id, calendarId: calId, purpose: 'booking' },
+        })
+        socket.emit(accId, 'account:updated', { accId })
+        return res.json({
+          ok: true, requiresPayment: true, paymentUrl: link.url, reference: link.reference,
+          amount: link.amount, currency: link.currency, holdMinutes,
+          booking: { id: bk.id, date: bk.date, time: bk.time, status: 'pending' },
+        })
+      } catch (e) {
+        // Si no se pudo generar el link, libera el cupo y avisa.
+        await bookings.cancelBooking(accId, bk.id).catch(() => {})
+        return res.status(400).json({ error: 'No se pudo generar el pago: ' + (e.message || 'error') })
+      }
+    }
+
     const bk = await bookings.createBooking(accId, calId, {
       ...b, channel: b.channel || 'form', status: 'confirmed', meta,
     }, { validate: true })
@@ -348,5 +389,5 @@ module.exports = {
   list, get, create, update, remove, availability, monthAvailability,
   listBookings, createBooking, updateBooking, rescheduleBooking, setStatus, deleteBooking, exportBookings,
   getPublic, getPublicAvailability, getPublicMonthAvailability, createPublicBooking, flowOp, holidays,
-  customerHistory,
+  customerHistory, runBookingFlow,
 }

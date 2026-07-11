@@ -72,6 +72,27 @@ const webhook = async (req, res) => {
     if (!out?.matched) return
     const intent = out.intent
     const convId = intent.conv_id, agId = intent.agent_id
+
+    // Si el pago corresponde a una RESERVA de calendario con pago previo, la confirma
+    // (o la libera si fue rechazado) y ejecuta el flujo del calendario. Se resuelve
+    // aquí y termina (no aplica la lógica de pedido/chat genérica de abajo).
+    const meta = parseJ(intent.meta, {})
+    if (meta.bookingId) {
+      const bookings = require('../services/bookings')
+      if (out.status === 'approved') {
+        const bk = await bookings.confirmPrepaidBooking(accId, meta.bookingId).catch(() => null)
+        if (bk) {
+          try {
+            const cal = await bookings.getCalendar(accId, bk.calendarId)
+            if (cal) await require('./calendars.controller').runBookingFlow(accId, cal, bk, bk.meta?.conversationId || null)
+          } catch (e) { console.warn('[booking payment flow]', e.message) }
+        }
+      } else {
+        await bookings.cancelBooking(accId, meta.bookingId).catch(() => {}) // rechazado → libera el cupo
+      }
+      return
+    }
+
     // Si el pago corresponde a un PEDIDO, lo marca pagado + confirmado + avisa.
     if (out.status === 'approved' && intent.reference) {
       try { require('../services/orders').markPaidByRef(accId, intent.reference) } catch {}

@@ -789,6 +789,8 @@ app.use('/api',                recontactRoutes)
     // vertical) se excluyen mutuamente en franjas que se solapan en el tiempo,
     // para no superponer citas entre ellos. NULL = no comparte espacios.
     "ALTER TABLE calendars ADD COLUMN shared_group VARCHAR(80) DEFAULT NULL",
+    // Pago previo: config de pasarela por calendario (enabled, amount, currency, description, holdMinutes).
+    "ALTER TABLE calendars ADD COLUMN payment JSON",
     // Outbox de eventos de dominio (microservices-ready).
     `CREATE TABLE IF NOT EXISTS domain_events (
        id          BIGINT PRIMARY KEY AUTO_INCREMENT,
@@ -1081,6 +1083,8 @@ app.use('/api',                recontactRoutes)
      )`,
     // Destinatarios reales de la campaña (ids de contacto) para atribuir ingresos (ROI).
     "ALTER TABLE campaigns ADD COLUMN recipients JSON",
+    // Intentos de pago: metadatos genéricos (p. ej. link a una reserva de calendario).
+    "ALTER TABLE payment_intents ADD COLUMN meta JSON",
     // A/B testing de masivos: flujo variante B + % de audiencia asignado a B + resultado por grupo.
     "ALTER TABLE campaigns ADD COLUMN variant_flow_id VARCHAR(50)",
     "ALTER TABLE campaigns ADD COLUMN ab_split INT",
@@ -1225,6 +1229,8 @@ app.use('/api',                recontactRoutes)
   try { require('./services/googleCalendarWatch').startWorker() } catch (e) { console.warn('[gcal watch] worker no iniciado:', e.message) }
   // Bucle de recordatorios de citas por WhatsApp
   try { require('./services/calendarReminders').start() } catch (e) { console.warn('[reminders] no iniciado:', e.message) }
+  // Libera reservas con pago previo que vencieron sin pagarse (devuelve el cupo)
+  try { require('./services/bookings').startPaymentSweeper() } catch (e) { console.warn('[booking pay sweeper] no iniciado:', e.message) }
   // Recuperación de carritos / confirmación de pago de la tienda (Woo + Shopify)
   try { require('./services/storeRecovery').start() } catch (e) { console.warn('[store recovery] no iniciado:', e.message) }
   // Worker de mensajes masivos: procesa campañas programadas vencidas.

@@ -58,6 +58,7 @@ function mapCalendar(r) {
     formConfig:   parseJ(r.form_config, {}),
     notifications: parseJ(r.notifications, {}),
     integrations: parseJ(r.integrations, {}),
+    payment:      parseJ(r.payment, {}),
     flowId: r.flow_id || null,
     sharedGroup: r.shared_group || '',
     createdAt: r.created_at, updatedAt: r.updated_at,
@@ -263,7 +264,9 @@ async function getMonthAvailability(accId, calendarId, year, month, durationMin,
 }
 
 // Crea una reserva. Valida el slot salvo que validate=false (reserva manual).
-async function createBooking(accId, calendarId, data = {}, { validate = true } = {}) {
+// emit=false omite el evento BookingCreated (no notifica ni sincroniza aún): se usa
+// en reservas con pago previo, que sólo se confirman cuando el pago llega.
+async function createBooking(accId, calendarId, data = {}, { validate = true, emit: doEmit = true } = {}) {
   const calendar = await getCalendar(accId, calendarId)
   if (!calendar) throw new Error('Calendario no encontrado')
   const date = String(data.date || '').slice(0, 10)
@@ -327,7 +330,7 @@ async function createBooking(accId, calendarId, data = {}, { validate = true } =
     }
     const bk = await getBooking(accId, id)
     // notify (confirmación) + Google sync ahora son HANDLERS del outbox (ver registro al final).
-    emit(calendar, 'BookingCreated', bk)
+    if (doEmit) emit(calendar, 'BookingCreated', bk)
     return bk
   } finally {
     if (lockConn) { try { await lockConn.query('SELECT RELEASE_LOCK(?)', [`book_${calendarId}`]) } catch {} ; try { lockConn.release() } catch {} }
@@ -434,6 +437,49 @@ async function deleteBooking(accId, bookingId) {
   await pool.query('DELETE FROM calendar_bookings WHERE id=? AND account_id=?', [bookingId, accId])
 }
 
+// ── Pago previo a la reserva ────────────────────────────────────────────────
+// Confirma una reserva que estaba esperando pago: pasa a 'confirmed', limpia la
+// marca de espera y dispara notify (confirmación) + Google sync vía BookingCreated.
+// Idempotente: si ya no está esperando pago, no hace nada (evita doble aviso).
+async function confirmPrepaidBooking(accId, bookingId) {
+  const bk = await getBooking(accId, bookingId)
+  if (!bk) return null
+  if (!bk.meta?.awaitingPayment) return bk // ya confirmada / no aplica
+  const meta = { ...bk.meta, awaitingPayment: false, paidAt: Date.now() }
+  await pool.query('UPDATE calendar_bookings SET status=?, meta=?, updated_at=? WHERE id=? AND account_id=?',
+    ['confirmed', JSON.stringify(meta), Date.now(), bookingId, accId])
+  const fresh = await getBooking(accId, bookingId)
+  const calendar = await getCalendar(accId, fresh.calendarId)
+  emit(calendar, 'BookingCreated', fresh) // notify (confirmación) + Google sync
+  return fresh
+}
+
+// Libera reservas que quedaron esperando pago y ya vencieron (cancela → libera el
+// cupo). Lo llama un worker periódico. holdMinutes viene de la config del calendario.
+async function releaseStalePendingPayments() {
+  try {
+    const now = Date.now()
+    const [rows] = await pool.query(
+      "SELECT id, account_id, meta, created_at FROM calendar_bookings WHERE status='pending' AND meta LIKE '%awaitingPayment%' LIMIT 500")
+    for (const r of rows) {
+      const meta = parseJ(r.meta, {})
+      if (!meta.awaitingPayment) continue
+      const holdMs = Math.max(5, Number(meta.holdMinutes) || 30) * 60000
+      const since = meta.awaitingSince || r.created_at || 0
+      if (since && now - since > holdMs) {
+        await cancelBooking(r.account_id, r.id).catch(() => {})
+      }
+    }
+  } catch (e) { console.warn('[releaseStalePendingPayments]', e.message) }
+}
+
+let _payTimer = null
+function startPaymentSweeper() {
+  if (_payTimer) return
+  _payTimer = setInterval(releaseStalePendingPayments, 5 * 60000) // cada 5 min
+  setTimeout(releaseStalePendingPayments, 20000)
+}
+
 // ── Side-effects vía outbox (Fase 1) ────────────────────────────────────────
 // notify de reserva + sync a Google Calendar dejan de ser inline y pasan a ser
 // handlers de eventos de dominio. Se mantienen best-effort (no lanzan) para
@@ -485,4 +531,5 @@ module.exports = {
   getAvailability, getMonthAvailability, createBooking, rescheduleBooking, cancelBooking,
   setBookingStatus, updateBooking, deleteBooking,
   findOrCreateCustomer, getCustomerHistory, allocateSlot,
+  confirmPrepaidBooking, releaseStalePendingPayments, startPaymentSweeper,
 }

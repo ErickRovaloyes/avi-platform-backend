@@ -46,7 +46,7 @@ function baseUrl() {
 // ── Crear link de pago + registrar el intento ───────────────────────────────
 // amount va en la unidad MAYOR de la moneda (p. ej. 50000 COP). Se convierte a
 // "cents" (x100) para Wompi. Devuelve { reference, url, amount, currency }.
-async function createPaymentLink(accId, { amount, description, currency, convId, agId } = {}) {
+async function createPaymentLink(accId, { amount, description, currency, convId, agId, meta } = {}) {
   const cfg = await loadConfig(accId)
   if (!isEnabled(cfg)) throw new Error('La pasarela de pago no está conectada')
   const amt = Number(amount)
@@ -61,10 +61,11 @@ async function createPaymentLink(accId, { amount, description, currency, convId,
   const ts = Date.now()
   await pool.query(
     `INSERT INTO payment_intents
-       (id, account_id, agent_id, conv_id, provider, reference, link_id, link_url, amount, currency, description, status, result_notified, created_at, updated_at)
-     VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`,
+       (id, account_id, agent_id, conv_id, provider, reference, link_id, link_url, amount, currency, description, status, result_notified, meta, created_at, updated_at)
+     VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`,
     ['pi_' + uid(), accId, agId || null, convId || null, providerOf(cfg), reference,
-     link.linkId, link.url, amt, cur, (description || 'Pago').slice(0, 255), 'pending', 0, ts, ts]
+     link.linkId, link.url, amt, cur, (description || 'Pago').slice(0, 255), 'pending', 0,
+     meta ? JSON.stringify(meta) : null, ts, ts]
   )
   return { reference, url: link.url, amount: amt, currency: cur }
 }
