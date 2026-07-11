@@ -303,6 +303,13 @@ const kpis = async (req, res) => {
       const [[u]] = await pool.query("SELECT COUNT(*) AS n FROM conversations WHERE account_id=? AND classified_at IS NULL", [accId])
       unclassified = Number(u?.n || 0)
     } catch {}
+    // ROI de la IA: costo del asistente (source='chat') en el período.
+    let aiCostUsd = 0, aiTokens = 0
+    try {
+      const [[t]] = await pool.query("SELECT COALESCE(SUM(cost_usd),0) AS cost, COALESCE(SUM(total_tokens),0) AS tk FROM token_usage WHERE account_id=? AND source='chat' AND ts BETWEEN ? AND ?", [accId, fromMs, toMs])
+      aiCostUsd = Number(t?.cost || 0); aiTokens = Number(t?.tk || 0)
+    } catch {}
+
     // Atención: tiempo de 1ª respuesta + desenlace (outcome).
     let avgFirstResponseMs = null, outcomes = [], attendedPct = 0
     try {
@@ -317,6 +324,8 @@ const kpis = async (req, res) => {
     res.json({
       topics, sentiment, classifiedTotal, unclassified,
       avgFirstResponseMs, outcomes, attendedPct,
+      aiCostUsd: +aiCostUsd.toFixed(4), aiTokens,
+      aiCostPerConv: Number(convStats.total) > 0 ? +(aiCostUsd / Number(convStats.total)).toFixed(4) : 0,
       totalConversations: Number(convStats.total),
       humanHandoffs:      Number(convStats.humanHandoff),
       contactsAdded:      Number(contactsCount.total),
