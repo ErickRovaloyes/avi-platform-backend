@@ -14,6 +14,7 @@ router.delete('/accounts/:accId/crm/tasks/:id',         authMiddleware, ctrl.del
 
 router.get('/accounts/:accId/crm/activity',             authMiddleware, ctrl.listActivity)
 router.get('/accounts/:accId/crm/kpis',                 authMiddleware, ctrl.kpis)
+router.get('/accounts/:accId/crm/pipeline-velocity',    authMiddleware, ctrl.pipelineVelocity)
 router.post('/accounts/:accId/crm/classify',            authMiddleware, ctrl.classifyConversations)
 router.get('/accounts/:accId/crm/executive-summary',    authMiddleware, ctrl.previewExecutiveSummary)
 router.post('/accounts/:accId/crm/executive-summary',   authMiddleware, ctrl.sendExecutiveSummary)

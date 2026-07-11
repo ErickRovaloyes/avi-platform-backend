@@ -28,6 +28,47 @@ const sendExecutiveSummary = async (req, res) => {
 
 // ── Clasificación IA de conversaciones (tema + sentimiento) ─────────────────
 // Corre por lotes incrementales usando el Modelo IA de Negocio del Super Panel.
+// ── Velocidad + conversión del embudo (desde deal_stage_history) ─────────────
+const pipelineVelocity = async (req, res) => {
+  const { accId } = req.params
+  try {
+    const [pipes] = await pool.query('SELECT id, stages FROM pipelines WHERE account_id=?', [accId])
+    const stageInfo = {}
+    for (const p of pipes) for (const s of parseJ(p.stages, [])) stageInfo[s.id] = { name: s.name, color: s.color, order: s.order ?? 0 }
+
+    const [hist] = await pool.query('SELECT card_id, to_stage, at FROM deal_stage_history WHERE account_id=? ORDER BY card_id, at ASC', [accId])
+    const byCard = {}
+    for (const h of hist) (byCard[h.card_id] ||= []).push(h)
+
+    const DAY = 86400000
+    const st = {}   // stageId -> { sumMs, nDur, entered, advanced }
+    const get = id => (st[id] ||= { sumMs: 0, nDur: 0, entered: 0, advanced: 0 })
+    for (const card in byCard) {
+      const moves = byCard[card]
+      for (let i = 0; i < moves.length; i++) {
+        const sid = moves[i].to_stage
+        if (!sid) continue
+        const s = get(sid)
+        s.entered++
+        if (i < moves.length - 1) {
+          s.advanced++
+          const dur = moves[i + 1].at - moves[i].at
+          if (dur > 0 && dur < 365 * DAY) { s.sumMs += dur; s.nDur++ }
+        }
+      }
+    }
+    const stages = Object.entries(st)
+      .map(([id, s]) => ({
+        stageId: id, name: stageInfo[id]?.name || id, color: stageInfo[id]?.color || null, order: stageInfo[id]?.order ?? 999,
+        entered: s.entered, advanced: s.advanced,
+        avgDays: s.nDur ? +(s.sumMs / s.nDur / DAY).toFixed(1) : null,
+        throughputPct: s.entered ? Math.round(s.advanced / s.entered * 100) : 0,
+      }))
+      .sort((a, b) => a.order - b.order)
+    res.json({ stages, totalMoves: hist.length })
+  } catch (err) { console.error('[pipeline velocity]', err); res.status(500).json({ error: 'Error interno' }) }
+}
+
 const classifyConversations = async (req, res) => {
   const { accId } = req.params
   const limit = Math.min(Math.max(parseInt(req.body?.limit) || 25, 1), 50)
@@ -296,4 +337,4 @@ const kpis = async (req, res) => {
   }
 }
 
-module.exports = { listNotes, createNote, deleteNote, listTasks, createTask, updateTask, deleteTask, listActivity, kpis, logActivity, classifyConversations, previewExecutiveSummary, sendExecutiveSummary }
+module.exports = { listNotes, createNote, deleteNote, listTasks, createTask, updateTask, deleteTask, listActivity, kpis, logActivity, classifyConversations, previewExecutiveSummary, sendExecutiveSummary, pipelineVelocity }
