@@ -28,6 +28,29 @@ const sendExecutiveSummary = async (req, res) => {
 
 // ── Clasificación IA de conversaciones (tema + sentimiento) ─────────────────
 // Corre por lotes incrementales usando el Modelo IA de Negocio del Super Panel.
+// ── Retención / churn: recencia de compra de los clientes ────────────────────
+const retention = async (req, res) => {
+  const { accId } = req.params
+  const DAY = 86400000, now = Date.now()
+  try {
+    // Último pedido por contacto (clientes = con al menos 1 pedido no cancelado).
+    const [rows] = await pool.query(
+      "SELECT contact_id, MAX(created_at) AS lastAt, COUNT(*) AS n, COALESCE(SUM(total),0) AS spend FROM orders WHERE account_id=? AND contact_id IS NOT NULL AND status NOT IN('draft','canceled') GROUP BY contact_id",
+      [accId])
+    const buckets = { active: 0, atRisk: 0, inactive: 0, churned: 0 }
+    let atRiskValue = 0
+    for (const r of rows) {
+      const days = (now - Number(r.lastAt)) / DAY
+      if (days <= 30) buckets.active++
+      else if (days <= 60) { buckets.atRisk++; atRiskValue += Number(r.spend) }
+      else if (days <= 90) { buckets.inactive++; atRiskValue += Number(r.spend) }
+      else buckets.churned++
+    }
+    const [[cur]] = await pool.query("SELECT currency FROM orders WHERE account_id=? AND currency IS NOT NULL LIMIT 1", [accId]).catch(() => [[{}]])
+    res.json({ customers: rows.length, buckets, atRiskValue: Math.round(atRiskValue), currency: cur?.currency || 'COP' })
+  } catch (err) { console.error('[retention]', err); res.status(500).json({ error: 'Error interno' }) }
+}
+
 // ── Velocidad + conversión del embudo (desde deal_stage_history) ─────────────
 const pipelineVelocity = async (req, res) => {
   const { accId } = req.params
@@ -346,4 +369,4 @@ const kpis = async (req, res) => {
   }
 }
 
-module.exports = { listNotes, createNote, deleteNote, listTasks, createTask, updateTask, deleteTask, listActivity, kpis, logActivity, classifyConversations, previewExecutiveSummary, sendExecutiveSummary, pipelineVelocity }
+module.exports = { listNotes, createNote, deleteNote, listTasks, createTask, updateTask, deleteTask, listActivity, kpis, logActivity, classifyConversations, previewExecutiveSummary, sendExecutiveSummary, pipelineVelocity, retention }
