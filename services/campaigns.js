@@ -71,6 +71,10 @@ async function runCampaign(campaignId) {
 
   const accId = c.account_id, agId = c.agent_id, flowId = c.flow_id
   const audience = parseJ(c.audience, {})
+  // A/B testing: si hay flujo variante, se reparte la audiencia (ab_split % → B, resto → A).
+  const variantFlowId = c.variant_flow_id || null
+  const abSplit = Math.min(Math.max(parseInt(c.ab_split) || 50, 5), 95)
+  const abGroups = { a: { contacts: [], convos: [] }, b: { contacts: [], convos: [] } }
   let sent = 0, failed = 0, total = 0
   const recipients = []
   try {
@@ -83,15 +87,19 @@ async function runCampaign(campaignId) {
       failed = total
     } else {
       for (const ct of contacts) {
+        // Reparto A/B (equilibra: si B va rezagado y aún cabe, empuja a B).
+        const grp = variantFlowId ? (Math.random() * 100 < abSplit ? 'b' : 'a') : 'a'
+        const useFlow = grp === 'b' ? variantFlowId : flowId
         try {
           const convId = await store.createOrGetWhatsAppConvo(accId, agId, ct.phone, ct.name || ct.phone, channel.id)
           const outbound = buildOutbound(agent, 'whatsapp', channel.id, ct.phone)
           const triggerContext = {
-            message: '', _campaign: c.name || '',
+            message: '', _campaign: c.name || '', _abVariant: variantFlowId ? grp : '',
             cliente_nombre: ct.name || '', cliente_telefono: ct.phone, contact_id: ct.id,
           }
-          await engine.executeFlow({ flowId, accId, agId, convId, triggerContext, triggeredBy: { type: 'campaign', campaignId: c.id }, outbound })
+          await engine.executeFlow({ flowId: useFlow, accId, agId, convId, triggerContext, triggeredBy: { type: 'campaign', campaignId: c.id }, outbound })
           sent++; if (ct.id) recipients.push(ct.id)
+          if (variantFlowId) { if (ct.id) abGroups[grp].contacts.push(ct.id); if (convId) abGroups[grp].convos.push(convId) }
         } catch (e) { failed++; console.warn('[campaign]', ct.phone, e.message) }
         await new Promise(r => setTimeout(r, 350)) // respiro anti rate-limit de Meta
       }
@@ -99,8 +107,8 @@ async function runCampaign(campaignId) {
   } catch (e) {
     console.error('[runCampaign]', e.message)
   }
-  await pool.query('UPDATE campaigns SET status=?, stats=?, sent_at=?, recipients=? WHERE id=?',
-    ['done', JSON.stringify({ total, sent, failed, delivered: 0, read: 0, responded: 0 }), Date.now(), JSON.stringify(recipients), campaignId])
+  await pool.query('UPDATE campaigns SET status=?, stats=?, sent_at=?, recipients=?, ab_groups=? WHERE id=?',
+    ['done', JSON.stringify({ total, sent, failed, delivered: 0, read: 0, responded: 0 }), Date.now(), JSON.stringify(recipients), variantFlowId ? JSON.stringify(abGroups) : null, campaignId])
   // Primer recálculo (los webhooks de estado irán actualizando entregados/leídos).
   try { await store.recountCampaignStats(campaignId) } catch {}
   return { total, sent, failed }

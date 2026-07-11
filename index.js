@@ -1081,6 +1081,10 @@ app.use('/api',                recontactRoutes)
      )`,
     // Destinatarios reales de la campaña (ids de contacto) para atribuir ingresos (ROI).
     "ALTER TABLE campaigns ADD COLUMN recipients JSON",
+    // A/B testing de masivos: flujo variante B + % de audiencia asignado a B + resultado por grupo.
+    "ALTER TABLE campaigns ADD COLUMN variant_flow_id VARCHAR(50)",
+    "ALTER TABLE campaigns ADD COLUMN ab_split INT",
+    "ALTER TABLE campaigns ADD COLUMN ab_groups JSON",
     // ── Suscripciones: tipos de cuenta, planes mensuales y suscripción por cuenta ──
     `CREATE TABLE IF NOT EXISTS account_types (
        id                                    VARCHAR(50) PRIMARY KEY,
