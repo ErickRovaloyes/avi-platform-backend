@@ -39,4 +39,8 @@ router.post('/accounts/:accId/crm/classify',            authMiddleware, ctrl.cla
 router.get('/accounts/:accId/crm/executive-summary',    authMiddleware, ctrl.previewExecutiveSummary)
 router.post('/accounts/:accId/crm/executive-summary',   authMiddleware, ctrl.sendExecutiveSummary)
 
+// QA del asistente: evaluar calidad de chats IA + cola de revisión
+router.post('/accounts/:accId/crm/qa',                  authMiddleware, ctrl.qaRun)
+router.get('/accounts/:accId/crm/qa-review',            authMiddleware, ctrl.qaReview)
+
 module.exports = router

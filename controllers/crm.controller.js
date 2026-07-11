@@ -2,6 +2,27 @@
 const pool = require('../db')
 const { uid, parseJ } = require('../utils')
 const convClassify = require('../services/convClassify')
+const convQA = require('../services/convQA')
+
+// ── QA del asistente: evaluar calidad (lote) + lista a revisar ────────────────
+const qaRun = async (req, res) => {
+  const { accId } = req.params
+  const limit = Math.min(Math.max(parseInt(req.body?.limit) || 15, 1), 40)
+  try {
+    const r = await convQA.qaBatch(accId, { limit })
+    if (!r.ok) return res.status(400).json({ error: r.error })
+    res.json(r)
+  } catch (err) { console.error('[qa run]', err); res.status(500).json({ error: 'Error interno' }) }
+}
+const qaReview = async (req, res) => {
+  const { accId } = req.params
+  try {
+    const [rows] = await pool.query(
+      "SELECT id, agent_id, guest_name, channel_type, qa_score, qa_flag, updated_at FROM conversations WHERE account_id=? AND qa_score IS NOT NULL AND qa_score < 50 ORDER BY qa_score ASC, updated_at DESC LIMIT 20",
+      [accId])
+    res.json({ items: rows.map(r => ({ id: r.id, agentId: r.agent_id, guestName: r.guest_name, channel: r.channel_type, score: r.qa_score, flag: r.qa_flag || '', updatedAt: r.updated_at })) })
+  } catch (err) { res.status(500).json({ error: 'Error interno' }) }
+}
 const execSummary = require('../services/execSummary')
 const businessCopilot = require('../services/businessCopilot')
 const { sendEmail } = require('../services/email')
@@ -433,9 +454,20 @@ const kpis = async (req, res) => {
       const att = outcomes.find(o => o.outcome === 'atendido')?.count || 0
       attendedPct = tot ? Math.round(att / tot * 100) : 0
     } catch {}
+    // QA del asistente: promedio de calidad + cuántos chats necesitan revisión + sin evaluar.
+    let qaAvg = null, qaReviewCount = 0, qaEvaluated = 0, qaPending = 0
+    try {
+      const [[qa]] = await pool.query("SELECT AVG(qa_score) AS avg, COUNT(qa_score) AS n, SUM(CASE WHEN qa_score<50 THEN 1 ELSE 0 END) AS low FROM conversations WHERE account_id=? AND qa_at IS NOT NULL", [accId])
+      qaAvg = qa?.avg != null ? Math.round(Number(qa.avg)) : null
+      qaEvaluated = Number(qa?.n || 0); qaReviewCount = Number(qa?.low || 0)
+      const [[qp]] = await pool.query("SELECT COUNT(*) AS n FROM conversations WHERE account_id=? AND ai_enabled=1 AND qa_at IS NULL", [accId])
+      qaPending = Number(qp?.n || 0)
+    } catch {}
+
     res.json({
       topics, sentiment, classifiedTotal, unclassified,
       avgFirstResponseMs, outcomes, attendedPct,
+      qaAvg, qaReviewCount, qaEvaluated, qaPending,
       aiCostUsd: +aiCostUsd.toFixed(4), aiTokens,
       aiCostPerConv: Number(convStats.total) > 0 ? +(aiCostUsd / Number(convStats.total)).toFixed(4) : 0,
       totalConversations: Number(convStats.total),
@@ -458,4 +490,4 @@ const kpis = async (req, res) => {
   }
 }
 
-module.exports = { listNotes, createNote, deleteNote, listTasks, createTask, updateTask, deleteTask, listActivity, kpis, logActivity, classifyConversations, previewExecutiveSummary, sendExecutiveSummary, pipelineVelocity, retention, copilotAsk, detectOpportunities, leadScores }
+module.exports = { listNotes, createNote, deleteNote, listTasks, createTask, updateTask, deleteTask, listActivity, kpis, logActivity, classifyConversations, previewExecutiveSummary, sendExecutiveSummary, pipelineVelocity, retention, copilotAsk, detectOpportunities, leadScores, qaRun, qaReview }

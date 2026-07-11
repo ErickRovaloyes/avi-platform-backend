@@ -207,6 +207,10 @@ app.use('/api',                recontactRoutes)
     "ALTER TABLE conversations ADD COLUMN outcome VARCHAR(16)",
     // Intención de compra detectada por la IA (nula/baja/media/alta) → pipeline conversacional.
     "ALTER TABLE conversations ADD COLUMN buying_intent VARCHAR(10)",
+    // QA del asistente: puntaje de calidad (0-100) + problema detectado por la IA revisora.
+    "ALTER TABLE conversations ADD COLUMN qa_score INT",
+    "ALTER TABLE conversations ADD COLUMN qa_flag VARCHAR(160)",
+    "ALTER TABLE conversations ADD COLUMN qa_at BIGINT",
     // Historial de movimientos de deals entre etapas (para velocidad/conversión del embudo).
     `CREATE TABLE IF NOT EXISTS deal_stage_history (
        id BIGINT PRIMARY KEY AUTO_INCREMENT, account_id VARCHAR(50) NOT NULL,
