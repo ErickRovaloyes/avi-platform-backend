@@ -116,4 +116,25 @@ const remove = async (req, res) => {
   } catch (err) { res.status(500).json({ error: 'Error interno' }) }
 }
 
-module.exports = { list, preview, create, sendNow, update, resend, cancel, remove }
+// ROI / atribución: ingresos de los destinatarios en los N días posteriores al envío.
+const roi = async (req, res) => {
+  const { accId, id } = req.params
+  const days = Math.min(Math.max(parseInt(req.query.days) || 7, 1), 90)
+  try {
+    const [[c]] = await pool.query('SELECT * FROM campaigns WHERE id=? AND account_id=?', [id, accId])
+    if (!c) return res.status(404).json({ error: 'Campaña no encontrada' })
+    let recipients = parseJ(c.recipients, [])
+    if (!recipients.length) { try { recipients = (await campaigns.resolveAudience(accId, parseJ(c.audience, {}))).map(x => x.id).filter(Boolean) } catch {} }
+    const sentAt = c.sent_at || c.created_at
+    if (!recipients.length || !sentAt) return res.json({ orders: 0, revenue: 0, currency: 'COP', days, recipients: recipients.length, convRate: 0 })
+    const until = sentAt + days * 86400000
+    const [rows] = await pool.query(
+      `SELECT COUNT(*) AS n, COALESCE(SUM(total),0) AS rev, MAX(currency) AS cur FROM orders
+       WHERE account_id=? AND contact_id IN (?) AND status NOT IN('draft','canceled') AND created_at BETWEEN ? AND ?`,
+      [accId, recipients, sentAt, until])
+    const orders = Number(rows[0]?.n || 0), revenue = Number(rows[0]?.rev || 0)
+    res.json({ orders, revenue: Math.round(revenue), currency: rows[0]?.cur || 'COP', days, recipients: recipients.length, convRate: recipients.length ? Math.round(orders / recipients.length * 100) : 0 })
+  } catch (err) { console.error('[campaign roi]', err); res.status(500).json({ error: 'Error interno' }) }
+}
+
+module.exports = { list, preview, create, sendNow, update, resend, cancel, remove, roi }

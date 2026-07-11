@@ -72,6 +72,7 @@ async function runCampaign(campaignId) {
   const accId = c.account_id, agId = c.agent_id, flowId = c.flow_id
   const audience = parseJ(c.audience, {})
   let sent = 0, failed = 0, total = 0
+  const recipients = []
   try {
     const contacts = await resolveAudience(accId, audience)
     total = contacts.length
@@ -90,7 +91,7 @@ async function runCampaign(campaignId) {
             cliente_nombre: ct.name || '', cliente_telefono: ct.phone, contact_id: ct.id,
           }
           await engine.executeFlow({ flowId, accId, agId, convId, triggerContext, triggeredBy: { type: 'campaign', campaignId: c.id }, outbound })
-          sent++
+          sent++; if (ct.id) recipients.push(ct.id)
         } catch (e) { failed++; console.warn('[campaign]', ct.phone, e.message) }
         await new Promise(r => setTimeout(r, 350)) // respiro anti rate-limit de Meta
       }
@@ -98,8 +99,8 @@ async function runCampaign(campaignId) {
   } catch (e) {
     console.error('[runCampaign]', e.message)
   }
-  await pool.query('UPDATE campaigns SET status=?, stats=?, sent_at=? WHERE id=?',
-    ['done', JSON.stringify({ total, sent, failed, delivered: 0, read: 0, responded: 0 }), Date.now(), campaignId])
+  await pool.query('UPDATE campaigns SET status=?, stats=?, sent_at=?, recipients=? WHERE id=?',
+    ['done', JSON.stringify({ total, sent, failed, delivered: 0, read: 0, responded: 0 }), Date.now(), JSON.stringify(recipients), campaignId])
   // Primer recálculo (los webhooks de estado irán actualizando entregados/leídos).
   try { await store.recountCampaignStats(campaignId) } catch {}
   return { total, sent, failed }

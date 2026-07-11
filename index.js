@@ -1059,6 +1059,8 @@ app.use('/api',                recontactRoutes)
        created_at   BIGINT,
        INDEX idx_camp_acc (account_id)
      )`,
+    // Destinatarios reales de la campaña (ids de contacto) para atribuir ingresos (ROI).
+    "ALTER TABLE campaigns ADD COLUMN recipients JSON",
     // ── Suscripciones: tipos de cuenta, planes mensuales y suscripción por cuenta ──
     `CREATE TABLE IF NOT EXISTS account_types (
        id                                    VARCHAR(50) PRIMARY KEY,

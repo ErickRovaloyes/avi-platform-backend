@@ -4,6 +4,7 @@ const { authMiddleware } = require('../auth')
 const ctrl = require('../controllers/campaigns.controller')
 
 router.get('/accounts/:accId/campaigns',                 authMiddleware, ctrl.list)
+router.get('/accounts/:accId/campaigns/:id/roi',         authMiddleware, ctrl.roi)
 router.post('/accounts/:accId/campaigns/preview',        authMiddleware, ctrl.preview)
 router.post('/accounts/:accId/campaigns',                authMiddleware, ctrl.create)
 router.put('/accounts/:accId/campaigns/:id',             authMiddleware, ctrl.update)
