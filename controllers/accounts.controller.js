@@ -131,6 +131,13 @@ const mapCmsAsset = c => ({
   createdAt: c.created_at,
 })
 const mapCmsFolder = f => ({ id: f.id, name: f.name, type: f.type || 'simple', description: f.description || '', createdAt: f.created_at })
+const mapCmsProduct = p => ({
+  id: p.id, name: p.name, description: p.description || '',
+  price: Number(p.price) || 0, currency: p.currency || 'COP',
+  photos: parseJ(p.photos, []), categories: parseJ(p.categories, []), attributes: parseJ(p.attributes, []),
+  active: p.active == null ? true : !!p.active, sort: p.sort || 0,
+  createdAt: p.created_at, updatedAt: p.updated_at,
+})
 const mapNamed = r => ({ id: r.id, name: r.name })
 const mapSticker = s => ({ id: s.id, mediaId: s.media_id, mime: s.mime || 'image/webp', name: s.name || '', createdAt: s.created_at })
 
@@ -144,10 +151,11 @@ async function loadPublicAccount(accId) {
   const [variables] = await pool.query('SELECT * FROM variables WHERE account_id=?', [accId])
   const [aiTools]   = await pool.query('SELECT * FROM ai_tools WHERE account_id=?', [accId])
   const [cmsAssets] = await pool.query('SELECT * FROM cms_assets WHERE account_id=?', [accId])
-  let cmsFolders = [], cmsTags = [], cmsCategories = [], stickers = []
+  let cmsFolders = [], cmsTags = [], cmsCategories = [], cmsProducts = [], stickers = []
   try { [cmsFolders]    = await pool.query('SELECT * FROM cms_folders WHERE account_id=?', [accId]) } catch { cmsFolders = [] }
   try { [cmsTags]       = await pool.query('SELECT * FROM cms_tags WHERE account_id=?', [accId]) } catch { cmsTags = [] }
   try { [cmsCategories] = await pool.query('SELECT * FROM cms_categories WHERE account_id=?', [accId]) } catch { cmsCategories = [] }
+  try { [cmsProducts]   = await pool.query('SELECT * FROM cms_products WHERE account_id=? ORDER BY sort, created_at', [accId]) } catch { cmsProducts = [] }
   try { [stickers]      = await pool.query('SELECT * FROM stickers WHERE account_id=? ORDER BY created_at DESC', [accId]) } catch { stickers = [] }
   const [flows]     = await pool.query('SELECT * FROM flows WHERE account_id=?', [accId])
   // Resolve API keys with super-admin platform fallback
@@ -180,6 +188,7 @@ async function loadPublicAccount(accId) {
     cmsFolders: cmsFolders.map(mapCmsFolder),
     cmsTags: cmsTags.map(mapNamed),
     cmsCategories: cmsCategories.map(mapNamed),
+    cmsProducts: cmsProducts.map(mapCmsProduct),
     stickers: stickers.map(mapSticker),
     flows:     flows.map(f => ({ id: f.id, name: f.name, trigger: f.trigger, startNodeId: f.start_node_id, nodes: parseJ(f.nodes, []) })),
   }
@@ -211,10 +220,11 @@ const getAccount = async (req, res) => {
     const [variables] = await pool.query('SELECT * FROM variables WHERE account_id=?', [accId])
     const [aiTools]   = await pool.query('SELECT * FROM ai_tools WHERE account_id=?', [accId])
     const [cmsAssets] = await pool.query('SELECT * FROM cms_assets WHERE account_id=?', [accId])
-    let cmsFolders = [], cmsTags = [], cmsCategories = [], stickers = []
+    let cmsFolders = [], cmsTags = [], cmsCategories = [], cmsProducts = [], stickers = []
     try { [cmsFolders]    = await pool.query('SELECT * FROM cms_folders WHERE account_id=? ORDER BY created_at', [accId]) } catch { cmsFolders = [] }
     try { [cmsTags]       = await pool.query('SELECT * FROM cms_tags WHERE account_id=? ORDER BY name', [accId]) } catch { cmsTags = [] }
     try { [cmsCategories] = await pool.query('SELECT * FROM cms_categories WHERE account_id=? ORDER BY name', [accId]) } catch { cmsCategories = [] }
+    try { [cmsProducts]   = await pool.query('SELECT * FROM cms_products WHERE account_id=? ORDER BY sort, created_at', [accId]) } catch { cmsProducts = [] }
     try { [stickers]      = await pool.query('SELECT * FROM stickers WHERE account_id=? ORDER BY created_at DESC', [accId]) } catch { stickers = [] }
     const [flows]     = await pool.query('SELECT * FROM flows WHERE account_id=?', [accId])
     const [contacts]  = await pool.query('SELECT * FROM contacts WHERE account_id=?', [accId])
@@ -280,6 +290,7 @@ const getAccount = async (req, res) => {
       cmsFolders: cmsFolders.map(mapCmsFolder),
       cmsTags: cmsTags.map(mapNamed),
       cmsCategories: cmsCategories.map(mapNamed),
+      cmsProducts: cmsProducts.map(mapCmsProduct),
       stickers: stickers.map(mapSticker),
       flows:     flows.map(f => ({ id: f.id, name: f.name, trigger: f.trigger, startNodeId: f.start_node_id, nodes: parseJ(f.nodes, []), createdAt: f.created_at })),
       contacts:  contacts.map(c => ({ id: c.id, name: c.name, email: c.email, phone: c.phone, ...parseJ(c.extra, {}), createdAt: c.created_at })),

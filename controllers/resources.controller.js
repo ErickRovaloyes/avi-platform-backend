@@ -230,6 +230,66 @@ const deleteCmsCategory = async (req, res) => {
   } catch (err) { res.status(500).json({ error: 'Error interno' }) }
 }
 
+// ── CMS: PRODUCTOS / CATÁLOGO ───────────────────────────────────────────────────
+// Un producto = nombre + precio + varias fotos + descripción + categorías +
+// atributos personalizados. Se guarda en cms_products (JSON para las listas).
+const cleanAttrs = a => (Array.isArray(a) ? a : [])
+  .map(x => ({ name: String(x?.name || '').slice(0, 80), value: String(x?.value ?? '').slice(0, 300) }))
+  .filter(x => x.name)
+const cleanList = (a, max = 60) => (Array.isArray(a) ? a : [])
+  .map(x => String(x || '').slice(0, max)).filter(Boolean)
+
+const createCmsProduct = async (req, res) => {
+  const { accId } = req.params
+  const { id: gId, name, description = '', price = 0, currency = 'COP',
+          photos = [], categories = [], attributes = [], active = true, sort = 0 } = req.body
+  if (!name || !String(name).trim()) return res.status(400).json({ error: 'El nombre del producto es obligatorio' })
+  const id = gId || ('prod_' + uid())
+  const now = Date.now()
+  try {
+    await pool.query(
+      'INSERT INTO cms_products (id,account_id,name,description,price,currency,photos,categories,attributes,active,sort,created_at,updated_at) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)',
+      [id, accId, String(name).slice(0, 200), String(description || '').slice(0, 4000), Number(price) || 0, String(currency || 'COP').slice(0, 8),
+       JSON.stringify(cleanList(photos)), JSON.stringify(cleanList(categories, 120)), JSON.stringify(cleanAttrs(attributes)),
+       active === false ? 0 : 1, Number(sort) || 0, now, now]
+    )
+    socket.emit(accId, 'account:updated', { accId }); res.json({ id })
+  } catch (err) { console.error('[createCmsProduct]', err); res.status(500).json({ error: 'Error interno' }) }
+}
+const updateCmsProduct = async (req, res) => {
+  const { accId, productId } = req.params
+  const b = req.body || {}
+  try {
+    const sets = []; const vals = []
+    if (b.name        !== undefined) { sets.push('name=?');        vals.push(String(b.name).slice(0, 200)) }
+    if (b.description !== undefined) { sets.push('description=?'); vals.push(String(b.description || '').slice(0, 4000)) }
+    if (b.price       !== undefined) { sets.push('price=?');       vals.push(Number(b.price) || 0) }
+    if (b.currency    !== undefined) { sets.push('currency=?');    vals.push(String(b.currency || 'COP').slice(0, 8)) }
+    if (b.photos      !== undefined) { sets.push('photos=?');      vals.push(JSON.stringify(cleanList(b.photos))) }
+    if (b.categories  !== undefined) { sets.push('categories=?');  vals.push(JSON.stringify(cleanList(b.categories, 120))) }
+    if (b.attributes  !== undefined) { sets.push('attributes=?');  vals.push(JSON.stringify(cleanAttrs(b.attributes))) }
+    if (b.active      !== undefined) { sets.push('active=?');      vals.push(b.active === false ? 0 : 1) }
+    if (b.sort        !== undefined) { sets.push('sort=?');        vals.push(Number(b.sort) || 0) }
+    if (!sets.length) return res.json({ ok: true })
+    sets.push('updated_at=?'); vals.push(Date.now())
+    vals.push(productId, accId)
+    await pool.query(`UPDATE cms_products SET ${sets.join(',')} WHERE id=? AND account_id=?`, vals)
+    socket.emit(accId, 'account:updated', { accId }); res.json({ ok: true })
+  } catch (err) { console.error('[updateCmsProduct]', err); res.status(500).json({ error: 'Error interno' }) }
+}
+const deleteCmsProduct = async (req, res) => {
+  const { accId, productId } = req.params
+  try {
+    // Libera las fotos (media) asociadas para no dejar huérfanos.
+    try {
+      const [[p]] = await pool.query('SELECT photos FROM cms_products WHERE id=? AND account_id=?', [productId, accId])
+      for (const mid of parseJ(p?.photos, [])) { try { await pool.query('DELETE FROM media WHERE id=? AND account_id=?', [mid, accId]) } catch {} }
+    } catch {}
+    await pool.query('DELETE FROM cms_products WHERE id=? AND account_id=?', [productId, accId])
+    socket.emit(accId, 'account:updated', { accId }); res.json({ ok: true })
+  } catch (err) { console.error('[deleteCmsProduct]', err); res.status(500).json({ error: 'Error interno' }) }
+}
+
 // ── Stickers (biblioteca para enviar en los chats) ──────────────────────────────
 // El binario se sube vía /api/media/:accId/upload; aquí se registra la referencia.
 const createSticker = async (req, res) => {
@@ -411,6 +471,7 @@ module.exports = {
   createCmsFolder, updateCmsFolder, deleteCmsFolder,
   createCmsTag, deleteCmsTag,
   createCmsCategory, deleteCmsCategory,
+  createCmsProduct, updateCmsProduct, deleteCmsProduct,
   createSticker, deleteSticker,
   createFlow, updateFlow, deleteFlow,
   designFlow,

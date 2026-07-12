@@ -279,6 +279,15 @@ app.use('/api',                recontactRoutes)
        eta_min INT DEFAULT 0, sort INT DEFAULT 0, created_at BIGINT,
        INDEX idx_oz_acc (account_id)
      )`,
+    // Zonas de entrega dibujadas en un mapa: además del cobro/tiempo, guardan la
+    // ciudad, un polígono (GeoJSON simplificado [[lat,lng],…]), color, estado
+    // activo/inactivo e info adicional. El asistente geocodifica la dirección y
+    // usa point-in-polygon para saber si cae dentro de la cobertura.
+    "ALTER TABLE order_zones ADD COLUMN city VARCHAR(120)",
+    "ALTER TABLE order_zones ADD COLUMN active TINYINT(1) DEFAULT 1",
+    "ALTER TABLE order_zones ADD COLUMN color VARCHAR(20)",
+    "ALTER TABLE order_zones ADD COLUMN polygon JSON",
+    "ALTER TABLE order_zones ADD COLUMN extra_info TEXT",
     `CREATE TABLE IF NOT EXISTS order_couriers (
        id VARCHAR(50) PRIMARY KEY, account_id VARCHAR(50) NOT NULL,
        name VARCHAR(160) NOT NULL, phone VARCHAR(40), active TINYINT(1) DEFAULT 1, created_at BIGINT,
@@ -1040,6 +1049,25 @@ app.use('/api',                recontactRoutes)
        name        VARCHAR(120) NOT NULL,
        created_at  BIGINT,
        INDEX idx_cmscat_acc (account_id)
+     )`,
+    // CMS · división PRODUCTOS/CATÁLOGO: a diferencia de los assets (archivos
+    // sueltos), un producto tiene nombre, precio, varias fotos, categorías y
+    // atributos personalizados (pares nombre/valor definidos por el negocio).
+    `CREATE TABLE IF NOT EXISTS cms_products (
+       id          VARCHAR(50) PRIMARY KEY,
+       account_id  VARCHAR(50) NOT NULL,
+       name        VARCHAR(200) NOT NULL,
+       description TEXT,
+       price       DECIMAL(12,2) DEFAULT 0,
+       currency    VARCHAR(8) DEFAULT 'COP',
+       photos      JSON,   -- [mediaId, …]
+       categories  JSON,   -- [nombreCategoria, …]
+       attributes  JSON,   -- [{ name, value }, …]  (atributos personalizados)
+       active      TINYINT(1) DEFAULT 1,
+       sort        INT DEFAULT 0,
+       created_at  BIGINT,
+       updated_at  BIGINT,
+       INDEX idx_cmsprod_acc (account_id)
      )`,
     // Biblioteca de stickers (imágenes) para enviar rápido en los chats. media_id
     // apunta a la tabla media.

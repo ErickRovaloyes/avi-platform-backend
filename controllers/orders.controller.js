@@ -116,10 +116,16 @@ const saveZone = async (req, res) => {
   const { accId } = req.params; const b = req.body || {}
   try {
     const id = b.id || ('oz_' + uid())
-    if (b.id) await pool.query('UPDATE order_zones SET name=?, fee=?, min_order=?, eta_min=?, sort=? WHERE id=? AND account_id=?',
-      [String(b.name || '').slice(0, 160), Number(b.fee) || 0, Number(b.minOrder) || 0, Number(b.etaMin) || 0, Number(b.sort) || 0, id, accId])
-    else await pool.query('INSERT INTO order_zones (id,account_id,name,fee,min_order,eta_min,sort,created_at) VALUES (?,?,?,?,?,?,?,?)',
-      [id, accId, String(b.name || '').slice(0, 160), Number(b.fee) || 0, Number(b.minOrder) || 0, Number(b.etaMin) || 0, Number(b.sort) || 0, Date.now()])
+    // Polígono dibujado en el mapa: anillo [[lat,lng], …]. Se guarda como JSON.
+    const polygon = Array.isArray(b.polygon) ? JSON.stringify(b.polygon) : null
+    const active = b.active === false ? 0 : 1
+    const city = String(b.city || '').slice(0, 120)
+    const color = String(b.color || '').slice(0, 20)
+    const extra = String(b.extraInfo || '').slice(0, 2000)
+    if (b.id) await pool.query('UPDATE order_zones SET name=?, fee=?, min_order=?, eta_min=?, sort=?, city=?, active=?, color=?, polygon=?, extra_info=? WHERE id=? AND account_id=?',
+      [String(b.name || '').slice(0, 160), Number(b.fee) || 0, Number(b.minOrder) || 0, Number(b.etaMin) || 0, Number(b.sort) || 0, city, active, color, polygon, extra, id, accId])
+    else await pool.query('INSERT INTO order_zones (id,account_id,name,fee,min_order,eta_min,sort,city,active,color,polygon,extra_info,created_at) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)',
+      [id, accId, String(b.name || '').slice(0, 160), Number(b.fee) || 0, Number(b.minOrder) || 0, Number(b.etaMin) || 0, Number(b.sort) || 0, city, active, color, polygon, extra, Date.now()])
     socket.emit(accId, 'account:updated', { accId })
     res.json({ ok: true, id })
   } catch (e) { console.error('[orders saveZone]', e); res.status(500).json({ error: 'Error interno' }) }
@@ -127,6 +133,19 @@ const saveZone = async (req, res) => {
 const deleteZone = async (req, res) => {
   try { await pool.query('DELETE FROM order_zones WHERE id=? AND account_id=?', [req.params.id, req.params.accId]); socket.emit(req.params.accId, 'account:updated', { accId: req.params.accId }); res.json({ ok: true }) }
   catch { res.status(500).json({ error: 'Error interno' }) }
+}
+// Probar una dirección desde el panel: geocodifica + point-in-polygon igual que el
+// asistente, para que el admin valide su cobertura sin pasar por un chat real.
+const geoSvc = require('../services/geo')
+const geoTest = async (req, res) => {
+  const { accId } = req.params
+  const address = String(req.body?.address || '').trim()
+  if (!address) return res.status(400).json({ error: 'Escribe una dirección para probar' })
+  try {
+    const cfg = orders.normConfig(await orders.loadConfig(accId))
+    const r = await geoSvc.resolveDeliveryZone(accId, address, cfg)
+    res.json({ geo: r.geo, zone: r.zone, matched: r.matched, inCoverage: !!r.matched })
+  } catch (e) { console.error('[orders geoTest]', e); res.status(500).json({ error: 'Error interno' }) }
 }
 
 // ── Repartidores ────────────────────────────────────────────────────────────────
@@ -312,5 +331,5 @@ const metrics = async (req, res) => {
 
 module.exports = {
   getConfig, saveConfig, listMenu, saveProduct, deleteProduct, saveGroup, deleteGroup,
-  saveZone, deleteZone, saveCourier, deleteCourier, saveCoupon, deleteCoupon, listOrders, getOrder, updateOrder, tool, track, metrics,
+  saveZone, deleteZone, geoTest, saveCourier, deleteCourier, saveCoupon, deleteCoupon, listOrders, getOrder, updateOrder, tool, track, metrics,
 }

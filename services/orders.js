@@ -13,6 +13,7 @@ const { uid, parseJ } = require('../utils')
 const socket = require('./socket')
 const { sendBotMsg } = require('../flow/common')
 const { buildOutbound } = require('./calendarNotify')
+const geoSvc = require('./geo')
 
 const ORDER_TYPES = ['delivery', 'pickup', 'dinein', 'scheduled']
 const TYPE_LABEL = { delivery: 'domicilio', pickup: 'para recoger', dinein: 'en el local', scheduled: 'programado' }
@@ -72,6 +73,11 @@ function normConfig(cfg) {
       const d = (h.days && typeof h.days === 'object') ? h.days : {}
       return { enabled: !!h.enabled, days: { mon: d.mon || '', tue: d.tue || '', wed: d.wed || '', thu: d.thu || '', fri: d.fri || '', sat: d.sat || '', sun: d.sun || '' } }
     })(),
+    // Geocodificación de zonas de entrega (mapa + point-in-polygon). Por defecto
+    // Nominatim (OSM, gratis). Si se pega una API key de Google, se usa Google.
+    // geoCountry = código ISO-2 (p.ej. 'co') para sesgar/mejorar la precisión.
+    geoGoogleKey: c.geoGoogleKey || '',
+    geoCountry: (c.geoCountry || '').toLowerCase().slice(0, 2),
   }
 }
 
@@ -98,15 +104,19 @@ function isOpenNow(hours, tz) {
 }
 
 // Config pública para el runtime/UI (va dentro de account.orders).
+// La API key de Google es secreta: nunca debe viajar en el payload público de la
+// cuenta (que puede llegar al webchat del cliente). Solo se expone por el endpoint
+// autenticado getOrdersConfig. Aquí se elimina.
+const stripSecrets = c => { const { geoGoogleKey, ...rest } = c; return rest }
 async function publicConfigAsync(accId) {
   const c = normConfig(await loadConfig(accId))
   const menu = await hasMenu(accId)
-  return { ...c, connected: !!(c.enabled && menu), hasMenu: menu }
+  return { ...stripSecrets(c), connected: !!(c.enabled && menu), hasMenu: menu }
 }
 // Versión síncrona (para el payload de la cuenta que ya trae la config parseada).
 function publicConfig(cfg) {
   const c = normConfig(cfg)
-  return { ...c, connected: !!c.enabled }  // el gating fino de menú se valida en runtime
+  return { ...stripSecrets(c), connected: !!c.enabled }  // el gating fino de menú se valida en runtime
 }
 
 // ── Utilidades ─────────────────────────────────────────────────────────────────
@@ -158,7 +168,12 @@ async function listGroups(accId) {
   const [ms] = await pool.query('SELECT * FROM order_modifiers WHERE account_id=? ORDER BY sort, name', [accId])
   return gs.map(g => ({ ...mapGroup(g), modifiers: ms.filter(m => m.group_id === g.id).map(m => ({ id: m.id, name: m.name, priceDelta: Number(m.price_delta) || 0, available: !!m.available })) }))
 }
-const mapZone = z => ({ id: z.id, name: z.name, fee: Number(z.fee) || 0, minOrder: Number(z.min_order) || 0, etaMin: z.eta_min || 0, sort: z.sort || 0 })
+const mapZone = z => ({
+  id: z.id, name: z.name, fee: Number(z.fee) || 0, minOrder: Number(z.min_order) || 0,
+  etaMin: z.eta_min || 0, sort: z.sort || 0,
+  city: z.city || '', active: z.active == null ? true : !!z.active, color: z.color || '',
+  polygon: parseJ(z.polygon, null), extraInfo: z.extra_info || '',
+})
 async function listZones(accId) {
   const [rows] = await pool.query('SELECT * FROM order_zones WHERE account_id=? ORDER BY sort, name', [accId])
   return rows.map(mapZone)
@@ -398,17 +413,57 @@ async function toolCall(accId, fn, args = {}, { convId, agId } = {}) {
     if (draft.type === 'delivery' && args.direccion) draft.address = { text: String(args.direccion).slice(0, 300), references: String(args.referencias || '').slice(0, 200), geo: args.ubicacion || '' }
     if (draft.type === 'dinein' && args.mesa) draft.tableLabel = String(args.mesa).slice(0, 40)
     if (draft.type === 'scheduled' && args.para) draft.scheduledFor = String(args.para).slice(0, 40)
-    // Resolver zona si es domicilio.
+    // Resolver zona si es domicilio. Estrategia:
+    //   1) Si hay zonas con polígono y una dirección → geocodificar (Nominatim o
+    //      Google según config) y aplicar point-in-polygon. Dentro → esa zona;
+    //      fuera (y todas las zonas activas tienen polígono) → fuera de cobertura.
+    //   2) Fallback por nombre de zona (si no se pudo geocodificar o hay zonas
+    //      definidas solo por nombre).
     let zoneMsg = ''
     if (draft.type === 'delivery') {
       const zones = await listZones(accId)
       if (zones.length) {
-        const zq = norm(args.zona || args.direccion || '')
-        const zone = zones.find(z => zq && (norm(z.name).includes(norm(args.zona || '')) || (args.zona && norm(args.zona).includes(norm(z.name))))) ||
-          (args.zona ? null : null)
-        if (zone) { draft.zoneId = zone.id; zoneMsg = ` Envío a ${zone.name}: ${fmtMoney(zone.fee, currency)}${zone.etaMin ? ` (~${zone.etaMin} min)` : ''}.` }
-        else if (args.zona) zoneMsg = ` No reconocí la zona "${args.zona}". Zonas: ${zones.map(z => z.name).join(', ')}.`
-        else zoneMsg = ` Indica la zona de entrega para calcular el envío. Zonas: ${zones.map(z => z.name).join(', ')}.`
+        const addressText = String(args.direccion || draft.address?.text || '').trim()
+        const activeZones = zones.filter(z => z.active !== false)
+        const polyZones = activeZones.filter(z => Array.isArray(z.polygon) && z.polygon.length >= 3)
+        const hasNameOnly = activeZones.some(z => !(Array.isArray(z.polygon) && z.polygon.length >= 3))
+        let matched = null, geoTried = false, geoFailed = false
+
+        if (polyZones.length && addressText) {
+          geoTried = true
+          try {
+            const r = await geoSvc.resolveDeliveryZone(accId, addressText, cfg)
+            if (!r.geo) geoFailed = true
+            else if (r.matched) matched = zones.find(z => z.id === r.zone.id) || r.zone
+            else if (!hasNameOnly) {
+              // Geocodificó bien pero cae fuera de TODOS los polígonos y no hay
+              // zonas por nombre → fuera de cobertura (no se puede pedir a domicilio).
+              draft.zoneId = null
+              await saveDraft(accId, draft)
+              return { text: `📍 La dirección "${addressText}" queda FUERA de la cobertura de domicilios. Zonas que cubrimos: ${polyZones.map(z => z.name + (z.city ? ` (${z.city})` : '')).join(', ')}. Ofrécele al cliente recoger en el local (tipo "recoger") o verificar si la dirección es correcta.` }
+            }
+          } catch { geoFailed = true }
+        }
+
+        // Fallback por nombre (geo falló, sin polígonos, o dirección imprecisa).
+        if (!matched) {
+          const zq = norm(args.zona || addressText)
+          matched = zones.find(z => zq && (norm(z.name).includes(norm(args.zona || '')) || (args.zona && norm(args.zona).includes(norm(z.name))))) || null
+        }
+
+        if (matched) {
+          draft.zoneId = matched.id
+          const extras = []
+          if (matched.city) extras.push(matched.city)
+          if (matched.etaMin) extras.push(`~${matched.etaMin} min`)
+          zoneMsg = ` ✅ Dentro de cobertura — ${matched.name}${extras.length ? ` (${extras.join(' · ')})` : ''}: envío ${fmtMoney(matched.fee, currency)}.${matched.extraInfo ? ` ${matched.extraInfo}` : ''}`
+        } else if (args.zona) {
+          zoneMsg = ` No reconocí la zona "${args.zona}". Zonas: ${zones.map(z => z.name).join(', ')}.`
+        } else if (geoTried && geoFailed) {
+          zoneMsg = ` No pude ubicar esa dirección en el mapa. Pídele al cliente una dirección más precisa (calle, número, barrio) o la zona. Zonas: ${zones.map(z => z.name).join(', ')}.`
+        } else {
+          zoneMsg = ` Indica la zona o dirección de entrega para calcular el envío. Zonas: ${zones.map(z => z.name).join(', ')}.`
+        }
       }
     }
     await saveDraft(accId, draft)
