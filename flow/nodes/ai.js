@@ -928,6 +928,13 @@ const aiNodes = [
         sysWithRag = `${sysWithRag}\n\n---\n[MEMORIA DEL CLIENTE — resumen permanente de lo hablado y datos importantes; úsala para personalizar y no volver a preguntar lo que ya sabes]\n${String(_mem).trim()}\n---`
       }
 
+      // Cliente recurrente: ya había conversado antes (contacto conocido o historial
+      // sincronizado por Coexistencia). Evita que el asistente lo trate como nuevo y
+      // rompa el hilo — incluso si no hay historial dentro de la ventana de mensajes.
+      if (ctx.variables?._returning) {
+        sysWithRag = `${sysWithRag}\n\n---\n[CLIENTE RECURRENTE] Esta persona YA había conversado con el negocio anteriormente; NO la trates como un contacto nuevo ni la saludes como si fuera la primera vez. Retoma el hilo con naturalidad${_mem && String(_mem).trim() ? ' apoyándote en la memoria del cliente de arriba' : ''}.\n---`
+      }
+
       // (La conciencia temporal general se inyecta ahora dentro de callAI, para que
       //  la reciba CUALQUIER nodo de IA conversacional, no solo este.)
 

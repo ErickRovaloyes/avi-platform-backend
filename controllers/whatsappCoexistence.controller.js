@@ -74,6 +74,12 @@ const exchange = async (req, res) => {
     }
 
     // 3) Suscribir la app al WABA → habilita la recepción de webhooks.
+    // IMPORTANTE (historial/recurrentes): para recibir la sincronización de los 6
+    // meses de historial y los ecos del móvil, la app GLOBAL de Meta debe tener
+    // activados los campos de webhook `history`, `smb_app_state_sync` y
+    // `smb_message_echoes` (App Dashboard → WhatsApp → Configuration → Webhook
+    // fields). Los campos se configuran a nivel de app, no por WABA; esta llamada
+    // solo conecta el WABA a la app.
     let subscribed = false
     if (waba) {
       try {
@@ -82,7 +88,8 @@ const exchange = async (req, res) => {
         })
         const subData = await subRes.json().catch(() => ({}))
         subscribed = subRes.ok && (subData.success !== false)
-        if (!subRes.ok) console.warn('[coexistence] subscribed_apps:', subData?.error?.message)
+        if (subRes.ok) console.log('[coexistence] WABA suscrito', waba, '— historial: depende de los webhook fields activos en la app de Meta')
+        else console.warn('[coexistence] subscribed_apps:', subData?.error?.message)
       } catch (e) { console.warn('[coexistence] subscribe error', e.message) }
     }
 

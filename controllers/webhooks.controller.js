@@ -5,6 +5,7 @@ const { storeMediaInternal } = require('./media.controller')
 const { downloadWhatsAppMedia, downloadFromUrl } = require('../services/metaMedia')
 const flow = require('../flow/process')
 const flowStore = require('../flow/store')
+const waHistorySync = require('../services/waHistorySync')
 
 const messageQueue = []
 const sseClients   = new Set()
@@ -102,7 +103,18 @@ const whatsappVerify = (req, res) => {
 // Reutilizable por el webhook POR CUENTA (URL con :accId/:agentId) y por el
 // webhook GLOBAL de la app de Coexistencia (que resuelve la cuenta por número).
 async function processWhatsAppEntry(accId, agentId, entry) {
-  const value = entry?.changes?.[0]?.value || {}
+  const change = entry?.changes?.[0] || {}
+  const value = change.value || {}
+
+  // Coexistencia: historial (`history`), ecos del móvil (`smb_message_echoes`) y
+  // sync de contactos (`smb_app_state_sync`) → backfill idempotente SIN correr la
+  // IA ni enviar respuestas (jamás responder a chats viejos).
+  if (change.field === 'history' || change.field === 'smb_message_echoes' || change.field === 'smb_app_state_sync') {
+    waHistorySync.ingestCoexistenceChange(accId, agentId, change.field, value)
+      .catch(e => console.error('[WA coexistence sync]', e.message))
+    return
+  }
+
   const msgs = value.messages || []
   const statuses = value.statuses || []
 

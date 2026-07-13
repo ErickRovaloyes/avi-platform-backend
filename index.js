@@ -197,6 +197,9 @@ app.use('/api',                recontactRoutes)
     "ALTER TABLE conversations ADD COLUMN blocked TINYINT(1) DEFAULT 0",
     // Chats en seguimiento: marcados con estrella + avatar con animación de respiración.
     "ALTER TABLE conversations ADD COLUMN followup TINYINT(1) DEFAULT 0",
+    // Contacto recurrente: el cliente ya había conversado antes (por contacto
+    // existente, memoria previa, o historial sincronizado por Coexistencia de WhatsApp).
+    "ALTER TABLE conversations ADD COLUMN returning_contact TINYINT(1) DEFAULT 0",
     // Clasificación IA (CRM): tema/motivo y sentimiento de la conversación.
     "ALTER TABLE conversations ADD COLUMN topic VARCHAR(40)",
     "ALTER TABLE conversations ADD COLUMN sentiment VARCHAR(12)",

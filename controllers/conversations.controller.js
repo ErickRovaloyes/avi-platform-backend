@@ -7,6 +7,9 @@ const {
 } = require('../services/metaSend')
 
 // Finds an existing contact for this conversation sender or creates one.
+// Devuelve { id, existed, hasMemory }: `existed`=el contacto ya estaba en la BD
+// (mismo teléfono/guestId) y `hasMemory`=tiene memoria de conversaciones pasadas.
+// Ambos sirven para marcar la conversación como de "cliente recurrente".
 // Non-critical: errors are swallowed so conversation creation is never blocked.
 async function findOrCreateContact(accId, { guestName, guestId, waFrom, messengerFrom, igFrom, channelType }) {
   try {
@@ -15,7 +18,7 @@ async function findOrCreateContact(accId, { guestName, guestId, waFrom, messenge
     // WhatsApp: match by phone number
     if (channelType === 'whatsapp' && waFrom) {
       const [[row]] = await pool.query(
-        'SELECT id FROM contacts WHERE account_id=? AND phone=?', [accId, waFrom]
+        'SELECT id, memory FROM contacts WHERE account_id=? AND phone=?', [accId, waFrom]
       )
       existing = row
     }
@@ -23,13 +26,13 @@ async function findOrCreateContact(accId, { guestName, guestId, waFrom, messenge
     // Any channel: match by guestId stored in extra JSON
     if (!existing && guestId) {
       const [[row]] = await pool.query(
-        `SELECT id FROM contacts WHERE account_id=? AND JSON_UNQUOTE(JSON_EXTRACT(extra, '$.guestId'))=?`,
+        `SELECT id, memory FROM contacts WHERE account_id=? AND JSON_UNQUOTE(JSON_EXTRACT(extra, '$.guestId'))=?`,
         [accId, String(guestId)]
       )
       existing = row
     }
 
-    if (existing) return existing.id
+    if (existing) return { id: existing.id, existed: true, hasMemory: !!(existing.memory && String(existing.memory).trim()) }
 
     const contactId = 'contact_' + uid()
     const extra = {
@@ -42,10 +45,10 @@ async function findOrCreateContact(accId, { guestName, guestId, waFrom, messenge
       'INSERT INTO contacts (id,account_id,name,email,phone,extra,created_at) VALUES (?,?,?,?,?,?,?)',
       [contactId, accId, guestName || 'Visitante', '', waFrom || '', JSON.stringify(extra), Date.now()]
     )
-    return contactId
+    return { id: contactId, existed: false, hasMemory: false }
   } catch (e) {
     console.error('[FIND_OR_CREATE_CONTACT]', e)
-    return null
+    return { id: null, existed: false, hasMemory: false }
   }
 }
 
@@ -57,6 +60,7 @@ const mapConvo = (c, messages = []) => ({
   unread: !!c.unread, unreadCount: Number(c.unread_count) || 0, aiEnabled: !!c.ai_enabled,
   aiDisabledReason: c.ai_disabled_reason || null,
   archived: !!c.archived, blocked: !!c.blocked, followup: !!c.followup,
+  returning: !!c.returning_contact,
   origin:        parseJ(c.origin, null),
   labels:        parseJ(c.labels, []),
   pipelineCards: parseJ(c.pipeline_cards, []),
@@ -112,7 +116,8 @@ const createConvo = async (req, res) => {
   const initials = (guestName || '').slice(0, 2).toUpperCase()
   const ts       = Date.now()
 
-  const contactId = await findOrCreateContact(accId, { guestName, guestId, waFrom, messengerFrom, igFrom, channelType })
+  const { id: contactId, existed, hasMemory } = await findOrCreateContact(accId, { guestName, guestId, waFrom, messengerFrom, igFrom, channelType })
+  const returning = !!(existed || hasMemory)
   const localVars = { var_nombre: guestName || '' }
   if (contactId) {
     localVars.contact_id = contactId
@@ -120,6 +125,7 @@ const createConvo = async (req, res) => {
     // conversación arranca conociéndolo.
     try { const mem = await require('../services/conversationMemory').getContactMemory(accId, contactId); if (mem) localVars._summary = mem } catch {}
   }
+  if (returning) localVars._returning = true
 
   try {
     // Origen del lead: usa el que envía el cliente (webchat ya clasificado) o lo
@@ -135,6 +141,9 @@ const createConvo = async (req, res) => {
        waFrom || null, messengerFrom || null, igFrom || null,
        initials, '', 0, 1, '[]', '[]', JSON.stringify(localVars), '[]', JSON.stringify(originObj), ts, ts]
     )
+    // Bandera de recurrente vía UPDATE aparte (defensivo: si la columna aún no
+    // existe por migración, no rompe la creación de la conversación).
+    if (returning) { try { await pool.query('UPDATE conversations SET returning_contact=1 WHERE id=? AND account_id=?', [id, accId]) } catch {} }
     try { require('../services/subscriptions').incrementConversation(accId) } catch {}
     socket.emit(accId, 'convos:updated', { accId, agId })
     res.json({ id })
@@ -435,12 +444,14 @@ async function createOrGetSocialConvo(accId, agId, lookupCol, lookupVal, guestNa
   if (lookupCol === 'wa_from')        contactArgs.waFrom        = lookupVal
   else if (lookupCol === 'messenger_from') contactArgs.messengerFrom = lookupVal
   else if (lookupCol === 'ig_from')   contactArgs.igFrom        = lookupVal
-  const contactId = await findOrCreateContact(accId, contactArgs)
+  const { id: contactId, existed, hasMemory } = await findOrCreateContact(accId, contactArgs)
+  const returning = !!(existed || hasMemory)
   const localVars = { var_nombre: guestName || '' }
   if (contactId) {
     localVars.contact_id = contactId
     try { const mem = await require('../services/conversationMemory').getContactMemory(accId, contactId); if (mem) localVars._summary = mem } catch {}
   }
+  if (returning) localVars._returning = true
 
   const cols = {
     id, account_id: accId, agent_id: agId,
@@ -457,6 +468,8 @@ async function createOrGetSocialConvo(accId, agId, lookupCol, lookupVal, guestNa
   cols[lookupCol] = lookupVal
   const keys = Object.keys(cols); const vals = Object.values(cols)
   await pool.query(`INSERT INTO conversations (${keys.join(',')}) VALUES (${keys.map(() => '?').join(',')})`, vals)
+  // Bandera de recurrente vía UPDATE aparte (defensivo ante la columna aún no migrada).
+  if (returning) { try { await pool.query('UPDATE conversations SET returning_contact=1 WHERE id=? AND account_id=?', [id, accId]) } catch {} }
   // Suma 1 al consumo de conversaciones de la suscripción (límites demo/mensuales).
   try { require('../services/subscriptions').incrementConversation(accId) } catch {}
   return id

@@ -21,6 +21,7 @@ const mapConvo = (c, messages = []) => ({
   waFrom: c.wa_from, messengerFrom: c.messenger_from, igFrom: c.ig_from,
   initials: c.initials, preview: c.preview,
   unread: !!c.unread, aiEnabled: !!c.ai_enabled,
+  returning: !!c.returning_contact,
   labels:        parseJ(c.labels, []),
   pipelineCards: parseJ(c.pipeline_cards, []),
   localVars:     parseJ(c.local_vars, {}),
