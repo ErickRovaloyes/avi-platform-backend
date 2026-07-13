@@ -711,7 +711,11 @@ async function callAI(ctx, { systemPrompt, userPrompt, model, provider, maxToken
 
   if (tools.length > 0) {
     const toolNames = tools.map(t => t.function?.name).filter(Boolean).join(', ')
-    effSystem = `${systemPrompt || ''}\n\n` +
+    // IMPORTANTE: partir de `effSystem` (que ya lleva antepuesto el bloque de FECHA Y
+    // HORA actuales), NO de `systemPrompt`. Antes se reconstruía desde systemPrompt y
+    // se PERDÍA la conciencia temporal justo cuando hay herramientas —el caso de la
+    // agenda/disponibilidad—, lo que hacía que la IA no supiera la fecha/hora actual.
+    effSystem = `${effSystem || ''}\n\n` +
       `── USO OBLIGATORIO DE HERRAMIENTAS ──\n` +
       `Tienes funciones/herramientas disponibles${toolNames ? ` (${toolNames})` : ''}. ` +
       `Cuando el usuario pida (o haga falta) una acción que una de estas herramientas realiza ` +
