@@ -159,7 +159,7 @@ async function loadPublicAccount(accId) {
   try { [stickers]      = await pool.query('SELECT * FROM stickers WHERE account_id=? ORDER BY created_at DESC', [accId]) } catch { stickers = [] }
   const [flows]     = await pool.query('SELECT * FROM flows WHERE account_id=?', [accId])
   // Resolve API keys with super-admin platform fallback
-  const [[pf]] = await pool.query('SELECT openai_key, deepseek_key, anthropic_key, default_prompt_provider, default_prompt_model FROM platform_settings WHERE id=1')
+  const [[pf]] = await pool.query('SELECT openai_key, deepseek_key, anthropic_key, default_prompt_provider, default_prompt_model, returning_notice_default FROM platform_settings WHERE id=1')
   const effOpenai    = (acc.openai_key    && acc.openai_key.trim())    || pf?.openai_key    || ''
   const effDeepseek  = (acc.deepseek_key  && acc.deepseek_key.trim())  || pf?.deepseek_key  || ''
   const effAnthropic = (acc.anthropic_key && acc.anthropic_key.trim()) || pf?.anthropic_key || ''
@@ -172,6 +172,9 @@ async function loadPublicAccount(accId) {
     modules,
     metaCatalog: _mc?.catalogId ? { connected: true, catalogId: _mc.catalogId, name: _mc.name || _mc.catalogId } : { connected: false },
     openaiKey: effOpenai, deepseekKey: effDeepseek, anthropicKey: effAnthropic,
+    // Aviso por defecto (super admin) para clientes recurrentes; la IA lo usa si el
+    // canal no define uno propio. Vacío → ai.js cae a su constante interna.
+    returningNoticeDefault: pf?.returning_notice_default || '',
     agents: agents.map(mapAgent),
     variables: variables.map(v => ({ id: v.id, name: v.name, type: v.type, defaultValue: v.default_value, description: v.description, isSystem: !!v.is_system })),
     aiTools:   [SPECIAL_CMS_TOOL, ...specialTools(), ...aiTools.map(t => ({ id: t.id, name: t.name, description: t.description, collectFields: parseJ(t.collect_fields, []), flowId: t.flow_id, actionType: t.action_type || 'variable' }))],

@@ -9,6 +9,9 @@ const { interpolate, sendBotMsg, logDebug, setVarBoth } = require('../common')
 const store = require('../store')
 
 const DEFAULT_MODEL = { openai: 'gpt-4o-mini', deepseek: 'deepseek-chat', anthropic: 'claude-sonnet-4-6' }
+// Fallback del aviso para clientes recurrentes cuando ni el canal ni la plataforma
+// definen uno (mismo texto que el default del super admin en platform.controller).
+const DEFAULT_RETURNING_NOTICE = 'Esta persona YA había conversado con el negocio anteriormente; NO la trates como un contacto nuevo ni la saludes como si fuera la primera vez. Retoma el hilo con naturalidad.'
 
 // Tras cada respuesta del asistente, actualiza la memoria persistente del
 // cliente (resumen + estado) en segundo plano. Nunca bloquea ni lanza.
@@ -931,8 +934,13 @@ const aiNodes = [
       // Cliente recurrente: ya había conversado antes (contacto conocido o historial
       // sincronizado por Coexistencia). Evita que el asistente lo trate como nuevo y
       // rompa el hilo — incluso si no hay historial dentro de la ventana de mensajes.
+      // El texto es configurable: override por canal (_returningNotice) → default de
+      // la plataforma (super admin) → constante interna como último recurso.
       if (ctx.variables?._returning) {
-        sysWithRag = `${sysWithRag}\n\n---\n[CLIENTE RECURRENTE] Esta persona YA había conversado con el negocio anteriormente; NO la trates como un contacto nuevo ni la saludes como si fuera la primera vez. Retoma el hilo con naturalidad${_mem && String(_mem).trim() ? ' apoyándote en la memoria del cliente de arriba' : ''}.\n---`
+        const notice = (ctx.variables?._returningNotice && String(ctx.variables._returningNotice).trim())
+          || (ctx.account?.returningNoticeDefault && String(ctx.account.returningNoticeDefault).trim())
+          || DEFAULT_RETURNING_NOTICE
+        sysWithRag = `${sysWithRag}\n\n---\n[CLIENTE RECURRENTE] ${notice}${_mem && String(_mem).trim() ? ' Apóyate en la memoria del cliente de arriba.' : ''}\n---`
       }
 
       // (La conciencia temporal general se inyecta ahora dentro de callAI, para que

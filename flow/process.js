@@ -170,14 +170,17 @@ async function processWhatsApp(accId, agentId, body) {
     // contexto). `message` se deja crudo para que el matching por palabra clave no
     // se vea afectado por el texto citado.
     const quotedCtx = replyTo?.content ? { _quotedMessage: replyTo.content, _quotedSender: replyTo.sender } : {}
+    // Aviso configurable para clientes recurrentes (override por canal). ai.js lo usa
+    // solo si la conversación está marcada como recurrente.
+    const _returningNotice = channel?.config?.returningNotice || ''
     if (agent.fallbackFlowId) {
       await engine.executeFlow({
         flowId: agent.fallbackFlowId, accId, agId: agentId, convId,
-        triggerContext: { message: msg.text, _lastUserMessage: msg.text, ...quotedCtx },
+        triggerContext: { message: msg.text, _lastUserMessage: msg.text, _returningNotice, ...quotedCtx },
         outbound: waOutbound,
       })
     } else {
-      await engine.runTrigger({ trigger: 'keyword', accId, agId: agentId, convId, context: { message: msg.text, ...quotedCtx }, outbound: waOutbound })
+      await engine.runTrigger({ trigger: 'keyword', accId, agId: agentId, convId, context: { message: msg.text, _returningNotice, ...quotedCtx }, outbound: waOutbound })
     }
   }
 }
@@ -235,14 +238,15 @@ async function processMessenger(accId, agentId, body) {
       const body = meta?.media?.url ? `${text ? text + '\n' : ''}${meta.media.url}` : text
       if (body) return await sendMessengerText({ pageId: channel.config.pageId, pageAccessToken: channel.config.pageAccessToken, recipientId: msg.senderId, text: body })
     }
+    const _returningNotice = channel?.config?.returningNotice || ''
     if (agent.fallbackFlowId) {
       await engine.executeFlow({
         flowId: agent.fallbackFlowId, accId, agId: agentId, convId,
-        triggerContext: { message: msg.text, _lastUserMessage: msg.text },
+        triggerContext: { message: msg.text, _lastUserMessage: msg.text, _returningNotice },
         outbound: fbOutbound,
       })
     } else {
-      await engine.runTrigger({ trigger: 'keyword', accId, agId: agentId, convId, context: { message: msg.text }, outbound: fbOutbound })
+      await engine.runTrigger({ trigger: 'keyword', accId, agId: agentId, convId, context: { message: msg.text, _returningNotice }, outbound: fbOutbound })
     }
   }
 }
@@ -290,14 +294,15 @@ async function processInstagram(accId, agentId, body) {
       const body = meta?.media?.url ? `${text ? text + '\n' : ''}${meta.media.url}` : text
       if (body) return await sendInstagramText({ igAccountId: channel.config.igAccountId, pageAccessToken: channel.config.pageAccessToken, recipientId: msg.senderId, text: body })
     }
+    const _returningNotice = channel?.config?.returningNotice || ''
     if (agent.fallbackFlowId) {
       await engine.executeFlow({
         flowId: agent.fallbackFlowId, accId, agId: agentId, convId,
-        triggerContext: { message: msg.text, _lastUserMessage: msg.text },
+        triggerContext: { message: msg.text, _lastUserMessage: msg.text, _returningNotice },
         outbound: igOutbound,
       })
     } else {
-      await engine.runTrigger({ trigger: 'keyword', accId, agId: agentId, convId, context: { message: msg.text }, outbound: igOutbound })
+      await engine.runTrigger({ trigger: 'keyword', accId, agId: agentId, convId, context: { message: msg.text, _returningNotice }, outbound: igOutbound })
     }
   }
 }

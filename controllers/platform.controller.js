@@ -11,6 +11,9 @@ const DEFAULT_TOKEN_LIMITS = { basic: 50000, medium: 30000, complex: 15000 }
 // Capacidades del Agente de Cambios activables por el super admin (qué puede modificar).
 const DEFAULT_CA_CAPS = { prompt: true, tools: true, flows: true, agendas: true }
 const parseCaps = raw => { const c = parseJ(raw, null); return c ? { ...DEFAULT_CA_CAPS, ...c } : { ...DEFAULT_CA_CAPS } }
+// Aviso por defecto para la IA cuando escribe un cliente recurrente (ver ai.js).
+// El super admin lo edita; cada cuenta puede sobrescribirlo por canal.
+const DEFAULT_RETURNING_NOTICE = 'Esta persona YA había conversado con el negocio anteriormente; NO la trates como un contacto nuevo ni la saludes como si fuera la primera vez. Retoma el hilo con naturalidad.'
 const DEFAULT_STRUCTURE = `Eres un asistente especializado.\n\n## Contexto\n[Contexto extraído del documento]\n\n## Personalidad y tono\n[Define la personalidad]\n\n## Instrucciones\n[Instrucciones específicas paso a paso]\n\n## Reglas\n- Responde siempre en español\n- Sé conciso y empático`
 
 const DEFAULT_CONDITIONS = `EXTENSIÓN MÍNIMA: el prompt debe tener entre 2.500 y 6.000 caracteres. Los prompts cortos generan agentes deficientes.
@@ -77,6 +80,7 @@ const getSettings = async (req, res) => {
           transcriptionModel: r.transcription_model || 'whisper-1',
           defaultPromptProvider: r.default_prompt_provider || 'deepseek',
           defaultPromptModel: r.default_prompt_model || 'deepseek-v4-flash',
+          returningNoticeDefault: r.returning_notice_default || DEFAULT_RETURNING_NOTICE,
           optimizerModel: r.optimizer_model || 'gpt-4o-mini',
           businessAiModel: r.business_ai_model || 'gpt-4o-mini',
           demoAdsEnabled: !!r.demo_ads_enabled,
@@ -112,6 +116,7 @@ const getSettings = async (req, res) => {
           transcriptionModel: 'whisper-1',
           defaultPromptProvider: 'deepseek',
           defaultPromptModel: 'deepseek-v4-flash',
+          returningNoticeDefault: DEFAULT_RETURNING_NOTICE,
           optimizerModel: 'gpt-4o-mini',
           demoAdsEnabled: false,
           demoAdsHtml: '',
@@ -138,6 +143,7 @@ const updateSettings = async (req, res) => {
     platformOpenaiKey, platformDeepseekKey, platformAnthropicKey,
     mediaMaxSizeMb, transcriptionModel,
     defaultPromptProvider, defaultPromptModel, optimizerModel, businessAiModel,
+    returningNoticeDefault,
     demoAdsEnabled, demoAdsHtml,
     emailProvider, emailApiKey, emailFrom, emailFromName, signupVerifyEnabled, login2faEnabled,
   } = req.body
@@ -151,6 +157,7 @@ const updateSettings = async (req, res) => {
     if (channelLimits             !== undefined) { sets.push('channel_limits=?');               vals.push(JSON.stringify(channelLimits)) }
     if (metaAppId                 !== undefined) { sets.push('meta_app_id=?');                  vals.push(metaAppId) }
     if (metaConfigId              !== undefined) { sets.push('meta_config_id=?');               vals.push(metaConfigId) }
+    if (returningNoticeDefault    !== undefined) { sets.push('returning_notice_default=?');     vals.push(String(returningNoticeDefault || '').slice(0, 4000)) }
     // Solo se actualiza el secret si llega un valor no vacío (evita borrarlo al guardar enmascarado)
     if (metaAppSecret             !== undefined && metaAppSecret !== '') { sets.push('meta_app_secret=?'); vals.push(metaAppSecret) }
     if (promptGeneratorModel      !== undefined) { sets.push('prompt_generator_model=?');       vals.push(promptGeneratorModel) }

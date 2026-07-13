@@ -793,6 +793,9 @@ app.use('/api',                recontactRoutes)
     "ALTER TABLE platform_settings ADD COLUMN meta_config_id VARCHAR(64) DEFAULT ''",
     // ── Modelo para transcripción de audios (OpenAI) ──
     "ALTER TABLE platform_settings ADD COLUMN transcription_model VARCHAR(50) DEFAULT 'whisper-1'",
+    // Aviso por defecto para la IA cuando escribe un cliente recurrente. Editable por
+    // el super admin; cada cuenta puede sobrescribirlo por canal. NULL = usar default.
+    "ALTER TABLE platform_settings ADD COLUMN returning_notice_default TEXT",
     // ── FASE 0: núcleo multi-industria (no disruptivo) ──────────────────────
     // Vertical del calendario (medical|restaurant|hotel|cinema|appointment).
     // Default 'appointment' = comportamiento actual (time-slot + Google sync).
