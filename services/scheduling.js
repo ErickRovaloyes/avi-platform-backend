@@ -141,6 +141,20 @@ async function allForPhone(accId, cals, phone, tz) {
 }
 const STATUS_ES = { pending: 'pendiente', confirmed: 'confirmada', rescheduled: 'reagendada', cancelled: 'cancelada', noshow: 'no asistió', completed: 'completada' }
 
+// Citas de la conversación (para el panel lateral del Inbox): resuelve el cliente
+// desde la conversación (teléfono/nombre) y devuelve sus reservas próximas y pasadas
+// en los calendarios habilitados. Misma lógica que usa el asistente (ver_mis_citas).
+async function bookingsForConv(accId, convId) {
+  const cals = await allowedCalendars(accId)
+  if (!cals.length) return { enabled: false, customer: null, upcoming: [], past: [] }
+  const tz = cals[0].timezone || 'America/Lima'
+  const cust = await customerFromConv(accId, convId)
+  if (!cust.phone) return { enabled: true, customer: cust, upcoming: [], past: [] }
+  const { upcoming, past } = await allForPhone(accId, cals, cust.phone, tz)
+  const map = b => ({ id: b.id, date: b.date, time: b.time, calendarName: b.calendarName, status: b.status || 'pending', statusLabel: STATUS_ES[b.status] || b.status || 'pendiente', clientName: b.clientName || '', notes: b.notes || '' })
+  return { enabled: true, customer: cust, upcoming: upcoming.map(map), past: past.slice(0, 10).map(map) }
+}
+
 // ── Dispatcher de funciones (lo llaman el nodo IA del servidor y el proxy) ──────
 async function toolCall(accId, fn, args = {}, meta = {}) {
   const cals = await allowedCalendars(accId)
@@ -245,4 +259,4 @@ async function toolCall(accId, fn, args = {}, meta = {}) {
   return { text: 'Acción de agenda no reconocida.' }
 }
 
-module.exports = { loadConfig, saveConfig, isEnabled, publicConfig, toolCall, allowedCalendars, todayInTz }
+module.exports = { loadConfig, saveConfig, isEnabled, publicConfig, toolCall, allowedCalendars, todayInTz, bookingsForConv }

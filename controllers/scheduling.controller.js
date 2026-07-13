@@ -31,4 +31,11 @@ const tool = async (req, res) => {
   } catch (e) { res.status(400).json({ error: e.message }) }
 }
 
-module.exports = { getConfig, saveConfig, tool }
+// Citas de una conversación (panel lateral del Inbox): próximas + pasadas del
+// cliente de ese chat, resueltas por su teléfono en los calendarios habilitados.
+const convBookings = async (req, res) => {
+  try { res.json(await sched.bookingsForConv(req.params.accId, req.params.convId)) }
+  catch (e) { console.error('[scheduling convBookings]', e); res.status(500).json({ error: 'Error interno' }) }
+}
+
+module.exports = { getConfig, saveConfig, tool, convBookings }
