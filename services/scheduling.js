@@ -45,14 +45,61 @@ function todayInTz(tz) {
 function addDays(dateStr, n) { const d = new Date(`${dateStr}T12:00:00Z`); d.setUTCDate(d.getUTCDate() + n); return d.toISOString().slice(0, 10) }
 function dowName(dateStr) { try { return DAYS_ES[new Date(`${dateStr}T12:00:00Z`).getUTCDay()] } catch { return '' } }
 function prettyDate(dateStr) { const [y, m, d] = dateStr.split('-'); return `${dowName(dateStr)} ${d}/${m}` }
-// Resuelve una fecha del usuario: YYYY-MM-DD, "hoy", "mañana", "pasado mañana".
+// Resuelve una fecha del usuario EN EL SERVIDOR (la IA se equivoca calculando
+// fechas). Acepta: YYYY-MM-DD, "hoy", "mañana", "pasado mañana", "en N días",
+// días de la semana ("lunes", "este viernes", "próximo martes"), "el 15",
+// "15 de julio [de 2026]" y "dd/mm[/yyyy]". Siempre resuelve hacia adelante.
+const MONTHS_ES = { enero: 1, febrero: 2, marzo: 3, abril: 4, mayo: 5, junio: 6, julio: 7, agosto: 8, septiembre: 9, setiembre: 9, octubre: 10, noviembre: 11, diciembre: 12 }
+const DOW_MAP = { domingo: 0, lunes: 1, martes: 2, miercoles: 3, jueves: 4, viernes: 5, sabado: 6 }
+const fmtYMD = (y, m, d) => `${y}-${String(m).padStart(2, '0')}-${String(d).padStart(2, '0')}`
 function resolveDate(input, tz) {
-  const s = String(input || '').trim().toLowerCase()
-  if (/^\d{4}-\d{2}-\d{2}$/.test(s)) return s
+  const raw = String(input || '').trim().toLowerCase()
+  const s = raw.normalize('NFD').replace(/[̀-ͯ]/g, '')   // sin tildes
+  const ymd = s.match(/(\d{4})-(\d{2})-(\d{2})/)
+  if (ymd) return ymd[0]
   const today = todayInTz(tz)
-  if (!s || s === 'hoy') return today
-  if (s === 'mañana' || s === 'manana') return addDays(today, 1)
-  if (s.includes('pasado')) return addDays(today, 2)
+  if (!s || /\bhoy\b/.test(s)) return today
+  if (/pasado\s*manana/.test(s)) return addDays(today, 2)
+  if (/\bmanana\b/.test(s)) return addDays(today, 1)
+  const enN = s.match(/\ben\s+(\d{1,2})\s+dias?\b/)
+  if (enN) return addDays(today, parseInt(enN[1], 10))
+  // Día de la semana → la PRÓXIMA ocurrencia (con "próximo" y coincide hoy → +7).
+  const dowM = s.match(/\b(domingo|lunes|martes|miercoles|jueves|viernes|sabado)\b/)
+  if (dowM) {
+    const target = DOW_MAP[dowM[1]]
+    const todayDow = new Date(`${today}T12:00:00Z`).getUTCDay()
+    let delta = (target - todayDow + 7) % 7
+    if (delta === 0 && /proxim/.test(s)) delta = 7
+    return addDays(today, delta)
+  }
+  const [ty, tm, td] = today.split('-').map(n => parseInt(n, 10))
+  // "15 de julio [de 2026]"
+  const dm = s.match(/\b(\d{1,2})\s+de\s+([a-z]+)(?:\s+(?:de\s+|del\s+)?(\d{4}))?/)
+  if (dm && MONTHS_ES[dm[2]]) {
+    const d = parseInt(dm[1], 10), m = MONTHS_ES[dm[2]]
+    let y = dm[3] ? parseInt(dm[3], 10) : ty
+    if (!dm[3] && fmtYMD(y, m, d) < today) y += 1   // sin año y ya pasó → el próximo
+    return fmtYMD(y, m, d)
+  }
+  // "dd/mm[/yyyy]"
+  const slash = s.match(/\b(\d{1,2})\/(\d{1,2})(?:\/(\d{2,4}))?\b/)
+  if (slash) {
+    const d = parseInt(slash[1], 10), m = parseInt(slash[2], 10)
+    let y = slash[3] ? parseInt(slash[3], 10) : ty
+    if (y < 100) y += 2000
+    if (!slash[3] && fmtYMD(y, m, d) < today) y += 1
+    return fmtYMD(y, m, d)
+  }
+  // "el 15" / "día 15" → este mes, o el próximo si ya pasó.
+  const dOnly = s.match(/\b(?:el|dia)\s+(\d{1,2})\b/) || s.match(/^(\d{1,2})$/)
+  if (dOnly) {
+    const d = parseInt(dOnly[1], 10)
+    if (d >= 1 && d <= 31) {
+      if (d >= td) return fmtYMD(ty, tm, d)
+      const nm = tm === 12 ? 1 : tm + 1
+      return fmtYMD(nm === 1 ? ty + 1 : ty, nm, d)
+    }
+  }
   return null
 }
 
@@ -148,9 +195,34 @@ async function bookingsForConv(accId, convId) {
   const cals = await allowedCalendars(accId)
   if (!cals.length) return { enabled: false, customer: null, upcoming: [], past: [] }
   const tz = cals[0].timezone || 'America/Lima'
+  const today = todayInTz(tz)
   const cust = await customerFromConv(accId, convId)
-  if (!cust.phone) return { enabled: true, customer: cust, upcoming: [], past: [] }
-  const { upcoming, past } = await allForPhone(accId, cals, cust.phone, tz)
+  const upcoming = [], past = []
+  if (cust.phone) {
+    const r = await allForPhone(accId, cals, cust.phone, tz)
+    upcoming.push(...r.upcoming); past.push(...r.past)
+  }
+  // Además: citas vinculadas directamente a esta conversación (_bookingIds en
+  // local_vars, guardadas al agendar). Cubre webchat sin teléfono en el chat.
+  try {
+    const [[c]] = await pool.query('SELECT local_vars FROM conversations WHERE id=? AND account_id=?', [convId, accId])
+    const ids = parseJ(c?.local_vars, {})?._bookingIds
+    if (Array.isArray(ids) && ids.length) {
+      const seen = new Set([...upcoming, ...past].map(b => b.id))
+      const calName = id => cals.find(x => x.id === id)?.name || ''
+      for (const id of ids) {
+        if (seen.has(id)) continue
+        let b = null
+        try { b = await bookings.getBooking(accId, id) } catch {}
+        if (!b) continue
+        const item = { ...b, calendarName: calName(b.calendarId) }
+        const isPast = b.date < today || ['completed', 'noshow', 'cancelled'].includes(b.status)
+        if (isPast) past.push(item); else upcoming.push(item)
+      }
+      upcoming.sort((a, b) => (a.date + a.time).localeCompare(b.date + b.time))
+      past.sort((a, b) => (b.date + b.time).localeCompare(a.date + a.time))
+    }
+  } catch { /* best-effort */ }
   const map = b => ({ id: b.id, date: b.date, time: b.time, duration: Number(b.duration) || null, calendarName: b.calendarName, status: b.status || 'pending', statusLabel: STATUS_ES[b.status] || b.status || 'pendiente', clientName: b.clientName || '', notes: b.notes || '' })
   return { enabled: true, customer: cust, upcoming: upcoming.map(map), past: past.slice(0, 10).map(map) }
 }
@@ -177,7 +249,7 @@ async function toolCall(accId, fn, args = {}, meta = {}) {
       const cal = resolveCal()
       if (!cal) return { text: `Hay varios calendarios. Pregúntale al cliente cuál necesita (indica "servicio"). Opciones:\n${calendarMenu(cals)}` }
       const date = resolveDate(args.fecha, tz)
-      if (!date) return { text: `No entendí la fecha. Hoy es ${today} (${tz}). Pide una fecha (YYYY-MM-DD) o "hoy/mañana".` }
+      if (!date) return { text: `No entendí la fecha "${args.fecha || ''}". Hoy es ${today} (${tz}). Pásala tal cual la dijo el cliente ("lunes", "el 15", "15 de julio", "mañana") o como YYYY-MM-DD.` }
       const slots = await bookings.getAvailability(accId, cal.id, date)
       const times = (Array.isArray(slots) ? slots : (slots?.slots || [])).map(s => typeof s === 'string' ? s : s.time).filter(Boolean)
       if (!times.length) return { text: `Sin horarios libres en "${cal.name}" para ${prettyDate(date)} (${date}). Sugiere otra fecha o usa recomendar_citas.` }
@@ -216,6 +288,19 @@ async function toolCall(accId, fn, args = {}, meta = {}) {
           date, time, clientName: cust.name, clientPhone: cust.phone, clientEmail: cust.email,
           channel: 'ia', notes: args.nota || '',
         })
+        // Vincula la cita a la CONVERSACIÓN: guarda teléfono/email del cliente y el
+        // id de la reserva en local_vars. Así el panel del Inbox (📅 Citas) y
+        // ver_mis_citas la encuentran aunque el chat no tenga wa_from (webchat).
+        try {
+          if (meta.convId) {
+            const [[c]] = await pool.query('SELECT local_vars FROM conversations WHERE id=? AND account_id=?', [meta.convId, accId])
+            const lv = parseJ(c?.local_vars, {})
+            if (cust.phone && !lv.telefono) lv.telefono = cust.phone
+            if (cust.email && !lv.email) lv.email = cust.email
+            lv._bookingIds = [...new Set([...(Array.isArray(lv._bookingIds) ? lv._bookingIds : []), bk.id])].slice(-20)
+            await pool.query('UPDATE conversations SET local_vars=? WHERE id=? AND account_id=?', [JSON.stringify(lv), meta.convId, accId])
+          }
+        } catch { /* no bloquea el agendado */ }
         return { text: `✅ Cita agendada en "${cal.name}" para ${cust.name} el ${prettyDate(date)} (${date}) a las ${time} (duración ${durMin(cal)} min). (id ${bk.id})` }
       } catch (e) { return { text: `No se pudo agendar: ${e.message}. Ofrece otro horario o usa ver_disponibilidad.` } }
     }
