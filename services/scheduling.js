@@ -151,7 +151,7 @@ async function bookingsForConv(accId, convId) {
   const cust = await customerFromConv(accId, convId)
   if (!cust.phone) return { enabled: true, customer: cust, upcoming: [], past: [] }
   const { upcoming, past } = await allForPhone(accId, cals, cust.phone, tz)
-  const map = b => ({ id: b.id, date: b.date, time: b.time, calendarName: b.calendarName, status: b.status || 'pending', statusLabel: STATUS_ES[b.status] || b.status || 'pendiente', clientName: b.clientName || '', notes: b.notes || '' })
+  const map = b => ({ id: b.id, date: b.date, time: b.time, duration: Number(b.duration) || null, calendarName: b.calendarName, status: b.status || 'pending', statusLabel: STATUS_ES[b.status] || b.status || 'pendiente', clientName: b.clientName || '', notes: b.notes || '' })
   return { enabled: true, customer: cust, upcoming: upcoming.map(map), past: past.slice(0, 10).map(map) }
 }
 
