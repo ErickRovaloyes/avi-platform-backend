@@ -161,6 +161,9 @@ async function toolCall(accId, fn, args = {}, meta = {}) {
   if (!cals.length) return { text: 'No hay calendarios configurados para la agenda. El cliente debe seleccionarlos en su panel (Zona IA → Agenda).' }
   const tz = cals[0].timezone || 'America/Lima'
   const today = todayInTz(tz)
+  // Duración de cada cita/turno del calendario (min). El asistente la necesita para
+  // no inventarse la duración (ej. decir 1h cuando son 30 min).
+  const durMin = c => Number(c?.appointment?.defaultDuration) || 30
 
   // Elegir calendario (por nombre/descripción) cuando hay varios.
   function resolveCal(needList) {
@@ -178,7 +181,7 @@ async function toolCall(accId, fn, args = {}, meta = {}) {
       const slots = await bookings.getAvailability(accId, cal.id, date)
       const times = (Array.isArray(slots) ? slots : (slots?.slots || [])).map(s => typeof s === 'string' ? s : s.time).filter(Boolean)
       if (!times.length) return { text: `Sin horarios libres en "${cal.name}" para ${prettyDate(date)} (${date}). Sugiere otra fecha o usa recomendar_citas.` }
-      return { text: `Disponibilidad de "${cal.name}" para ${prettyDate(date)} (${date}):\n${times.slice(0, 24).join(', ')}` }
+      return { text: `Disponibilidad de "${cal.name}" para ${prettyDate(date)} (${date}). Cada cita dura ${durMin(cal)} minutos; los horarios de abajo son las horas de INICIO (informa al cliente la duración de ${durMin(cal)} min y NO ofrezcas otras duraciones):\n${times.slice(0, 24).join(', ')}` }
     }
 
     if (fn === 'recomendar_citas') {
@@ -192,12 +195,12 @@ async function toolCall(accId, fn, args = {}, meta = {}) {
           let slots = []
           try { slots = await bookings.getAvailability(accId, c.id, d) } catch {}
           const times = (Array.isArray(slots) ? slots : (slots?.slots || [])).map(s => typeof s === 'string' ? s : s.time).filter(Boolean)
-          if (times.length) { out.push(`• ${c.name}: ${prettyDate(d)} (${d}) → ${times.slice(0, 3).join(', ')}`); found++ }
+          if (times.length) { out.push(`• ${c.name} (cada cita dura ${durMin(c)} min): ${prettyDate(d)} (${d}) → ${times.slice(0, 3).join(', ')}`); found++ }
           if (++scanned > 21) break
         }
       }
       if (!out.length) return { text: 'No encontré disponibilidad próxima en los calendarios. Sugiere contactar para revisar manualmente.' }
-      return { text: `Próximas disponibilidades (hoy es ${today}):\n${out.join('\n')}` }
+      return { text: `Próximas disponibilidades (hoy es ${today}). Los horarios son de INICIO; informa siempre al cliente la duración indicada de cada cita:\n${out.join('\n')}` }
     }
 
     if (fn === 'agendar_cita') {
@@ -213,7 +216,7 @@ async function toolCall(accId, fn, args = {}, meta = {}) {
           date, time, clientName: cust.name, clientPhone: cust.phone, clientEmail: cust.email,
           channel: 'ia', notes: args.nota || '',
         })
-        return { text: `✅ Cita agendada en "${cal.name}" para ${cust.name} el ${prettyDate(date)} (${date}) a las ${time}. (id ${bk.id})` }
+        return { text: `✅ Cita agendada en "${cal.name}" para ${cust.name} el ${prettyDate(date)} (${date}) a las ${time} (duración ${durMin(cal)} min). (id ${bk.id})` }
       } catch (e) { return { text: `No se pudo agendar: ${e.message}. Ofrece otro horario o usa ver_disponibilidad.` } }
     }
 
