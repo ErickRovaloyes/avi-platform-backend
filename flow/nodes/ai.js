@@ -1007,6 +1007,11 @@ const aiNodes = [
       if (node.data?.variable_destino) await setVarBoth(ctx, node.data.variable_destino, reply)
       if (node.data?.sendToUser !== false && reply) await sendBotMsg(ctx, reply)
       scheduleMemory(ctx)
+      // El nodo Agente IA es TERMINAL para el flujo de entrada: tras responder, el
+      // flujo se corta aquí y no continúa a nodos posteriores. Excepción: si el nodo
+      // está configurado para NO responder al usuario (sendToUser:false), se asume
+      // que alimenta a un nodo posterior con su variable_destino y el flujo sigue.
+      if (node.data?.sendToUser !== false) ctx._suppressDefaultNext = true
     },
   },
   {
