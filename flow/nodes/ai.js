@@ -971,6 +971,7 @@ const aiNodes = [
 
       let resolved = null
       let toolsInvoked = false
+      const sentBefore = ctx._sentCount || 0   // para detectar si una herramienta ya envió su mensaje
       const reply = await callAI(ctx, {
         systemPrompt: sysWithRag,
         userPrompt: userMsg || '(sin contexto del usuario, responde con un saludo)',
@@ -988,14 +989,16 @@ const aiNodes = [
           mensajeUsuario: (userMsg || '').slice(0, 200) })
 
       if (toolsInvoked) {
-        // Tras usar una herramienta, ENTREGAMOS la respuesta del modelo
-        // directamente al usuario y detenemos el flujo. No dependemos de un nodo
-        // de mensaje posterior ({{respuesta_ia}}), que según el flujo puede no
-        // existir (p. ej. un agente con un solo nodo IA) y haría que la respuesta
-        // se pierda. La guardamos también en la variable destino por si se usa.
-        logDebug(ctx, 'flow_run', '🔧 Herramienta IA activada' + (reply ? ' (+ respuesta final)' : ''), {})
+        // Tras usar una herramienta, el flujo de entrada SIEMPRE se detiene aquí
+        // (no continúa a nodos posteriores). Además, si la herramienta ya envió su
+        // propio mensaje (enviar_recurso, catálogo, link de pago, pedido…), NO se
+        // envía además la respuesta del modelo para no duplicar. Solo se entrega la
+        // respuesta cuando la herramienta no comunicó nada (p. ej. la agenda, que
+        // devuelve texto para que el modelo redacte la confirmación).
+        const toolSentMsg = (ctx._sentCount || 0) > sentBefore
+        logDebug(ctx, 'flow_run', '🔧 Herramienta IA activada' + (toolSentMsg ? ' (mensaje enviado por la herramienta)' : reply ? ' (+ respuesta final)' : ''), {})
         if (node.data?.variable_destino) await setVarBoth(ctx, node.data.variable_destino, reply || '')
-        if (reply) await sendBotMsg(ctx, reply)
+        if (reply && !toolSentMsg) await sendBotMsg(ctx, reply)
         scheduleMemory(ctx)
         ctx._suppressDefaultNext = true
         return

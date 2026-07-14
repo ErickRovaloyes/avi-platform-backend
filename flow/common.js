@@ -28,6 +28,12 @@ function logDebug(ctx, type, title, detail) {
 // 2) Persiste en DB con ese id + estado (emite message:new → la UI se actualiza).
 async function sendBotMsg(ctx, content, metadata = {}) {
   const text = typeof content === 'string' ? content : String(content || '')
+  // Contador de mensajes realmente enviados en este run. Lo usa el nodo Agente IA
+  // para no duplicar: si una herramienta ya envió su propio mensaje (recurso,
+  // catálogo, link de pago…), no se envía además la respuesta del modelo.
+  if (ctx && (text.trim() || metadata?.media || metadata?.mediaUrl || metadata?.calendar)) {
+    ctx._sentCount = (ctx._sentCount || 0) + 1
+  }
   // Normaliza la media: los nodos pasan { media:{kind,url} } o { mediaUrl, kind }
   const media = metadata.media?.url
     ? metadata.media
