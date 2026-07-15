@@ -11,9 +11,13 @@
 const pool   = require('../db')
 const socket = require('../services/socket')
 const { uid, parseJ } = require('../utils')
-const { loadPublicAccount } = require('../controllers/accounts.controller')
-const { createOrGetSocialConvo } = require('../controllers/conversations.controller')
-const { recordUsageInternal } = require('../controllers/analytics.controller')
+// Requires PEREZOSOS de controllers para evitar la dependencia circular: si se
+// destructuran al cargar el módulo, la función puede quedar `undefined` cuando el
+// controller está a medio cargar (era el caso de loadPublicAccount → "is not a
+// function"). Accediéndolos en tiempo de llamada, el módulo ya está completo.
+const loadPublicAccount     = (...a) => require('../controllers/accounts.controller').loadPublicAccount(...a)
+const createOrGetSocialConvo = (...a) => require('../controllers/conversations.controller').createOrGetSocialConvo(...a)
+const recordUsageInternal    = (...a) => require('../controllers/analytics.controller').recordUsageInternal(...a)
 
 const mapConvo = (c, messages = []) => ({
   id: c.id, guestName: c.guest_name, guestId: c.guest_id,
