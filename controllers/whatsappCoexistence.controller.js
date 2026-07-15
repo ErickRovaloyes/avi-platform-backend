@@ -15,9 +15,28 @@
  */
 
 const pool = require('../db')
+const { parseJ } = require('../utils')
 
 const GRAPH_VERSION = 'v19.0'
 const GRAPH = `https://graph.facebook.com/${GRAPH_VERSION}`
+
+// Pide a Meta iniciar una sincronización de coexistencia (contactos o historial).
+// NO es automática: hay que llamarla explícitamente tras suscribir la app al WABA.
+// Devuelve { ok, error? }. Solo se puede pedir una vez por onboarding (24h).
+async function smbAppSync(phoneId, accessToken, syncType) {
+  try {
+    const r = await fetch(`${GRAPH}/${phoneId}/smb_app_data`, {
+      method: 'POST',
+      headers: { Authorization: `Bearer ${accessToken}`, 'Content-Type': 'application/json' },
+      body: JSON.stringify({ messaging_product: 'whatsapp', sync_type: syncType }),
+    })
+    const d = await r.json().catch(() => ({}))
+    if (r.ok && d?.error == null) { console.log(`[coexistence] sync '${syncType}' OK para ${phoneId}`); return { ok: true } }
+    const error = d?.error?.message || `HTTP ${r.status}`
+    console.warn(`[coexistence] sync '${syncType}' falló:`, error)
+    return { ok: false, error }
+  } catch (e) { console.warn(`[coexistence] sync '${syncType}' error:`, e.message); return { ok: false, error: e.message } }
+}
 
 async function globalMetaApp() {
   const [[r]] = await pool.query('SELECT meta_app_id, meta_app_secret, meta_config_id FROM platform_settings WHERE id=1')
@@ -112,22 +131,8 @@ const exchange = async (req, res) => {
     //    6 meses). Meta enviará los webhooks en las horas siguientes. Solo se puede
     //    pedir una vez por onboarding y hay 24h de plazo → por eso, para traer el
     //    historial de un número ya conectado, hay que desconectar y reconectar.
-    let contactsSynced = false, historySynced = false
-    const smbSync = async (syncType) => {
-      try {
-        const r = await fetch(`${GRAPH}/${phoneId}/smb_app_data`, {
-          method: 'POST',
-          headers: { Authorization: `Bearer ${accessToken}`, 'Content-Type': 'application/json' },
-          body: JSON.stringify({ messaging_product: 'whatsapp', sync_type: syncType }),
-        })
-        const d = await r.json().catch(() => ({}))
-        if (r.ok && d?.error == null) { console.log(`[coexistence] sync '${syncType}' solicitado OK para ${phoneId}`); return true }
-        console.warn(`[coexistence] sync '${syncType}' falló:`, d?.error?.message || `HTTP ${r.status}`)
-      } catch (e) { console.warn(`[coexistence] sync '${syncType}' error:`, e.message) }
-      return false
-    }
-    contactsSynced = await smbSync('smb_app_state_sync')   // 1) contactos
-    historySynced  = await smbSync('history')              // 2) historial (6 meses)
+    const contactsSynced = (await smbAppSync(phoneId, accessToken, 'smb_app_state_sync')).ok   // 1) contactos
+    const historySynced  = (await smbAppSync(phoneId, accessToken, 'history')).ok              // 2) historial (6 meses)
 
     res.json({
       config: {
@@ -150,4 +155,30 @@ const exchange = async (req, res) => {
   }
 }
 
-module.exports = { getConfig, exchange }
+// POST /api/whatsapp/coexistence/sync-history  { accId, agentId, channelId? }
+// Dispara la sincronización de contactos + historial para un número YA conectado por
+// coexistencia, sin reconectar (útil mientras la ventana de 24h del onboarding siga
+// abierta). Usa el phoneNumberId + accessToken guardados en el canal.
+const syncHistory = async (req, res) => {
+  const { accId, agentId, channelId } = req.body || {}
+  if (!accId || !agentId) return res.status(400).json({ error: 'Falta accId o agentId' })
+  try {
+    const [[ag]] = await pool.query('SELECT channels FROM agents WHERE id=? AND account_id=?', [agentId, accId])
+    if (!ag) return res.status(404).json({ error: 'Agente no encontrado' })
+    const ch = parseJ(ag.channels, []).find(c =>
+      c.type === 'whatsapp' && (!channelId || c.id === channelId) && c.config?.phoneNumberId && c.config?.accessToken)
+    if (!ch) return res.status(400).json({ error: 'No hay un canal de WhatsApp de coexistencia conectado (con token) para este agente.' })
+    const { phoneNumberId, accessToken } = ch.config
+    await smbAppSync(phoneNumberId, accessToken, 'smb_app_state_sync')
+    const hist = await smbAppSync(phoneNumberId, accessToken, 'history')
+    if (!hist.ok) {
+      return res.status(400).json({
+        error: hist.error || 'No se pudo iniciar la sincronización del historial.',
+        hint: 'Si la ventana de 24h del onboarding ya venció, desconecta y vuelve a conectar el número.',
+      })
+    }
+    res.json({ ok: true, message: 'Sincronización solicitada ✓. El historial llegará en las próximas horas (en fases).' })
+  } catch (e) { console.error('[coexistence syncHistory]', e.message); res.status(500).json({ error: 'Error interno' }) }
+}
+
+module.exports = { getConfig, exchange, syncHistory }

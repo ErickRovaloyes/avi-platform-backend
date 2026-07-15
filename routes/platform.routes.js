@@ -18,6 +18,7 @@ router.get('/platform/integrations',    ctrl.getPublicIntegrations)
 // WhatsApp Coexistence (Embedded Signup con la app global)
 router.get('/whatsapp/coexistence/config',    coex.getConfig)
 router.post('/whatsapp/coexistence/exchange', authMiddleware, coex.exchange)
+router.post('/whatsapp/coexistence/sync-history', authMiddleware, coex.syncHistory)
 
 // Platform settings — /api/platform/settings (called by SuperAdminShell)
 router.get('/platform/settings',        authMiddleware, ctrl.getSettings)
