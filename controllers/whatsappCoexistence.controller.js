@@ -106,6 +106,29 @@ const exchange = async (req, res) => {
       return res.status(400).json({ error: 'No se pudo determinar el número de WhatsApp. Reintenta el proceso de conexión.' })
     }
 
+    // 5) Disparar la sincronización de CONTACTOS e HISTORIAL. NO es automática: Meta
+    //    exige pedirla explícitamente vía SMB App Data API tras suscribir la app al
+    //    WABA. Primero contactos (smb_app_state_sync) y luego historial (history, hasta
+    //    6 meses). Meta enviará los webhooks en las horas siguientes. Solo se puede
+    //    pedir una vez por onboarding y hay 24h de plazo → por eso, para traer el
+    //    historial de un número ya conectado, hay que desconectar y reconectar.
+    let contactsSynced = false, historySynced = false
+    const smbSync = async (syncType) => {
+      try {
+        const r = await fetch(`${GRAPH}/${phoneId}/smb_app_data`, {
+          method: 'POST',
+          headers: { Authorization: `Bearer ${accessToken}`, 'Content-Type': 'application/json' },
+          body: JSON.stringify({ messaging_product: 'whatsapp', sync_type: syncType }),
+        })
+        const d = await r.json().catch(() => ({}))
+        if (r.ok && d?.error == null) { console.log(`[coexistence] sync '${syncType}' solicitado OK para ${phoneId}`); return true }
+        console.warn(`[coexistence] sync '${syncType}' falló:`, d?.error?.message || `HTTP ${r.status}`)
+      } catch (e) { console.warn(`[coexistence] sync '${syncType}' error:`, e.message) }
+      return false
+    }
+    contactsSynced = await smbSync('smb_app_state_sync')   // 1) contactos
+    historySynced  = await smbSync('history')              // 2) historial (6 meses)
+
     res.json({
       config: {
         phoneNumberId: phoneId,
@@ -117,6 +140,8 @@ const exchange = async (req, res) => {
         mode: 'coexistence',
         coexistence: true,
         subscribed,
+        historySync: historySynced,
+        contactsSync: contactsSynced,
       },
     })
   } catch (e) {
