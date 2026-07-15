@@ -110,6 +110,7 @@ const onlyDigits = s => String(s || '').replace(/\D/g, '')
 async function ingestInboundMessages(accId, agentId, value, contacts) {
   const messages = value?.messages || []
   if (!messages.length) return
+  console.log(`[WA in] ${accId}/${agentId} · ${messages.length} entrante(s) de ${messages.map(m => m.from).join(', ')}`)
   const entry = { changes: [{ field: 'messages', value: { ...value, messages, contacts: contacts || value?.contacts || [] } }] }
   let payload = { object: 'whatsapp_business_account', entry: [entry] }
   try { payload = await enrichWhatsAppPayloadWithMedia(accId, agentId, payload) }
@@ -172,17 +173,34 @@ async function processWhatsAppEntry(accId, agentId, entry) {
   }
 }
 
-// Busca a qué cuenta/agente pertenece un phone_number_id (entre los canales de
-// WhatsApp conectados). Lo usa el webhook GLOBAL de Coexistencia.
-async function findAgentByPhoneNumberId(pnid) {
-  if (!pnid) return null
+// Busca a qué cuenta/agente pertenece un número (webhook GLOBAL de Coexistencia).
+// Match por phone_number_id y, como FALLBACK, por el número visible: en
+// coexistencia el phone_number_id del webhook entrante a veces NO coincide con el
+// que devolvió el Embedded Signup, y así los mensajes entrantes se perdían.
+async function findAgentByPhoneNumberId(pnid, displayPhone) {
+  const dp = String(displayPhone || '').replace(/\D/g, '')
   try {
-    const [rows] = await pool.query('SELECT id, account_id, channels FROM agents WHERE channels LIKE ?', [`%${pnid}%`])
+    const [rows] = await pool.query("SELECT id, account_id, channels FROM agents WHERE channels LIKE '%\"whatsapp\"%'")
+    const stored = []
+    // 1) por phone_number_id exacto
     for (const r of rows) {
-      const channels = parseJ(r.channels, [])
-      const ch = channels.find(c => c.type === 'whatsapp' && c.config && String(c.config.phoneNumberId) === String(pnid))
-      if (ch) return { accId: r.account_id, agentId: r.id }
+      for (const c of parseJ(r.channels, [])) {
+        if (c.type !== 'whatsapp' || !c.config) continue
+        if (c.config.phoneNumberId) stored.push(`${c.config.phoneNumberId}${c.config.displayPhone ? '(' + c.config.displayPhone + ')' : ''}`)
+        if (pnid && String(c.config.phoneNumberId) === String(pnid)) return { accId: r.account_id, agentId: r.id }
+      }
     }
+    // 2) fallback: por número visible (dígitos)
+    if (dp) for (const r of rows) {
+      for (const c of parseJ(r.channels, [])) {
+        if (c.type !== 'whatsapp' || !c.config) continue
+        if (String(c.config.displayPhone || '').replace(/\D/g, '') === dp) {
+          console.log(`[findAgent] match por número visible (${displayPhone}) — pnid del webhook ${pnid} no coincidía con el guardado`)
+          return { accId: r.account_id, agentId: r.id }
+        }
+      }
+    }
+    console.warn(`[findAgent] SIN match · pnid=${pnid} display=${displayPhone} · registrados: ${stored.join(', ') || '(ninguno)'}`)
   } catch (e) { console.error('[findAgentByPhoneNumberId]', e.message) }
   return null
 }
@@ -204,10 +222,12 @@ const whatsappReceiveGlobal = async (req, res) => {
   for (const entry of (req.body?.entry || [])) {
     try {
       const changes = entry?.changes || []
-      const pnid = changes[0]?.value?.metadata?.phone_number_id
+      const meta0 = changes[0]?.value?.metadata || {}
+      const pnid = meta0.phone_number_id
+      const displayPhone = meta0.display_phone_number
       const fields = changes.map(c => c.field).join(',') || '(sin changes)'
-      const target = await findAgentByPhoneNumberId(pnid)
-      if (!target) { console.warn(`[WA global] sin agente para phone_number_id ${pnid} — fields: ${fields}`); continue }
+      const target = await findAgentByPhoneNumberId(pnid, displayPhone)
+      if (!target) { console.warn(`[WA global] sin agente · pnid=${pnid} display=${displayPhone} — fields: ${fields}`); continue }
       console.log(`[WA global] pnid=${pnid} → ${target.accId}/${target.agentId} · fields=[${fields}]`)
       await processWhatsAppEntry(target.accId, target.agentId, entry)
     } catch (e) { console.error('[WA global entry]', e.message) }

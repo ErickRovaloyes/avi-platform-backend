@@ -134,15 +134,21 @@ async function ingestCoexistenceChange(accId, agentId, field, value) {
     // history / smb_message_echoes → mensajes a backfillear
     const groups = []   // { customerWaId, name, messages, forceOutbound }
     if (field === 'history') {
-      const hist = value?.history || value?.threads || []
+      // Estructura REAL de Meta (coexistencia): value.history[] → cada elemento
+      // { metadata:{phase,chunk_order,progress}, threads[] }; cada thread
+      // { id: <teléfono del cliente>, messages[] }. La dirección de cada mensaje la
+      // resuelve backfillThread comparando `from` con el id del hilo (from == cliente
+      // → entrante 'user'; from == negocio → saliente 'human').
+      const hist = value?.history || []
+      let nThreads = 0, nMsgs = 0
       for (const chunk of (Array.isArray(hist) ? hist : [hist])) {
-        const contact = (chunk?.contacts || [])[0] || {}
-        const messages = chunk?.messages || []
-        // wa_id del cliente del hilo (o dedúcelo de un mensaje entrante).
-        let customerWaId = contact.wa_id || ''
-        if (!customerWaId) { const inb = messages.find(m => m.from); customerWaId = inb?.from || '' }
-        groups.push({ customerWaId, name: contact.profile?.name || '', messages, forceOutbound: false })
+        for (const thread of (chunk?.threads || [])) {
+          const customerWaId = thread?.id || ''
+          const messages = thread?.messages || []
+          if (customerWaId && messages.length) { groups.push({ customerWaId, name: '', messages, forceOutbound: false }); nThreads++; nMsgs += messages.length }
+        }
       }
+      console.log(`[waHistorySync] ${accId}: history → ${nThreads} hilo(s), ${nMsgs} mensaje(s)`)
     } else if (field === 'smb_message_echoes') {
       // Ecos = salientes del negocio; agrupa por destinatario (el cliente).
       const echoes = value?.message_echoes || value?.messages || []
