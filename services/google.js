@@ -13,6 +13,7 @@
  */
 
 const pool = require('../db')
+const { uid } = require('../utils')
 
 const DEFAULT_REDIRECT = 'https://platform.aviasistente.com/api/google/callback'
 // Una sola app OAuth cubre Sheets Y Calendar (basta con habilitar ambas APIs en el
@@ -100,27 +101,51 @@ async function getUserEmail(accessToken) {
   } catch { return '' }
 }
 
-// Guarda/actualiza la integración de una cuenta.
+// Guarda/actualiza una CONEXIÓN de Google (multi-cuenta: una fila por cada cuenta
+// de Google conectada, identificada por email). Devuelve { id, email }.
 async function saveIntegration(accId, { access_token, refresh_token, expires_in, scope }, email) {
   const expiry = Date.now() + (Number(expires_in) || 3600) * 1000
+  const mail = email || ''
+  const [[existing]] = await pool.query('SELECT id FROM google_connections WHERE account_id=? AND email=?', [accId, mail])
+  const id = existing?.id || ('gc_' + uid())
   await pool.query(
-    `INSERT INTO google_integrations (account_id, email, access_token, refresh_token, expiry, scope, connected_at)
-     VALUES (?,?,?,?,?,?,?)
-     ON DUPLICATE KEY UPDATE email=VALUES(email), access_token=VALUES(access_token),
+    `INSERT INTO google_connections (id, account_id, email, access_token, refresh_token, expiry, scope, connected_at)
+     VALUES (?,?,?,?,?,?,?,?)
+     ON DUPLICATE KEY UPDATE access_token=VALUES(access_token),
        refresh_token=COALESCE(VALUES(refresh_token), refresh_token), expiry=VALUES(expiry), scope=VALUES(scope)`,
-    [accId, email || '', access_token, refresh_token || null, expiry, scope || '', Date.now()]
+    [id, accId, mail, access_token, refresh_token || null, expiry, scope || '', Date.now()]
   )
+  return { id, email: mail }
 }
 
-// Devuelve un access_token válido para la cuenta, refrescando si expiró.
-async function getValidAccessToken(accId) {
-  const [[row]] = await pool.query('SELECT * FROM google_integrations WHERE account_id=?', [accId])
+// Lista las cuentas de Google conectadas de la cuenta.
+async function listConnections(accId) {
+  const [rows] = await pool.query('SELECT id, email, connected_at FROM google_connections WHERE account_id=? ORDER BY connected_at', [accId])
+  return rows.map(r => ({ id: r.id, email: r.email || '', connectedAt: r.connected_at || null }))
+}
+
+// Desconecta UNA cuenta de Google (por id) o TODAS si no se pasa id.
+async function disconnectConnection(accId, connectionId) {
+  if (connectionId) await pool.query('DELETE FROM google_connections WHERE account_id=? AND id=?', [accId, connectionId])
+  else await pool.query('DELETE FROM google_connections WHERE account_id=?', [accId])
+}
+
+// access_token válido de UNA conexión (por id). Sin id → la primera de la cuenta
+// (compat con Sheets y calendarios que no guardan connectionId). Refresca si expiró.
+async function getValidAccessToken(accId, connectionId) {
+  let row
+  if (connectionId) {
+    ;[[row]] = await pool.query('SELECT * FROM google_connections WHERE account_id=? AND id=?', [accId, connectionId])
+    if (!row) throw new Error('La conexión de Google de este calendario ya no existe; vuelve a elegir una cuenta.')
+  } else {
+    ;[[row]] = await pool.query('SELECT * FROM google_connections WHERE account_id=? ORDER BY connected_at LIMIT 1', [accId])
+  }
   if (!row) throw new Error('La cuenta no tiene Google conectado')
   if (row.access_token && Number(row.expiry) > Date.now() + 60000) return row.access_token
   if (!row.refresh_token) throw new Error('Falta refresh_token; reconecta Google')
   const r = await refreshAccessToken(row.refresh_token)
   const expiry = Date.now() + (Number(r.expires_in) || 3600) * 1000
-  await pool.query('UPDATE google_integrations SET access_token=?, expiry=? WHERE account_id=?', [r.access_token, expiry, accId])
+  await pool.query('UPDATE google_connections SET access_token=?, expiry=? WHERE id=?', [r.access_token, expiry, row.id])
   return r.access_token
 }
 
@@ -401,7 +426,7 @@ async function listChanges(token, calendarId, syncToken) {
 
 module.exports = {
   isConfigured, getAuthUrl, exchangeCode, refreshAccessToken, getUserEmail, invalidateCredsCache,
-  saveIntegration, getValidAccessToken,
+  saveIntegration, getValidAccessToken, listConnections, disconnectConnection,
   readRows, appendRow, updateRange, clearRange, extractSpreadsheetId,
   rowsToRecords, filterSheetRows, runSheetsOperation,
   createCalendarEvent, updateCalendarEvent, deleteCalendarEvent, freeBusy,

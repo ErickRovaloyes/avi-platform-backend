@@ -27,14 +27,14 @@ async function calendarsWithGoogle() {
   const out = []
   for (const r of rows) {
     const gi = parseJ(r.integrations, {})?.google
-    if (gi?.enabled) out.push({ id: r.id, accId: r.account_id, googleCalId: gi.calendarId || 'primary' })
+    if (gi?.enabled) out.push({ id: r.id, accId: r.account_id, googleCalId: gi.calendarId || 'primary', connectionId: gi.connectionId || null })
   }
   return out
 }
 
-async function registerWatch(accId, platformCalId, googleCalId, oldChannel) {
+async function registerWatch(accId, platformCalId, googleCalId, oldChannel, connectionId) {
   if (!(await g.isConfigured())) return
-  const token = await g.getValidAccessToken(accId)
+  const token = await g.getValidAccessToken(accId, connectionId)
   if (oldChannel) {
     try { await g.stopChannel(token, oldChannel.channel_id, oldChannel.resource_id) } catch {}
     await pool.query('DELETE FROM google_calendar_channels WHERE channel_id=?', [oldChannel.channel_id]).catch(() => {})
@@ -60,7 +60,7 @@ async function ensureWatches() {
     for (const c of cals) {
       const [[ch]] = await pool.query('SELECT * FROM google_calendar_channels WHERE account_id=? AND platform_calendar_id=? ORDER BY created_at DESC LIMIT 1', [c.accId, c.id])
       if (ch && Number(ch.expiration) > now + RENEW_WINDOW_MS && ch.google_calendar_id === c.googleCalId) continue // vigente
-      try { await registerWatch(c.accId, c.id, c.googleCalId, ch || null) } catch (e) { console.warn('[gcal register]', c.id, e.message) }
+      try { await registerWatch(c.accId, c.id, c.googleCalId, ch || null, c.connectionId) } catch (e) { console.warn('[gcal register]', c.id, e.message) }
     }
     // Limpia canales de calendarios que desactivaron Google.
     const [chans] = await pool.query('SELECT channel_id, account_id, platform_calendar_id, resource_id FROM google_calendar_channels')

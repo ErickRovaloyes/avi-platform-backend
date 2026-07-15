@@ -801,6 +801,26 @@ app.use('/api',                recontactRoutes)
     "ALTER TABLE platform_settings ADD COLUMN google_client_id VARCHAR(200)",
     "ALTER TABLE platform_settings ADD COLUMN google_client_secret VARCHAR(255)",
     "ALTER TABLE platform_settings ADD COLUMN google_redirect_uri VARCHAR(300)",
+    // Conexiones de Google MULTI-cuenta: una fila por cada cuenta de Google que la
+    // cuenta conecte (antes era una sola por account_id). Cada calendario elige con
+    // qué conexión sincroniza (integrations.google.connectionId).
+    `CREATE TABLE IF NOT EXISTS google_connections (
+       id            VARCHAR(50) PRIMARY KEY,
+       account_id    VARCHAR(50) NOT NULL,
+       email         VARCHAR(200),
+       access_token  TEXT,
+       refresh_token TEXT,
+       expiry        BIGINT,
+       scope         TEXT,
+       connected_at  BIGINT,
+       UNIQUE KEY uq_gc_acc_email (account_id, email),
+       INDEX idx_gc_acc (account_id)
+     )`,
+    // Backfill idempotente desde la tabla vieja (una conexión por cuenta → nueva tabla).
+    `INSERT INTO google_connections (id, account_id, email, access_token, refresh_token, expiry, scope, connected_at)
+       SELECT CONCAT('gc_', account_id), account_id, COALESCE(email,''), access_token, refresh_token, expiry, scope, connected_at
+       FROM google_integrations
+       ON DUPLICATE KEY UPDATE email=google_connections.email`,
     // ── FASE 0: núcleo multi-industria (no disruptivo) ──────────────────────
     // Vertical del calendario (medical|restaurant|hotel|cinema|appointment).
     // Default 'appointment' = comportamiento actual (time-slot + Google sync).

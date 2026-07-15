@@ -3,12 +3,18 @@ const pool = require('../db')
 const { uid } = require('../utils')
 const g = require('../services/google')
 
-// GET /api/accounts/:accId/google/status → { connected, email }
+// GET /api/accounts/:accId/google/status → { configured, connected, email, connections[] }
 const status = async (req, res) => {
   const { accId } = req.params
   try {
-    const [[row]] = await pool.query('SELECT email, connected_at FROM google_integrations WHERE account_id=?', [accId])
-    res.json({ configured: await g.isConfigured(), connected: !!row, email: row?.email || '', connectedAt: row?.connected_at || null })
+    const connections = await g.listConnections(accId)
+    res.json({
+      configured: await g.isConfigured(),
+      connected: connections.length > 0,
+      email: connections[0]?.email || '',        // compat: primera cuenta
+      connectedAt: connections[0]?.connectedAt || null,
+      connections,                                 // [{ id, email, connectedAt }]
+    })
   } catch (err) { res.status(500).json({ error: 'Error interno' }) }
 }
 
@@ -35,11 +41,13 @@ const callback = async (req, res) => {
   }
 }
 
-// DELETE /api/accounts/:accId/google → desconectar
+// DELETE /api/accounts/:accId/google?connectionId=… → desconecta UNA cuenta de
+// Google (o TODAS si no se pasa connectionId).
 const disconnect = async (req, res) => {
   const { accId } = req.params
+  const { connectionId } = req.query
   try {
-    await pool.query('DELETE FROM google_integrations WHERE account_id=?', [accId])
+    await g.disconnectConnection(accId, connectionId || null)
     res.json({ ok: true })
   } catch (err) { res.status(500).json({ error: 'Error interno' }) }
 }

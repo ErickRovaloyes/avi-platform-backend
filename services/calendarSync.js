@@ -130,7 +130,7 @@ async function pushBooking(accId, calendar, booking, action) {
   if (!gi?.enabled) return null  // sync desactivado para este calendario → no se registra
   const calId = gi.calendarId || 'primary'
   try {
-    const token = await g.getValidAccessToken(accId)
+    const token = await g.getValidAccessToken(accId, gi.connectionId)
     if (action === 'delete') { if (booking.externalId) await g.deleteCalendarEvent(token, calId, booking.externalId); await setSyncMeta(accId, booking, { status: 'deleted', calendarId: calId }); return null }
     const event = buildEvent(calendar, booking)
     if (action === 'update' && booking.externalId) { await g.updateCalendarEvent(token, calId, booking.externalId, event); await setSyncMeta(accId, booking, { status: 'ok', eventId: booking.externalId, calendarId: calId }); return booking.externalId }
@@ -151,7 +151,7 @@ async function googleBusyForDate(accId, calendar, dateStr) {
     if (!gi?.enabled || !gi.blockBusy) return []
     const calId = gi.calendarId || 'primary'
     const tz = calendar.timezone || 'UTC'
-    const token = await g.getValidAccessToken(accId)
+    const token = await g.getValidAccessToken(accId, gi.connectionId)
     const dayStart = wallTimeToUtcMs(dateStr, '00:00', tz)
     const busy = await g.freeBusy(token, calId, new Date(dayStart).toISOString(), new Date(dayStart + 86400000).toISOString())
     const out = []
