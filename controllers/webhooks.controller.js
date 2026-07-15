@@ -102,43 +102,74 @@ const whatsappVerify = (req, res) => {
 // Procesa UNA entry del webhook de WhatsApp para una cuenta/agente concretos.
 // Reutilizable por el webhook POR CUENTA (URL con :accId/:agentId) y por el
 // webhook GLOBAL de la app de Coexistencia (que resuelve la cuenta por número).
-async function processWhatsAppEntry(accId, agentId, entry) {
-  const change = entry?.changes?.[0] || {}
-  const value = change.value || {}
+const onlyDigits = s => String(s || '').replace(/\D/g, '')
 
-  // Coexistencia: historial (`history`), ecos del móvil (`smb_message_echoes`) y
-  // sync de contactos (`smb_app_state_sync`) → backfill idempotente SIN correr la
-  // IA ni enviar respuestas (jamás responder a chats viejos).
-  if (change.field === 'history' || change.field === 'smb_message_echoes' || change.field === 'smb_app_state_sync') {
-    waHistorySync.ingestCoexistenceChange(accId, agentId, change.field, value)
+// Mensajes ENTRANTES del cliente (vengan por `messages` o como parte de un eco de
+// coexistencia): guarda + corre el flujo + abre la ventana de 24h + muestra en
+// tiempo real. `value` debe traer metadata + messages (+ contacts opcional).
+async function ingestInboundMessages(accId, agentId, value, contacts) {
+  const messages = value?.messages || []
+  if (!messages.length) return
+  const entry = { changes: [{ field: 'messages', value: { ...value, messages, contacts: contacts || value?.contacts || [] } }] }
+  let payload = { object: 'whatsapp_business_account', entry: [entry] }
+  try { payload = await enrichWhatsAppPayloadWithMedia(accId, agentId, payload) }
+  catch (e) { console.error('[whatsappReceive] media enrich', e) }
+  pushSSE({ type: 'whatsapp', accId, agentId, ts: Date.now() })
+  flow.processWhatsApp(accId, agentId, payload).catch(e => console.error('[flow WA]', e))
+}
+
+// Procesa UN change del webhook.
+async function processWhatsAppChange(accId, agentId, change) {
+  const field = change?.field || 'messages'
+  const value = change?.value || {}
+
+  // Historial (backfill) y sync de contactos → servicio de coexistencia (sin IA).
+  if (field === 'history' || field === 'smb_app_state_sync') {
+    waHistorySync.ingestCoexistenceChange(accId, agentId, field, value)
       .catch(e => console.error('[WA coexistence sync]', e.message))
     return
   }
 
+  // Ecos del móvil (coexistencia): pueden traer SALIENTES (del negocio) y —según
+  // cómo Meta entregue en coexistencia— también ENTRANTES del cliente. Se separan
+  // por dirección: los del negocio se guardan como eco; los del cliente van al
+  // camino normal de entrada (para que se muestren, abran la ventana de 24h y, si
+  // corresponde, respondan). Antes TODO se guardaba como saliente → los mensajes
+  // del cliente no aparecían.
+  if (field === 'smb_message_echoes') {
+    const bizNum = onlyDigits(value?.metadata?.display_phone_number)
+    const list = value?.message_echoes || value?.messages || []
+    const outbound = [], inbound = []
+    for (const m of list) {
+      const fromBiz = bizNum && onlyDigits(m?.from) === bizNum
+      ;(fromBiz ? outbound : inbound).push(m)
+    }
+    console.log(`[WA coex] ${accId}/${agentId} echoes: ${outbound.length} salientes · ${inbound.length} entrantes`)
+    if (outbound.length) {
+      waHistorySync.ingestCoexistenceChange(accId, agentId, 'smb_message_echoes', { ...value, message_echoes: outbound })
+        .catch(e => console.error('[WA coexistence sync]', e.message))
+    }
+    if (inbound.length) await ingestInboundMessages(accId, agentId, { ...value, messages: inbound })
+    return
+  }
+
+  // Camino normal: mensajes entrantes + acuses de estado.
   const msgs = value.messages || []
   const statuses = value.statuses || []
-
-  // Acuses de estado (sent/delivered/read) de mensajes salientes
   if (!msgs.length && statuses.length) {
-    for (const st of statuses) {
-      flowStore.updateMessageStatus(st.id, st.status).catch(e => console.error('[WA status]', e.message))
-    }
+    for (const st of statuses) flowStore.updateMessageStatus(st.id, st.status).catch(e => console.error('[WA status]', e.message))
     return
   }
   if (!msgs.length) return
+  await ingestInboundMessages(accId, agentId, value)
+}
 
-  let payload = { object: 'whatsapp_business_account', entry: [entry] }
-  try {
-    payload = await enrichWhatsAppPayloadWithMedia(accId, agentId, payload)
-  } catch (e) {
-    console.error('[whatsappReceive] media enrich', e)
+// Procesa TODOS los changes de una entry (Meta puede mandar varios por entry).
+async function processWhatsAppEntry(accId, agentId, entry) {
+  for (const change of (entry?.changes || [])) {
+    try { await processWhatsAppChange(accId, agentId, change) }
+    catch (e) { console.error('[WA change]', change?.field, e.message) }
   }
-  // El flujo se ejecuta EN EL SERVIDOR (la IA responde aunque nadie tenga la
-  // plataforma abierta). El SSE solo lleva una SEÑAL para refrescar la UI — SIN
-  // payload, para que cualquier navegador con bundle viejo en caché (que esperaba
-  // `payload`) se detenga y deje de procesar/responder en paralelo.
-  pushSSE({ type: 'whatsapp', accId, agentId, ts: Date.now() })
-  flow.processWhatsApp(accId, agentId, payload).catch(e => console.error('[flow WA]', e))
 }
 
 // Busca a qué cuenta/agente pertenece un phone_number_id (entre los canales de
@@ -172,9 +203,12 @@ const whatsappReceiveGlobal = async (req, res) => {
   res.sendStatus(200)
   for (const entry of (req.body?.entry || [])) {
     try {
-      const pnid = entry?.changes?.[0]?.value?.metadata?.phone_number_id
+      const changes = entry?.changes || []
+      const pnid = changes[0]?.value?.metadata?.phone_number_id
+      const fields = changes.map(c => c.field).join(',') || '(sin changes)'
       const target = await findAgentByPhoneNumberId(pnid)
-      if (!target) { console.warn('[WA global] sin agente para phone_number_id', pnid); continue }
+      if (!target) { console.warn(`[WA global] sin agente para phone_number_id ${pnid} — fields: ${fields}`); continue }
+      console.log(`[WA global] pnid=${pnid} → ${target.accId}/${target.agentId} · fields=[${fields}]`)
       await processWhatsAppEntry(target.accId, target.agentId, entry)
     } catch (e) { console.error('[WA global entry]', e.message) }
   }
