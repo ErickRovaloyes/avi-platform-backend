@@ -19,13 +19,17 @@ const { parseJ } = require('../utils')
 
 const GRAPH_VERSION = 'v19.0'
 const GRAPH = `https://graph.facebook.com/${GRAPH_VERSION}`
+// La SMB App Data API (sync de coexistencia) es reciente; se llama con una versión
+// más nueva de Graph (v19.0 puede devolver un genérico #135000). El resto del
+// onboarding (token, WABA, subscribed_apps) sigue en v19.0, que ya funciona.
+const GRAPH_SMB = 'https://graph.facebook.com/v22.0'
 
 // Pide a Meta iniciar una sincronización de coexistencia (contactos o historial).
 // NO es automática: hay que llamarla explícitamente tras suscribir la app al WABA.
 // Devuelve { ok, error? }. Solo se puede pedir una vez por onboarding (24h).
 async function smbAppSync(phoneId, accessToken, syncType) {
   try {
-    const r = await fetch(`${GRAPH}/${phoneId}/smb_app_data`, {
+    const r = await fetch(`${GRAPH_SMB}/${phoneId}/smb_app_data`, {
       method: 'POST',
       headers: { Authorization: `Bearer ${accessToken}`, 'Content-Type': 'application/json' },
       body: JSON.stringify({ messaging_product: 'whatsapp', sync_type: syncType }),
@@ -172,10 +176,11 @@ const syncHistory = async (req, res) => {
     await smbAppSync(phoneNumberId, accessToken, 'smb_app_state_sync')
     const hist = await smbAppSync(phoneNumberId, accessToken, 'history')
     if (!hist.ok) {
-      return res.status(400).json({
-        error: hist.error || 'No se pudo iniciar la sincronización del historial.',
-        hint: 'Si la ventana de 24h del onboarding ya venció, desconecta y vuelve a conectar el número.',
-      })
+      const is135000 = /135000/.test(hist.error || '')
+      const error = is135000
+        ? 'Meta rechazó la sincronización (error 135000). Casi siempre es porque, al conectar, no se aceptó "compartir el historial de chats", o el WhatsApp Business del teléfono no está abierto/en línea. Solución: en el teléfono abre la app de WhatsApp Business con internet; luego desconecta y vuelve a conectar el número aquí, y ACEPTA el aviso de compartir historial durante el proceso. El plazo es de 24 h desde que se conecta.'
+        : (hist.error || 'No se pudo iniciar la sincronización del historial.')
+      return res.status(400).json({ error })
     }
     res.json({ ok: true, message: 'Sincronización solicitada ✓. El historial llegará en las próximas horas (en fases).' })
   } catch (e) { console.error('[coexistence syncHistory]', e.message); res.status(500).json({ error: 'Error interno' }) }
