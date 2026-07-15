@@ -14,22 +14,44 @@
 
 const pool = require('../db')
 
-const CLIENT_ID     = process.env.GOOGLE_CLIENT_ID || ''
-const CLIENT_SECRET = process.env.GOOGLE_CLIENT_SECRET || ''
-const REDIRECT_URI  = process.env.GOOGLE_REDIRECT_URI || 'https://platform.aviasistente.com/api/google/callback'
+const DEFAULT_REDIRECT = 'https://platform.aviasistente.com/api/google/callback'
+// Una sola app OAuth cubre Sheets Y Calendar (basta con habilitar ambas APIs en el
+// proyecto de Google Cloud y pedir estos scopes).
 const SCOPES = [
   'https://www.googleapis.com/auth/spreadsheets',
   'https://www.googleapis.com/auth/calendar',     // eventos + freeBusy (sync de calendarios)
   'https://www.googleapis.com/auth/userinfo.email',
 ]
 
-function isConfigured() { return !!(CLIENT_ID && CLIENT_SECRET) }
+// Credenciales OAuth de la plataforma: PRIORIDAD platform_settings (super admin) →
+// variables de entorno (compat). Se cachean unos segundos para no consultar la BD
+// en cada refresco de token.
+let _credCache = null, _credAt = 0
+async function getCreds() {
+  if (_credCache && Date.now() - _credAt < 30000) return _credCache
+  let id = process.env.GOOGLE_CLIENT_ID || ''
+  let secret = process.env.GOOGLE_CLIENT_SECRET || ''
+  let redirect = process.env.GOOGLE_REDIRECT_URI || DEFAULT_REDIRECT
+  try {
+    const [[r]] = await pool.query('SELECT google_client_id, google_client_secret, google_redirect_uri FROM platform_settings WHERE id=1')
+    if (r?.google_client_id && String(r.google_client_id).trim())         id = String(r.google_client_id).trim()
+    if (r?.google_client_secret && String(r.google_client_secret).trim()) secret = String(r.google_client_secret).trim()
+    if (r?.google_redirect_uri && String(r.google_redirect_uri).trim())   redirect = String(r.google_redirect_uri).trim()
+  } catch { /* usa env */ }
+  _credCache = { id, secret, redirect }; _credAt = Date.now()
+  return _credCache
+}
+// Invalida la caché cuando el super admin cambia las credenciales.
+function invalidateCredsCache() { _credCache = null; _credAt = 0 }
+
+async function isConfigured() { const c = await getCreds(); return !!(c.id && c.secret) }
 
 // URL de consentimiento. state = accId para saber a qué cuenta vincular.
-function getAuthUrl(accId) {
+async function getAuthUrl(accId) {
+  const c = await getCreds()
   const params = new URLSearchParams({
-    client_id: CLIENT_ID,
-    redirect_uri: REDIRECT_URI,
+    client_id: c.id,
+    redirect_uri: c.redirect,
     response_type: 'code',
     access_type: 'offline',
     prompt: 'consent',           // fuerza refresh_token
@@ -41,12 +63,13 @@ function getAuthUrl(accId) {
 }
 
 async function exchangeCode(code) {
+  const c = await getCreds()
   const res = await fetch('https://oauth2.googleapis.com/token', {
     method: 'POST',
     headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
     body: new URLSearchParams({
-      code, client_id: CLIENT_ID, client_secret: CLIENT_SECRET,
-      redirect_uri: REDIRECT_URI, grant_type: 'authorization_code',
+      code, client_id: c.id, client_secret: c.secret,
+      redirect_uri: c.redirect, grant_type: 'authorization_code',
     }),
   })
   if (!res.ok) throw new Error('Intercambio de código falló: ' + (await res.text()).slice(0, 200))
@@ -54,11 +77,12 @@ async function exchangeCode(code) {
 }
 
 async function refreshAccessToken(refreshToken) {
+  const c = await getCreds()
   const res = await fetch('https://oauth2.googleapis.com/token', {
     method: 'POST',
     headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
     body: new URLSearchParams({
-      client_id: CLIENT_ID, client_secret: CLIENT_SECRET,
+      client_id: c.id, client_secret: c.secret,
       refresh_token: refreshToken, grant_type: 'refresh_token',
     }),
   })
@@ -376,7 +400,7 @@ async function listChanges(token, calendarId, syncToken) {
 }
 
 module.exports = {
-  isConfigured, getAuthUrl, exchangeCode, refreshAccessToken, getUserEmail,
+  isConfigured, getAuthUrl, exchangeCode, refreshAccessToken, getUserEmail, invalidateCredsCache,
   saveIntegration, getValidAccessToken,
   readRows, appendRow, updateRange, clearRange, extractSpreadsheetId,
   rowsToRecords, filterSheetRows, runSheetsOperation,

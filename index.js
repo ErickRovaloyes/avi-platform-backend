@@ -796,6 +796,11 @@ app.use('/api',                recontactRoutes)
     // Aviso por defecto para la IA cuando escribe un cliente recurrente. Editable por
     // el super admin; cada cuenta puede sobrescribirlo por canal. NULL = usar default.
     "ALTER TABLE platform_settings ADD COLUMN returning_notice_default TEXT",
+    // Credenciales OAuth GLOBALES de Google (una sola app cubre Calendar + Sheets).
+    // El super admin las pone aquí; cada cuenta solo hace "Conectar con Google".
+    "ALTER TABLE platform_settings ADD COLUMN google_client_id VARCHAR(200)",
+    "ALTER TABLE platform_settings ADD COLUMN google_client_secret VARCHAR(255)",
+    "ALTER TABLE platform_settings ADD COLUMN google_redirect_uri VARCHAR(300)",
     // ── FASE 0: núcleo multi-industria (no disruptivo) ──────────────────────
     // Vertical del calendario (medical|restaurant|hotel|cinema|appointment).
     // Default 'appointment' = comportamiento actual (time-slot + Google sync).

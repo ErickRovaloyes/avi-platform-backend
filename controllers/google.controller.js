@@ -8,15 +8,15 @@ const status = async (req, res) => {
   const { accId } = req.params
   try {
     const [[row]] = await pool.query('SELECT email, connected_at FROM google_integrations WHERE account_id=?', [accId])
-    res.json({ configured: g.isConfigured(), connected: !!row, email: row?.email || '', connectedAt: row?.connected_at || null })
+    res.json({ configured: await g.isConfigured(), connected: !!row, email: row?.email || '', connectedAt: row?.connected_at || null })
   } catch (err) { res.status(500).json({ error: 'Error interno' }) }
 }
 
 // GET /api/accounts/:accId/google/auth-url → { url }
 const authUrl = async (req, res) => {
   const { accId } = req.params
-  if (!g.isConfigured()) return res.status(400).json({ error: 'Google OAuth no está configurado en el servidor (GOOGLE_CLIENT_ID/SECRET).' })
-  res.json({ url: g.getAuthUrl(accId) })
+  if (!(await g.isConfigured())) return res.status(400).json({ error: 'Google OAuth no está configurado. El super admin debe poner el Client ID y Secret de Google en el Super Panel → Configuración.' })
+  res.json({ url: await g.getAuthUrl(accId) })
 }
 
 // GET /api/google/callback?code=&state=accId  (Google redirige aquí)

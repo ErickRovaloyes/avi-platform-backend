@@ -33,7 +33,7 @@ async function calendarsWithGoogle() {
 }
 
 async function registerWatch(accId, platformCalId, googleCalId, oldChannel) {
-  if (!g.isConfigured()) return
+  if (!(await g.isConfigured())) return
   const token = await g.getValidAccessToken(accId)
   if (oldChannel) {
     try { await g.stopChannel(token, oldChannel.channel_id, oldChannel.resource_id) } catch {}

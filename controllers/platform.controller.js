@@ -61,6 +61,11 @@ const getSettings = async (req, res) => {
           // El App Secret solo lo ve el super admin; al resto se le indica si existe.
           metaAppSecret: isSA ? (r.meta_app_secret || '') : '',
           hasMetaAppSecret: !!r.meta_app_secret,
+          // Credenciales OAuth de Google (Calendar + Sheets). El secret solo lo ve el SA.
+          googleClientId: r.google_client_id || '',
+          googleClientSecret: isSA ? (r.google_client_secret || '') : '',
+          hasGoogleClientSecret: !!r.google_client_secret,
+          googleRedirectUri: r.google_redirect_uri || '',
           promptGeneratorModel: r.prompt_generator_model || 'gpt-4o',
           promptGeneratorStructure: r.prompt_generator_structure || DEFAULT_STRUCTURE,
           promptGeneratorConditions: r.prompt_generator_conditions || DEFAULT_CONDITIONS,
@@ -104,6 +109,10 @@ const getSettings = async (req, res) => {
           metaConfigId: '',
           metaAppSecret: '',
           hasMetaAppSecret: false,
+          googleClientId: '',
+          googleClientSecret: '',
+          hasGoogleClientSecret: false,
+          googleRedirectUri: '',
           promptGeneratorModel: 'gpt-4o',
           promptGeneratorStructure: DEFAULT_STRUCTURE,
           promptGeneratorConditions: DEFAULT_CONDITIONS,
@@ -136,6 +145,7 @@ const updateSettings = async (req, res) => {
   const {
     changeAgentModel, changeAgentDefaultLimit, changeAgentTokenLimits, changeAgentTokenLimit, changeAgentCaps,
     channelLimits, metaAppId, metaConfigId, metaAppSecret,
+    googleClientId, googleClientSecret, googleRedirectUri,
     promptGeneratorModel, promptGeneratorStructure, promptGeneratorConditions,
     promptGeneratorMaxTokens, promptGeneratorTemperature, promptGeneratorMaxDocChars,
     promptGeneratorAllowFlows,
@@ -160,6 +170,10 @@ const updateSettings = async (req, res) => {
     if (returningNoticeDefault    !== undefined) { sets.push('returning_notice_default=?');     vals.push(String(returningNoticeDefault || '').slice(0, 4000)) }
     // Solo se actualiza el secret si llega un valor no vacío (evita borrarlo al guardar enmascarado)
     if (metaAppSecret             !== undefined && metaAppSecret !== '') { sets.push('meta_app_secret=?'); vals.push(metaAppSecret) }
+    // Credenciales OAuth de Google (una sola app para Calendar + Sheets).
+    if (googleClientId            !== undefined) { sets.push('google_client_id=?');            vals.push(String(googleClientId || '').trim()) }
+    if (googleRedirectUri         !== undefined) { sets.push('google_redirect_uri=?');         vals.push(String(googleRedirectUri || '').trim()) }
+    if (googleClientSecret        !== undefined && googleClientSecret !== '') { sets.push('google_client_secret=?'); vals.push(String(googleClientSecret).trim()) }
     if (promptGeneratorModel      !== undefined) { sets.push('prompt_generator_model=?');       vals.push(promptGeneratorModel) }
     if (promptGeneratorStructure  !== undefined) { sets.push('prompt_generator_structure=?');   vals.push(promptGeneratorStructure) }
     if (promptGeneratorConditions !== undefined) { sets.push('prompt_generator_conditions=?');  vals.push(promptGeneratorConditions) }
@@ -198,6 +212,11 @@ const updateSettings = async (req, res) => {
       sets.push('transcription_model=?'); vals.push(allowed.includes(transcriptionModel) ? transcriptionModel : 'whisper-1')
     }
     if (sets.length) { vals.push(1); await pool.query(`UPDATE platform_settings SET ${sets.join(',')} WHERE id=?`, vals) }
+    // Si cambiaron las credenciales de Google, invalida su caché para que el nuevo
+    // client_id/secret se use de inmediato (sin esperar a que expire la caché).
+    if (googleClientId !== undefined || googleClientSecret !== undefined || googleRedirectUri !== undefined) {
+      try { require('../services/google').invalidateCredsCache() } catch {}
+    }
     res.json({ ok: true })
   } catch (err) { console.error('[PUT SETTINGS]', err); res.status(500).json({ error: 'Error interno' }) }
 }
