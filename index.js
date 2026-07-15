@@ -793,6 +793,13 @@ app.use('/api',                recontactRoutes)
     "ALTER TABLE platform_settings ADD COLUMN meta_config_id VARCHAR(64) DEFAULT ''",
     // ── Modelo para transcripción de audios (OpenAI) ──
     "ALTER TABLE platform_settings ADD COLUMN transcription_model VARCHAR(50) DEFAULT 'whisper-1'",
+    // Correo por SMTP (correo corporativo de la plataforma): núcleo para enviar 2FA,
+    // login de demos, notificaciones, etc. Alternativa a Resend/SendGrid.
+    "ALTER TABLE platform_settings ADD COLUMN smtp_host VARCHAR(200)",
+    "ALTER TABLE platform_settings ADD COLUMN smtp_port INT",
+    "ALTER TABLE platform_settings ADD COLUMN smtp_user VARCHAR(200)",
+    "ALTER TABLE platform_settings ADD COLUMN smtp_pass VARCHAR(255)",
+    "ALTER TABLE platform_settings ADD COLUMN smtp_secure TINYINT(1)",
     // Aviso por defecto para la IA cuando escribe un cliente recurrente. Editable por
     // el super admin; cada cuenta puede sobrescribirlo por canal. NULL = usar default.
     "ALTER TABLE platform_settings ADD COLUMN returning_notice_default TEXT",

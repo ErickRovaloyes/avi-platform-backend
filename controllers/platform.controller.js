@@ -95,6 +95,12 @@ const getSettings = async (req, res) => {
           hasEmailApiKey: !!r.email_api_key,
           emailFrom: r.email_from || '',
           emailFromName: r.email_from_name || 'AVI Asistente',
+          // SMTP (correo corporativo). La contraseña solo indica si existe (no se expone).
+          smtpHost: r.smtp_host || '',
+          smtpPort: r.smtp_port || 587,
+          smtpUser: r.smtp_user || '',
+          hasSmtpPass: !!r.smtp_pass,
+          smtpSecure: !!r.smtp_secure,
           signupVerifyEnabled: !!r.signup_verify_enabled,
           login2faEnabled: !!r.login_2fa_enabled,
         }
@@ -134,6 +140,7 @@ const getSettings = async (req, res) => {
           hasEmailApiKey: false,
           emailFrom: '',
           emailFromName: 'AVI Asistente',
+          smtpHost: '', smtpPort: 587, smtpUser: '', hasSmtpPass: false, smtpSecure: false,
           signupVerifyEnabled: false,
           login2faEnabled: false,
         })
@@ -156,6 +163,7 @@ const updateSettings = async (req, res) => {
     returningNoticeDefault,
     demoAdsEnabled, demoAdsHtml,
     emailProvider, emailApiKey, emailFrom, emailFromName, signupVerifyEnabled, login2faEnabled,
+    smtpHost, smtpPort, smtpUser, smtpPass, smtpSecure,
   } = req.body
   try {
     const sets = []; const vals = []
@@ -195,6 +203,12 @@ const updateSettings = async (req, res) => {
     if (emailProvider             !== undefined) { sets.push('email_provider=?');                vals.push(String(emailProvider || 'none')) }
     // Solo se actualiza la API key si llega un valor no vacío y sin enmascarar (evita borrarla al guardar el placeholder).
     if (emailApiKey               !== undefined && emailApiKey !== '' && !emailApiKey.includes('***')) { sets.push('email_api_key=?'); vals.push(emailApiKey) }
+    // SMTP (correo corporativo). La contraseña solo se actualiza si llega una nueva.
+    if (smtpHost                  !== undefined) { sets.push('smtp_host=?'); vals.push(String(smtpHost || '').trim()) }
+    if (smtpPort                  !== undefined) { sets.push('smtp_port=?'); vals.push(parseInt(smtpPort) || 587) }
+    if (smtpUser                  !== undefined) { sets.push('smtp_user=?'); vals.push(String(smtpUser || '').trim()) }
+    if (smtpSecure                !== undefined) { sets.push('smtp_secure=?'); vals.push(smtpSecure ? 1 : 0) }
+    if (smtpPass                  !== undefined && smtpPass !== '' && !smtpPass.includes('***')) { sets.push('smtp_pass=?'); vals.push(smtpPass) }
     if (emailFrom                 !== undefined) { sets.push('email_from=?');                     vals.push(emailFrom || null) }
     if (emailFromName             !== undefined) { sets.push('email_from_name=?');                vals.push(emailFromName || 'AVI Asistente') }
     if (signupVerifyEnabled       !== undefined) { sets.push('signup_verify_enabled=?');         vals.push(signupVerifyEnabled ? 1 : 0) }
