@@ -59,13 +59,23 @@ async function hosFetch(cfg, path, { method = 'GET', body, query, timeoutMs } = 
 }
 
 // ── Normalizadores tolerantes ─────────────────────────────────────────────────
-function normRoom(r) {
+function normRoom(r, base = 'https://sys.hosroom.com') {
+  // Fotos tolerantes: 1) claves explícitas (preserva orden/portada), 2) deep-scan
+  // (imagesOf) que captura la galería sea cual sea su forma. TODO se normaliza a URL
+  // absoluta con la base de HosRoom (acepta rutas relativas). Antes solo miraba
+  // r.gallery/photos/images de nivel raíz y no absolutizaba → se perdían las fotos.
+  const explicit = arr(first(r.gallery, r.photos, r.images, r.pictures, r.photo, []))
+    .map(p => (typeof p === 'string' ? p : first(p.url, p.src, p.original, p.large, p.medium, p.path, p.image, p.file, p.href)))
+    .filter(Boolean)
+    .map(u => absImg(u, base))
+    .filter(Boolean)
+  const photos = [...new Set([...explicit, ...imagesOf(r, base)])]
   return {
     id: String(first(r.id, r.room_id, r.code, '')),
     name: first(r.name, r.title, 'Habitación'),
     capacity: Number(first(r.capacity, r.max_occupancy, 2)),
     description: first(r.description, r.summary, ''),
-    photos: arr(first(r.gallery, r.photos, r.images, [])).map(p => (typeof p === 'string' ? p : first(p.url, p.src, p.original))).filter(Boolean),
+    photos,
     rates: arr(first(r.rates, r.plans, [])).map(normRate),
     raw: r,
   }
@@ -88,6 +98,20 @@ function normRate(rt) {
     available: (() => { const n = Number(first(rt.available, rt.allotment, rt.quantity, rt.stock)); return isNaN(n) ? null : n })(),
     raw: rt,
   }
+}
+
+// Caché corta del payload /api/engine/settings (es pesado, ~25 s): habitaciones y
+// ficha de propiedad lo comparten para no pedirlo dos veces por operación.
+const _hosSettingsCache = new Map()   // token|base → { at, data }
+const HOS_SETTINGS_TTL = 60 * 1000
+async function hosSettings(cfg) {
+  const key = `${cfg.token}|${cfg.baseUrl || ''}`
+  const hit = _hosSettingsCache.get(key)
+  if (hit && Date.now() - hit.at < HOS_SETTINGS_TTL) return hit.data
+  const data = await hosFetch(cfg, '/api/engine/settings', { timeoutMs: 25000 })
+  _hosSettingsCache.set(key, { at: Date.now(), data })
+  if (_hosSettingsCache.size > 200) { for (const [k, v] of _hosSettingsCache) if (Date.now() - v.at > HOS_SETTINGS_TTL) _hosSettingsCache.delete(k) }
+  return data
 }
 
 const hosroom = {
@@ -120,9 +144,31 @@ const hosroom = {
   // /api/engine/settings devuelve un payload ENORME (catálogo de amenidades), lento
   // de generar → timeout amplio (25 s). Se cachea 5 min (getRoomsCached).
   async getRooms(cfg) {
-    const data = await hosFetch(cfg, '/api/engine/settings', { timeoutMs: 25000 })
+    const data = await hosSettings(cfg)
     const root = data?.settings || data || {}
-    return arr(first(root.rooms, root.data, [])).map(normRoom)
+    const base = cfg.baseUrl || 'https://sys.hosroom.com'
+    return arr(first(root.rooms, root.data, [])).map(r => normRoom(r, base))
+  },
+
+  // Ficha del hotel + FOTOS del establecimiento (áreas comunes), del mismo
+  // /api/engine/settings. Excluye las fotos que ya salen por habitación para no
+  // duplicar. photoSkip descarta las primeras X (p.ej. si la 1ª es un logo/banner).
+  async getProperty(cfg) {
+    const base = cfg.baseUrl || 'https://sys.hosroom.com'
+    const data = await hosSettings(cfg)
+    const root = data?.settings || data || {}
+    const hotel = root.hotel || root.property || root.establishment || root
+    const rooms = arr(first(root.rooms, root.data, []))
+    const roomPhotos = new Set(rooms.flatMap(r => imagesOf(r, base)))
+    let photos = imagesOf(hotel, base).filter(u => !roomPhotos.has(u))
+    const skip = Math.max(0, Number(cfg.photoSkip) || 0)
+    if (skip) photos = photos.slice(skip)
+    return {
+      id: String(first(hotel.id, cfg.propertyId, 'default')),
+      name: first(hotel.name, hotel.title, cfg.hotelName, ''),
+      description: first(hotel.description, hotel.summary, '') || '',
+      photos, raw: hotel,
+    }
   },
 
   // Disponibilidad por rango + ocupación. Laravel espera occupancy[adults]=N.
@@ -139,7 +185,8 @@ const hosroom = {
     const data = await hosFetch(cfg, '/api/engine/availability', { query })
     const root = data?.settings || data || {}
     const list = arr(first(root.rooms, root.availability, root.data, []))
-    return { rooms: list.map(normRoom), raw: data }
+    const base = cfg.baseUrl || 'https://sys.hosroom.com'
+    return { rooms: list.map(r => normRoom(r, base)), raw: data }
   },
 
   // Crea la reserva. availability = { [rateId]: cantidad }.
@@ -231,6 +278,18 @@ function datesOfStay(checkin, checkout) {
 }
 const IMG_KEY_RE = /(image|photo|foto|gallery|galer|img|media|picture|thumb|cover|banner|logo|avatar)/i
 const IMG_EXT_RE = /\.(jpe?g|png|webp|gif|avif|bmp|svg)(\?\S*)?$/i
+// Normaliza una posible URL de imagen a absoluta (acepta relativas //, /path, path).
+// Devuelve null si no parece una imagen/URL utilizable.
+function absImg(s, base = 'https://app.hotelsync.com') {
+  s = String(s || '').trim()
+  if (!s) return null
+  const b = (base || '').replace(/\/$/, '')
+  if (/^https?:\/\//i.test(s)) return s
+  if (s.startsWith('//')) return 'https:' + s
+  if (s.startsWith('/')) return b + s
+  if (IMG_EXT_RE.test(s) || s.includes('/')) return b + '/' + s.replace(/^\/+/, '')
+  return null
+}
 // Extrae URLs de imágenes de CUALQUIER forma de respuesta: recorre el objeto y
 // captura strings que sean URL de imagen (por extensión o por ruta) o valores bajo
 // claves tipo image/photo/foto/gallery/media…, normalizando a URL absoluta.
@@ -242,33 +301,23 @@ function imagesOf(o, base = 'https://app.hotelsync.com') {
   }
   const walk = (v, depth) => {
     if (v == null || depth > 6) return
-    if (typeof v === 'string') { const s = v.trim(); if (/^https?:\/\//i.test(s) && (IMG_EXT_RE.test(s) || /\/(images?|photos?|fotos?|uploads?|media|gallery|files?)\//i.test(s))) raw.push(s); return }
+    if (typeof v === 'string') { const s = v.trim(); const looksImg = IMG_EXT_RE.test(s) || /\/(images?|photos?|fotos?|uploads?|media|gallery|files?)\//i.test(s); if (looksImg && /^(https?:\/\/|\/\/|\/)/i.test(s)) raw.push(s); return }
     if (Array.isArray(v)) { v.forEach(x => walk(x, depth + 1)); return }
     if (typeof v === 'object') {
       for (const [k, val] of Object.entries(v)) {
         if (IMG_KEY_RE.test(k)) {
           if (typeof val === 'string') String(val).split(/[,|;\n]/).forEach(s => { if (s.trim()) raw.push(s.trim()) })
-          else if (Array.isArray(val)) val.forEach(pushObj)
-          else pushObj(val)
+          else if (Array.isArray(val)) { val.forEach(pushObj); val.forEach(x => walk(x, depth + 1)) }
+          else { pushObj(val); walk(val, depth + 1) }
         } else walk(val, depth + 1)
       }
     }
   }
   walk(o, 0)
-  const b = (base || 'https://app.hotelsync.com').replace(/\/$/, '')
-  const norm = s => {
-    s = String(s || '').trim()
-    if (!s) return null
-    if (/^https?:\/\//i.test(s)) return s
-    if (s.startsWith('//')) return 'https:' + s
-    if (s.startsWith('/')) return b + s
-    if (IMG_EXT_RE.test(s) || s.includes('/')) return b + '/' + s.replace(/^\/+/, '')
-    return null
-  }
   // Excluye elementos que NO son fotos reales (íconos de UI, placeholders, banderas,
   // amenidades…). El LOGO no se filtra aquí: eso lo controla photoSkip por posición.
   const BAD = /(favicon|sprite|placeholder|no[-_]?image|noimage|not[-_]?found|blank|pixel|spacer|loader|loading|1x1|amenit|icon[s]?[\/._-]|\/flags?\/|default[-_.])/i
-  return [...new Set(raw.map(norm).filter(Boolean))].filter(u => !BAD.test(u))
+  return [...new Set(raw.map(s => absImg(s, base)).filter(Boolean))].filter(u => !BAD.test(u))
 }
 function normRoomKunas(rt) {
   return {
