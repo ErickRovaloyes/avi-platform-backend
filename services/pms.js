@@ -292,9 +292,11 @@ async function toolCall(accId, fn, args = {}, { convId, agId } = {}) {
     scoped = r.cfg
   }
 
-  // ── Ver habitaciones (con fotos) ──────────────────────────────────────────
-  // Cada llamada envía fotos NUEVAS (no repetidas). Al agotarse, avisa; con
-  // desde_inicio=true reenvía desde el principio.
+  // ── Ver habitaciones ──────────────────────────────────────────────────────
+  // POR DEFECTO devuelve la LISTA en texto (nombre, capacidad y descripción) para que
+  // el asistente enumere las habitaciones. Solo envía FOTOS si el cliente las pide:
+  // "habitacion"=<nombre> (fotos+ficha de una) o "fotos"=true (panorama). Cada envío
+  // de fotos manda fotos NUEVAS; desde_inicio=true reenvía desde el principio.
   if (fn === 'ver_habitaciones') {
     const [roomsAll, property] = await Promise.all([
       getRoomsCached(accId, scoped),
@@ -304,6 +306,7 @@ async function toolCall(accId, fn, args = {}, { convId, agId } = {}) {
     const propPhotos = (property?.photos || []).filter(Boolean)
     const propName = property?.name || cfg.hotelName || ''
     const reset = args.desde_inicio === true || /^(true|1|si|sí)$/i.test(String(args.desde_inicio || ''))
+    const wantPhotos = args.fotos === true || /^(true|1|si|sí)$/i.test(String(args.fotos || '')) || reset
     const maxPhotos = pub.maxPhotos
 
     const wanted = norm(args.habitacion || '')
@@ -320,13 +323,18 @@ async function toolCall(accId, fn, args = {}, { convId, agId } = {}) {
       return sendPhotoBatch(roomPool, photoKey(convId, scoped.propertyId, room.id), { maxPhotos, reset, label: room.name, extra: ficha })
     }
 
-    // Panorama / propiedad: pool = TODAS las fotos de las habitaciones + de la propiedad.
+    // Sin habitación concreta.
+    if (!rooms.length) return { text: property?.description ? `${propName}${propName ? ': ' : ''}${property.description}` : 'El PMS no devolvió habitaciones para esta propiedad.' }
+    const list = rooms.map(r => `• ${r.name} — capacidad ${r.capacity} persona(s)${r.description ? ` — ${String(r.description).slice(0, 160)}` : ''}`).join('\n')
+    // Por defecto: LISTA en texto (no spamear fotos cuando solo preguntan qué hay).
+    if (!wantPhotos) {
+      return { text: `Habitaciones${propName ? ` de ${propName}` : ''}:\n${list}\n\nEnuméraselas al cliente por su NOMBRE (no mandes fotos salvo que las pida). Para FOTOS de una, llama ver_habitaciones con "habitacion": <nombre>; para el panorama, con "fotos": true. Para precios y cupo real, usa ver_disponibilidad_hotel con fechas.` }
+    }
+    // Panorama de fotos (solo si el cliente las pidió): habitaciones + propiedad.
     const poolAll = [...(rooms.flatMap(r => r.photos || [])), ...propPhotos]
-    const list = rooms.length ? rooms.map(r => `• ${r.name} — capacidad ${r.capacity}${r.description ? ` — ${String(r.description).slice(0, 110)}` : ''}`).join('\n') : ''
-    const extra = rooms.length ? `Habitaciones:\n${list}\nPide ver_habitaciones con el nombre para la ficha de una, o consulta disponibilidad con fechas.` : (property?.description || '')
+    const extra = `Habitaciones:\n${list}\nPide ver_habitaciones con el nombre para la ficha de una.`
     const res = sendPhotoBatch(poolAll, photoKey(convId, scoped.propertyId, 'all'), { maxPhotos, reset, label: propName, extra })
-    // Sin fotos pero con habitaciones: al menos lista las habitaciones.
-    if (!res.media?.length && rooms.length && !poolAll.length) return { text: `Habitaciones${propName ? ` de ${propName}` : ''}:\n${list}\n\nEste PMS no tiene fotos publicadas; consulta disponibilidad con fechas.` }
+    if (!res.media?.length && !poolAll.length) return { text: `Habitaciones${propName ? ` de ${propName}` : ''}:\n${list}\n\nEste PMS no tiene fotos publicadas; consulta disponibilidad con fechas.` }
     return res
   }
 

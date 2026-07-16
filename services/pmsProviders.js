@@ -221,11 +221,26 @@ const hosroom = {
     }
   },
 
-  // Diagnóstico: respuestas crudas para afinar el mapeo.
+  // Diagnóstico: respuestas crudas para afinar el mapeo. Incluye una DISPONIBILIDAD
+  // de ejemplo (2 noches desde mañana, 2 adultos) para ver dónde vienen precios/cupos.
+  // Los campos "focalizados" (rooms+rates recortados) van PRIMERO para que sobrevivan
+  // al recorte de tamaño del diagnóstico.
   async debug(cfg) {
     const out = {}
-    try { out.settings = await hosFetch(cfg, '/api/engine/settings') } catch (e) { out.settingsError = e.message }
-    try { out.hotel = await hosFetch(cfg, '/api/hotel') } catch (e) { out.hotelError = e.message }
+    const trimRooms = root => arr(first(root?.rooms, root?.availability, root?.data, [])).map(r => ({
+      id: r.id, name: r.name, capacity: r.capacity,
+      photos: arr(first(r.gallery, r.photos, r.images, [])).length,
+      rates: r.rates || r.plans || [],
+    }))
+    try {
+      const ci = new Date(Date.now() + 86400000).toISOString().slice(0, 10)
+      const co = new Date(Date.now() + 3 * 86400000).toISOString().slice(0, 10)
+      const av = await hosFetch(cfg, '/api/engine/availability', { query: { checkin: ci, checkout: co, 'occupancy[adults]': 2 } })
+      const avRoot = av?.settings || av || {}
+      out.availability = { checkin: ci, checkout: co, occupancyAdults: 2, topLevelKeys: Object.keys(avRoot), rooms: trimRooms(avRoot), raw: av }
+    } catch (e) { out.availabilityError = e.message }
+    try { const s = await hosFetch(cfg, '/api/engine/settings'); out.settingsRooms = trimRooms(s?.settings || s || {}) } catch (e) { out.settingsError = e.message }
+    try { const h = await hosFetch(cfg, '/api/hotel'); out.hotel = first(h?.data?.name, h?.name, '(sin nombre)') } catch (e) { out.hotelError = e.message }
     return out
   },
 

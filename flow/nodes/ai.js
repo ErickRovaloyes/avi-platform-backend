@@ -447,9 +447,10 @@ function buildPmsToolDefs(account) {
   )
   defs.push(
     { type: 'function', function: { name: 'ver_habitaciones',
-      description: `Muestra las habitaciones${hotel} con sus FOTOS reales, capacidad y planes. Úsalo cuando el cliente pregunte por las habitaciones o pida fotos. Cada vez que lo llames envía fotos NUEVAS (distintas a las ya enviadas); si el cliente pide "más fotos", vuelve a llamarlo. Cuando ya no queden más, la herramienta lo indica y puedes reenviarlas desde el principio con desde_inicio=true.`,
+      description: `Lista las habitaciones/tipos${hotel} (nombre, capacidad y descripción) EN TEXTO. Úsalo cuando el cliente pregunte "qué habitaciones tienen" y enuméraselas por su NOMBRE. NO envía fotos por defecto. Envía FOTOS solo si el cliente las pide: "habitacion"=<nombre> para las fotos+ficha de una, o "fotos"=true para el panorama. Cada envío de fotos manda fotos NUEVAS; si el cliente pide "más fotos", vuelve a llamarlo; con desde_inicio=true reenvía desde el principio.`,
       parameters: { type: 'object', properties: {
-        habitacion: { type: 'string', description: 'Nombre de una habitación concreta para enviar sus fotos y ficha (vacío = panorama de la propiedad)' },
+        habitacion: { type: 'string', description: 'Nombre de una habitación concreta para enviar sus FOTOS y ficha (vacío = solo lista/panorama)' },
+        fotos: { type: 'boolean', description: 'true SOLO si el cliente pide ver fotos (envía el panorama). Por defecto (false) la función solo lista las habitaciones en texto.' },
         desde_inicio: { type: 'boolean', description: 'true para reenviar las fotos desde el principio (cuando el cliente ya vio todas y quiere verlas otra vez)' },
         ...propParam,
       } } } },
