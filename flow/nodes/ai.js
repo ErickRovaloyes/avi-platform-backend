@@ -677,8 +677,15 @@ function parseTextArgs(raw) {
 }
 
 async function callAI(ctx, { systemPrompt, userPrompt, model, provider, maxTokens = 800, temperature = 0.5, jsonMode = false, history = [], tools = [], onToolCall, onTools, onResolved }) {
-  const prov = provider || detectProvider(model || 'gpt-4o-mini')
-  const finalModel = model || DEFAULT_MODEL[prov] || 'gpt-4o-mini'
+  // Fallback CENTRAL: cuando el nodo no fija modelo (Chat IA, Clasificador, Extractor,
+  // Sentimiento, Router…), se usa el modelo/proveedor por defecto de la PLATAFORMA (lo
+  // gobierna el super admin), NO 'gpt-4o-mini'. Así ningún nodo IA corre gpt-4o-mini por
+  // sorpresa cuando la plataforma usa DeepSeek.
+  const platModel = ctx?.account?.defaultPromptModel || ''
+  const platProvider = ctx?.account?.defaultPromptProvider || ''
+  const effModel = model || platModel
+  const prov = provider || platProvider || detectProvider(effModel || 'gpt-4o-mini')
+  const finalModel = effModel || DEFAULT_MODEL[prov] || 'gpt-4o-mini'
   const apiKey = getApiKey(ctx.account, prov)
   if (typeof onResolved === 'function') {
     onResolved({ provider: prov, model: finalModel, keySource: apiKey ? 'account' : 'none' })
