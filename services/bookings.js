@@ -66,41 +66,19 @@ function mapCalendar(r) {
   }
 }
 
-// Campos de una reserva disponibles para guardar en variables (fuentes del mapeo).
-const BOOKING_VAR_SOURCES = ['nombre', 'telefono', 'email', 'fecha', 'hora', 'servicio', 'nota', 'duracion', 'calendario', 'bookingId', 'fijo']
-
-// Resuelve las variables a guardar al crear una reserva, según calendar.bookingVars.
-// Devuelve { [variableId]: valor } listo para escribir en local_vars de la conversación.
-// `source` = campo de la cita (nombre/telefono/…); source 'fijo' usa `value` como
-// plantilla que admite {fecha} {hora} {nombre} {servicio}… de la propia reserva.
-function resolveBookingVars(calendar, booking = {}) {
-  const maps = Array.isArray(calendar?.bookingVars) ? calendar.bookingVars : []
-  if (!maps.length) return {}
-  const fields = {
-    nombre: booking.clientName || '',
-    telefono: booking.clientPhone || '',
-    email: booking.clientEmail || '',
-    fecha: booking.date || '',
-    hora: booking.time || '',
-    servicio: booking.service || booking.type || '',
-    nota: booking.notes || '',
-    duracion: booking.duration != null ? String(booking.duration) : '',
-    calendario: calendar?.name || '',
-    bookingId: booking.id || '',
-  }
-  const interp = t => String(t == null ? '' : t).replace(/\{(\w+)\}/g, (_, k) => (fields[k] != null ? fields[k] : `{${k}}`))
-  const out = {}
-  for (const m of maps) {
-    const varId = m && (m.variable || m.varId || m.id)
-    if (!varId) continue
-    let val
-    if (m.source === 'fijo' || m.source === 'literal') val = interp(m.value)
-    else if (m.source && fields[m.source] !== undefined) val = fields[m.source]
-    else if (m.value !== undefined && m.value !== '') val = interp(m.value)   // sin source: value como plantilla
-    else continue
-    out[varId] = val
-  }
-  return out
+// Campos "guardar en variable" del calendario (calendar.bookingVars):
+//   [{ label, variable }]  — label = texto libre que la IA lee para saber qué dato
+//   obtener de la conversación al agendar; variable = dónde guardarlo (id de variable
+//   personalizada o nombre de variable de sistema).
+// Cada label se expone como parámetro de la función agendar_cita. Este helper deriva
+// el nombre de ese parámetro de forma DETERMINISTA (mismo label → mismo nombre en el
+// schema y en la ejecución). Prefijo "dato_" para no chocar con los parámetros propios
+// de agendar_cita (fecha, hora, servicio, nombre, telefono, email, nota).
+function bookingVarParam(label) {
+  const base = String(label || '')
+    .normalize('NFD').replace(/[̀-ͯ]/g, '')
+    .toLowerCase().replace(/[^a-z0-9]+/g, '_').replace(/^_+|_+$/g, '').slice(0, 48)
+  return 'dato_' + (base || 'x')
 }
 
 function mapBooking(r) {
@@ -570,5 +548,5 @@ module.exports = {
   setBookingStatus, updateBooking, deleteBooking,
   findOrCreateCustomer, getCustomerHistory, allocateSlot,
   confirmPrepaidBooking, releaseStalePendingPayments, startPaymentSweeper,
-  resolveBookingVars, BOOKING_VAR_SOURCES,
+  bookingVarParam,
 }

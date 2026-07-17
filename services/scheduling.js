@@ -32,7 +32,7 @@ async function publicConfig(accId) {
   return {
     connected: cals.length > 0,
     calendarIds: cals.map(c => c.id),
-    calendars: cals.map(c => ({ id: c.id, name: c.name, description: c.description || '', timezone: c.timezone })),
+    calendars: cals.map(c => ({ id: c.id, name: c.name, description: c.description || '', timezone: c.timezone, bookingVars: Array.isArray(c.bookingVars) ? c.bookingVars : [] })),
     timezone: cals[0]?.timezone || cfg.timezone || 'America/Lima',
   }
 }
@@ -298,8 +298,14 @@ async function toolCall(accId, fn, args = {}, meta = {}) {
             if (cust.phone && !lv.telefono) lv.telefono = cust.phone
             if (cust.email && !lv.email) lv.email = cust.email
             lv._bookingIds = [...new Set([...(Array.isArray(lv._bookingIds) ? lv._bookingIds : []), bk.id])].slice(-20)
-            // Variables configuradas en el calendario (Citas → "Guardar en variables").
-            Object.assign(lv, bookings.resolveBookingVars(cal, { ...bk, service: args.servicio }))
+            // Campos "guardar en variable" del calendario: la IA extrae cada dato de la
+            // conversación y lo pasa como argumento (dato_<slug de la etiqueta>). Se
+            // guarda en la variable indicada (id personalizada o nombre de sistema).
+            for (const bv of (Array.isArray(cal.bookingVars) ? cal.bookingVars : [])) {
+              if (!bv?.label || !bv?.variable) continue
+              const val = args[bookings.bookingVarParam(bv.label)]
+              if (val !== undefined && val !== null && String(val).trim() !== '') lv[bv.variable] = val
+            }
             await pool.query('UPDATE conversations SET local_vars=? WHERE id=? AND account_id=?', [JSON.stringify(lv), meta.convId, accId])
           }
         } catch { /* no bloquea el agendado */ }

@@ -127,11 +127,6 @@ const calendarNodes = [
       }, { validate: true })
       if (node.data?.destino) await setVarBoth(ctx, node.data.destino, bk.id)
       ctx.variables._last_booking_id = bk.id
-      // Variables configuradas en el calendario (Citas → "Guardar en variables").
-      try {
-        const cal = await bookings.getCalendar(ctx.accId, calId)
-        for (const [k, v] of Object.entries(bookings.resolveBookingVars(cal, bk))) await setVarBoth(ctx, k, v)
-      } catch {}
       logDebug(ctx, 'flow_run', `✅ Reserva ${bk.id} · ${date} ${time}`, {})
     },
   },
