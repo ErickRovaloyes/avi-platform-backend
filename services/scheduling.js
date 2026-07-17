@@ -302,6 +302,16 @@ async function toolCall(accId, fn, args = {}, meta = {}) {
             if (cust.phone && !lv.telefono) lv.telefono = cust.phone
             if (cust.email && !lv.email) lv.email = cust.email
             lv._bookingIds = [...new Set([...(Array.isArray(lv._bookingIds) ? lv._bookingIds : []), bk.id])].slice(-20)
+            // Variables de SISTEMA de la cita (_cita_*): quedan en la conversación tras
+            // agendar y se usan como cualquier variable ({{_cita_fecha}}, {{_cita_hora}}…)
+            // en flujos, prompts y plantillas. Prefijo _cita_ = no chocan con otras.
+            Object.assign(lv, {
+              _cita_id: bk.id, _cita_cliente: cust.name || '',
+              _cita_servicio: args.servicio || cal.name || '', _cita_calendario: cal.name || '',
+              _cita_fecha: date, _cita_hora: time,
+              _cita_telefono: cust.phone || '', _cita_email: cust.email || '',
+              _cita_duracion: String(bk.duration || durMin(cal)), _cita_notas: args.nota || '',
+            })
             // Campos "guardar en variable" del calendario: la IA extrae cada dato de la
             // conversación y lo pasa como argumento (dato_<slug de la etiqueta>). Se
             // guarda en la variable indicada (id personalizada o nombre de sistema).

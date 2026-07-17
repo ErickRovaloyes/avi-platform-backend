@@ -45,7 +45,11 @@ function fillTemplate(tpl, calendar, booking) {
     fecha: booking.date || '', hora: booking.time || '', telefono: booking.clientPhone || '',
     email: booking.clientEmail || '', duracion: String(booking.duration || ''), notas: booking.notes || '', id: booking.id || '',
   }
-  return String(tpl || '').replace(/\{(\w+)\}/g, (_, k) => (map[k] != null ? map[k] : `{${k}}`))
+  // Alias de sistema: {_cita_fecha} == {fecha}, etc. Son las mismas variables que la
+  // plataforma expone como variables de sistema de la cita (_cita_*), así la plantilla
+  // del evento y el resto de la plataforma hablan el mismo idioma. Se acepta {var} y {{var}}.
+  for (const [k, v] of Object.entries({ ...map })) map[`_cita_${k}`] = v
+  return String(tpl || '').replace(/\{\{?(\w+)\}\}?/g, (m0, k) => (map[k] != null ? map[k] : m0))
 }
 
 function buildEvent(calendar, booking) {

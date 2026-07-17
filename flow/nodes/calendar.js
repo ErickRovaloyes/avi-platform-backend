@@ -128,6 +128,18 @@ const calendarNodes = [
       }, { validate: true })
       if (node.data?.destino) await setVarBoth(ctx, node.data.destino, bk.id)
       ctx.variables._last_booking_id = bk.id
+      // Variables de sistema de la cita (_cita_*): mismas que produce agendar_cita (IA).
+      try {
+        const cal = await bookings.getCalendar(ctx.accId, calId)
+        const cita = {
+          _cita_id: bk.id, _cita_cliente: bk.clientName || '',
+          _cita_servicio: cal?.name || '', _cita_calendario: cal?.name || '',
+          _cita_fecha: date, _cita_hora: time,
+          _cita_telefono: bk.clientPhone || '', _cita_email: bk.clientEmail || '',
+          _cita_duracion: String(bk.duration || ''), _cita_notas: bk.notes || '',
+        }
+        for (const [k, v] of Object.entries(cita)) await setVarBoth(ctx, k, v)
+      } catch {}
       logDebug(ctx, 'flow_run', `✅ Reserva ${bk.id} · ${date} ${time}`, {})
     },
   },
