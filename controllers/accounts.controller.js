@@ -175,6 +175,12 @@ async function loadPublicAccount(accId) {
     // Aviso por defecto (super admin) para clientes recurrentes; la IA lo usa si el
     // canal no define uno propio. Vacío → ai.js cae a su constante interna.
     returningNoticeDefault: pf?.returning_notice_default || '',
+    // Modelo/proveedor por defecto de la plataforma (super admin). Los nodos IA lo usan
+    // como fallback cuando el nodo/prompt no fija uno (en vez de 'gpt-4o-mini'). Debe
+    // estar TAMBIÉN aquí (no solo en getAccount) porque el flujo en canales reales usa
+    // este account.
+    defaultPromptProvider: pf?.default_prompt_provider || 'deepseek',
+    defaultPromptModel: pf?.default_prompt_model || 'deepseek-v4-flash',
     agents: agents.map(mapAgent),
     variables: variables.map(v => ({ id: v.id, name: v.name, type: v.type, defaultValue: v.default_value, description: v.description, isSystem: !!v.is_system })),
     aiTools:   [SPECIAL_CMS_TOOL, ...specialTools(), ...aiTools.map(t => ({ id: t.id, name: t.name, description: t.description, collectFields: parseJ(t.collect_fields, []), flowId: t.flow_id, actionType: t.action_type || 'variable' }))],
@@ -304,6 +310,7 @@ const getAccount = async (req, res) => {
         availability: parseJ(c.availability, {}), exceptions: parseJ(c.exceptions, []),
         appointment: parseJ(c.appointment, {}), formConfig: parseJ(c.form_config, {}),
         notifications: parseJ(c.notifications, {}), integrations: parseJ(c.integrations, {}),
+        payment: parseJ(c.payment, {}), bookingVars: parseJ(c.booking_vars, []),
         flowId: c.flow_id || null, sharedGroup: c.shared_group || '',
         createdAt: c.created_at, updatedAt: c.updated_at,
       })),
