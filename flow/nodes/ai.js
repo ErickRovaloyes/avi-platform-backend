@@ -374,17 +374,23 @@ function buildAgendaToolDefs(account) {
   // scheduling.js guarda cada valor en su variable.
   const { bookingVarParam } = require('../../services/bookings')
   const collectProps = {}
+  const collectLabels = []
   for (const c of cals) {
     for (const bv of (c.bookingVars || [])) {
       if (!bv?.label || !bv?.variable) continue
       const p = bookingVarParam(bv.label)
-      if (!collectProps[p]) collectProps[p] = { type: 'string', description: bv.label }
+      if (!collectProps[p]) { collectProps[p] = { type: 'string', description: `Dato a capturar de la conversación: ${bv.label}. Rellénalo si el cliente lo dio (no inventes).` }; collectLabels.push(bv.label) }
     }
   }
+  // Instrucción explícita para que el modelo NO olvide pasar estos datos al agendar.
+  const collectNote = collectLabels.length
+    ? ` IMPORTANTE: además de fecha/hora/nombre, INCLUYE como argumentos estos datos si el cliente los mencionó en la conversación (omítelos solo si no los dio): ${[...new Set(collectLabels)].join('; ')}.`
+    : ''
+  const agendarDesc = 'Agenda una cita. Úsalo SOLO cuando el cliente confirme fecha y hora (de las que diste por disponibilidad) y tengas su nombre.' + collectNote
   return [
     { type: 'function', function: { name: 'ver_disponibilidad', description: 'Muestra los horarios LIBRES de un calendario para una fecha. Úsalo cuando el cliente pregunte por disponibilidad de un día concreto. No inventes horarios.', parameters: { type: 'object', properties: { fecha: { type: 'string', description: 'Fecha TAL CUAL la dijo el cliente ("lunes", "el 15", "15 de julio", "mañana") o YYYY-MM-DD. NO calcules tú la fecha: pásala literal, el sistema la resuelve.' }, servicio: { type: 'string', description: servicioDesc } }, required: ['fecha'] } } },
     { type: 'function', function: { name: 'recomendar_citas', description: 'Recomienda las PRÓXIMAS citas disponibles (siguientes días con cupo). Úsalo cuando el cliente quiere agendar pero no fijó un día.', parameters: { type: 'object', properties: { servicio: { type: 'string', description: servicioDesc } } } } },
-    { type: 'function', function: { name: 'agendar_cita', description: 'Agenda una cita. Úsalo SOLO cuando el cliente confirme fecha y hora (de las que diste por disponibilidad) y tengas su nombre.', parameters: { type: 'object', properties: { fecha: { type: 'string', description: 'Fecha tal cual la dijo el cliente ("lunes", "15 de julio") o YYYY-MM-DD; NO la calcules tú.' }, hora: { type: 'string', description: 'HH:MM' }, servicio: { type: 'string', description: servicioDesc }, nombre: { type: 'string', description: 'Nombre del cliente' }, telefono: { type: 'string' }, email: { type: 'string' }, nota: { type: 'string' }, ...collectProps }, required: ['fecha', 'hora'] } } },
+    { type: 'function', function: { name: 'agendar_cita', description: agendarDesc, parameters: { type: 'object', properties: { fecha: { type: 'string', description: 'Fecha tal cual la dijo el cliente ("lunes", "15 de julio") o YYYY-MM-DD; NO la calcules tú.' }, hora: { type: 'string', description: 'HH:MM' }, servicio: { type: 'string', description: servicioDesc }, nombre: { type: 'string', description: 'Nombre del cliente' }, telefono: { type: 'string' }, email: { type: 'string' }, nota: { type: 'string' }, ...collectProps }, required: ['fecha', 'hora'] } } },
     { type: 'function', function: { name: 'mover_cita', description: 'Reagenda la cita del cliente a otra fecha/hora.', parameters: { type: 'object', properties: { nueva_fecha: { type: 'string', description: 'Fecha tal cual la dijo el cliente ("lunes", "15 de julio") o YYYY-MM-DD; NO la calcules tú.' }, nueva_hora: { type: 'string', description: 'HH:MM' }, telefono: { type: 'string' }, bookingId: { type: 'string', description: 'id de la cita si el cliente tiene varias' } }, required: ['nueva_fecha', 'nueva_hora'] } } },
     { type: 'function', function: { name: 'cancelar_cita', description: 'Cancela la cita del cliente.', parameters: { type: 'object', properties: { telefono: { type: 'string' }, bookingId: { type: 'string', description: 'id de la cita si tiene varias' } } } } },
     { type: 'function', function: { name: 'ver_mis_citas', description: 'Muestra las citas del cliente: las ACTIVAS/próximas y las ANTERIORES (historial). Úsalo cuando el cliente pregunte "¿qué citas tengo?" o por su historial.', parameters: { type: 'object', properties: { telefono: { type: 'string', description: 'Teléfono del cliente (si no, se toma el de la conversación)' } } } } },

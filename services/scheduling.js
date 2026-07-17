@@ -305,12 +305,25 @@ async function toolCall(accId, fn, args = {}, meta = {}) {
             // Campos "guardar en variable" del calendario: la IA extrae cada dato de la
             // conversación y lo pasa como argumento (dato_<slug de la etiqueta>). Se
             // guarda en la variable indicada (id personalizada o nombre de sistema).
-            for (const bv of (Array.isArray(cal.bookingVars) ? cal.bookingVars : [])) {
+            const bvList = Array.isArray(cal.bookingVars) ? cal.bookingVars : []
+            const bvSaved = {}, bvMissing = []
+            for (const bv of bvList) {
               if (!bv?.label || !bv?.variable) continue
-              const val = args[bookings.bookingVarParam(bv.label)]
-              if (val !== undefined && val !== null && String(val).trim() !== '') lv[bv.variable] = val
+              const pname = bookings.bookingVarParam(bv.label)
+              const val = args[pname]
+              if (val !== undefined && val !== null && String(val).trim() !== '') { lv[bv.variable] = val; bvSaved[bv.label] = val }
+              else bvMissing.push(`${bv.label} (${pname})`)
             }
             await pool.query('UPDATE conversations SET local_vars=? WHERE id=? AND account_id=?', [JSON.stringify(lv), meta.convId, accId])
+            // Diagnóstico visible en el debug del chat: cuántos datos se guardaron, cuáles
+            // faltaron (la IA no los pasó) y si el calendario tenía campos configurados.
+            if (bvList.length) {
+              try { require('../flow/store').appendDebugEntry(accId, meta.agId, meta.convId, {
+                type: bvMissing.length ? 'error' : 'flow_run',
+                title: `📥 Datos a variables (agenda): ${Object.keys(bvSaved).length}/${bvList.length} guardados`,
+                detail: { guardados: bvSaved, sinDatoDeLaIA: bvMissing, argsRecibidos: Object.keys(args || {}) },
+              }) } catch {}
+            }
           }
         } catch { /* no bloquea el agendado */ }
         return { text: `✅ Cita agendada en "${cal.name}" para ${cust.name} el ${prettyDate(date)} (${date}) a las ${time} (duración ${durMin(cal)} min). (id ${bk.id})` }
