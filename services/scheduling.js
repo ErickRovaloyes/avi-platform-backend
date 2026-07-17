@@ -298,6 +298,8 @@ async function toolCall(accId, fn, args = {}, meta = {}) {
             if (cust.phone && !lv.telefono) lv.telefono = cust.phone
             if (cust.email && !lv.email) lv.email = cust.email
             lv._bookingIds = [...new Set([...(Array.isArray(lv._bookingIds) ? lv._bookingIds : []), bk.id])].slice(-20)
+            // Variables configuradas en el calendario (Citas → "Guardar en variables").
+            Object.assign(lv, bookings.resolveBookingVars(cal, { ...bk, service: args.servicio }))
             await pool.query('UPDATE conversations SET local_vars=? WHERE id=? AND account_id=?', [JSON.stringify(lv), meta.convId, accId])
           }
         } catch { /* no bloquea el agendado */ }

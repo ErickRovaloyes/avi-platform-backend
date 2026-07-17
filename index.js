@@ -767,6 +767,9 @@ app.use('/api',                recontactRoutes)
      )`,
     "ALTER TABLE calendars ADD COLUMN notifications JSON",
     "ALTER TABLE calendars ADD COLUMN integrations JSON",
+    // Mapeos [{ variable, source, value }] para guardar datos de la cita en variables
+    // de la conversación al agendarse (nombre/teléfono/fecha/hora/servicio/… o valor fijo).
+    "ALTER TABLE calendars ADD COLUMN booking_vars JSON",
     `CREATE TABLE IF NOT EXISTS calendar_bookings (
        id           VARCHAR(50) PRIMARY KEY,
        account_id   VARCHAR(50) NOT NULL,
