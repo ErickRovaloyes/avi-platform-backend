@@ -310,7 +310,22 @@ async function toolCall(accId, fn, args = {}, meta = {}) {
             for (const bv of bvList) {
               if (!bv?.label || !bv?.variable) continue
               const pname = bookings.bookingVarParam(bv.label)
-              const val = args[pname]
+              let val = args[pname]
+              // Fallback DETERMINISTA: si la IA no duplicó el dato_* pero la etiqueta
+              // corresponde a un dato estándar de la cita (p.ej. "nombre paciente" ≈
+              // nombre, "email paciente" ≈ email), usa ese valor directamente. Los
+              // modelos suelen rellenar solo el parámetro estándar y omiten el dato_*
+              // duplicado — sin este fallback, esos casos quedaban sin guardar.
+              if (val === undefined || val === null || String(val).trim() === '') {
+                const nl = String(bv.label).normalize('NFD').replace(/[̀-ͯ]/g, '').toLowerCase()
+                if (/nombre|name/.test(nl)) val = cust.name || args.nombre
+                else if (/tel|phone|cel|whats/.test(nl)) val = cust.phone || args.telefono
+                else if (/mail|correo/.test(nl)) val = cust.email || args.email
+                else if (/nota|coment|observa|motivo/.test(nl)) val = args.nota
+                else if (/fecha|date/.test(nl)) val = date
+                else if (/hora|time/.test(nl)) val = time
+                else if (/servicio|calendario|agenda/.test(nl)) val = args.servicio || cal.name
+              }
               if (val !== undefined && val !== null && String(val).trim() !== '') { lv[bv.variable] = val; bvSaved[bv.label] = val }
               else bvMissing.push(`${bv.label} (${pname})`)
             }
