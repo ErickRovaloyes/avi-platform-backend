@@ -449,6 +449,12 @@ async function updateBooking(accId, bookingId, updates = {}) {
 }
 
 async function deleteBooking(accId, bookingId) {
+  // Antes del borrado duro, elimina el evento en Google/Outlook (con sendUpdates=all
+  // → notifica y lo quita del calendario del invitado). Best-effort, no bloquea.
+  try {
+    const bk = await getBooking(accId, bookingId)
+    if (bk) { const calendar = await getCalendar(accId, bk.calendarId); if (calendar) await sync.pushBooking(accId, calendar, bk, 'delete') }
+  } catch (e) { console.warn('[deleteBooking sync]', e.message) }
   await pool.query('DELETE FROM booking_allocations WHERE booking_id=? AND account_id=?', [bookingId, accId]).catch(() => {})
   await pool.query('DELETE FROM calendar_bookings WHERE id=? AND account_id=?', [bookingId, accId])
 }

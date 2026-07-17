@@ -150,8 +150,16 @@ const rescheduleBooking = async (req, res) => {
 
 const setStatus = async (req, res) => {
   const { accId, bookingId } = req.params
-  try { res.json(await bookings.setBookingStatus(accId, bookingId, req.body?.status)) }
-  catch (err) { res.status(400).json({ error: err.message || 'Error' }) }
+  const status = req.body?.status
+  try {
+    // 'cancelled' debe pasar por cancelBooking: emite BookingCancelled → borra el
+    // evento en Google/Outlook y notifica al invitado. setBookingStatus lo omite
+    // (para no duplicar), así que enrutamos aquí para que cancelar SÍ sincronice.
+    const bk = status === 'cancelled'
+      ? await bookings.cancelBooking(accId, bookingId)
+      : await bookings.setBookingStatus(accId, bookingId, status)
+    res.json(bk)
+  } catch (err) { res.status(400).json({ error: err.message || 'Error' }) }
 }
 
 const deleteBooking = async (req, res) => {

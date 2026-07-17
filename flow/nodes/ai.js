@@ -868,9 +868,16 @@ const aiNodes = [
       } catch (e) { logDebug(ctx, 'error', `enforcement no disponible: ${e.message}`, {}) }
 
       const mode = node.data?.promptMode || 'inline'
+      // El modelo/proveedor lo gobierna el super admin (default de plataforma). Se usa
+      // como fallback cuando el nodo (inline) o el prompt no fijan uno propio, y para
+      // reemplazar el legacy 'gpt-4o-mini' que traían por defecto los nodos inline
+      // antiguos — así el nodo queda sincronizado con el modelo real de la plataforma.
+      const platModel = ctx.account?.defaultPromptModel || ''
+      const platProvider = ctx.account?.defaultPromptProvider || ''
       let systemPrompt = ''
-      let model = node.data?.modelo || 'gpt-4o-mini'
-      let provider
+      let model = node.data?.modelo || platModel || 'gpt-4o-mini'
+      if (model === 'gpt-4o-mini' && platModel && platModel !== 'gpt-4o-mini') model = platModel
+      let provider = (model === platModel && platProvider) ? platProvider : undefined
       let temperature = Number(node.data?.temperatura ?? 0.5)
       let promptLabel = 'inline'
       let assignedTools = []
@@ -889,8 +896,8 @@ const aiNodes = [
           throw new Error(msg)
         }
         systemPrompt = chosen.content || ''
-        provider = chosen.provider || undefined
-        model    = chosen.model || undefined
+        provider = chosen.provider || platProvider || undefined
+        model    = chosen.model || platModel || undefined
         const t = chosen.advanced?.temperature ?? chosen.temperature
         if (t != null) temperature = Number(t)
         promptLabel = chosen.name || '(sin nombre)'

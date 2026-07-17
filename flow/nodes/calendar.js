@@ -124,6 +124,7 @@ const calendarNodes = [
         clientPhone: interpolate(node.data?.telefono || '', ctx.variables),
         clientEmail: interpolate(node.data?.email || '', ctx.variables),
         channel: 'flow', status: 'confirmed',
+        meta: ctx.convId ? { conversationId: ctx.convId } : undefined,
       }, { validate: true })
       if (node.data?.destino) await setVarBoth(ctx, node.data.destino, bk.id)
       ctx.variables._last_booking_id = bk.id
@@ -227,6 +228,7 @@ const calendarNodes = [
         clientPhone: interpolate(node.data?.telefono || '', ctx.variables),
         clientEmail: interpolate(node.data?.email || '', ctx.variables),
         channel: 'flow', status: 'confirmed',
+        meta: ctx.convId ? { conversationId: ctx.convId } : undefined,
       }, { validate: true })
       if (node.data?.destino) await setVarBoth(ctx, node.data.destino, bk.id)
       ctx.variables._last_booking_id = bk.id

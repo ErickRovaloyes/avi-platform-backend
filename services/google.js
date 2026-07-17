@@ -366,14 +366,17 @@ async function calApi(token, path, { method = 'GET', body, qs } = {}) {
   if (!res.ok) throw new Error(data?.error?.message || `Calendar HTTP ${res.status}`)
   return data
 }
+// sendUpdates=all → Google envía la invitación/actualización/cancelación al invitado
+// (attendee) y le refleja el evento en SU propio calendario. Sin esto, el invitado no
+// se entera de reagendas/cancelaciones y el evento no se le crea/actualiza/borra.
 function createCalendarEvent(token, calendarId, event) {
-  return calApi(token, `calendars/${encodeURIComponent(calendarId)}/events`, { method: 'POST', body: event })
+  return calApi(token, `calendars/${encodeURIComponent(calendarId)}/events`, { method: 'POST', body: event, qs: { sendUpdates: 'all' } })
 }
 function updateCalendarEvent(token, calendarId, eventId, event) {
-  return calApi(token, `calendars/${encodeURIComponent(calendarId)}/events/${encodeURIComponent(eventId)}`, { method: 'PATCH', body: event })
+  return calApi(token, `calendars/${encodeURIComponent(calendarId)}/events/${encodeURIComponent(eventId)}`, { method: 'PATCH', body: event, qs: { sendUpdates: 'all' } })
 }
 async function deleteCalendarEvent(token, calendarId, eventId) {
-  const url = `${CALENDAR}/calendars/${encodeURIComponent(calendarId)}/events/${encodeURIComponent(eventId)}`
+  const url = `${CALENDAR}/calendars/${encodeURIComponent(calendarId)}/events/${encodeURIComponent(eventId)}?sendUpdates=all`
   const res = await fetch(url, { method: 'DELETE', headers: { Authorization: `Bearer ${token}` } })
   if (!res.ok && res.status !== 404 && res.status !== 410) throw new Error(`Calendar delete HTTP ${res.status}`)
   return true

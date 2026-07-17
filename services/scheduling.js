@@ -287,6 +287,10 @@ async function toolCall(accId, fn, args = {}, meta = {}) {
         const bk = await bookings.createBooking(accId, cal.id, {
           date, time, clientName: cust.name, clientPhone: cust.phone, clientEmail: cust.email,
           channel: 'ia', notes: args.nota || '',
+          // Vincula la reserva a la conversación ACTUAL: así las notificaciones y el
+          // flujo post-reserva corren en este mismo chat (no crean una conversación
+          // aparte por el teléfono del cliente) y los datos quedan aquí.
+          meta: meta.convId ? { conversationId: meta.convId } : undefined,
         })
         // Vincula la cita a la CONVERSACIÓN: guarda teléfono/email del cliente y el
         // id de la reserva en local_vars. Así el panel del Inbox (📅 Citas) y
