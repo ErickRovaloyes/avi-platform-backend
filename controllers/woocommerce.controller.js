@@ -115,14 +115,24 @@ const createOrder = async (req, res) => {
 
 // ── Pestaña "Productos" (autenticado): listar + editar (conexión doble canal) ───
 const productIndex = require('../services/productIndex')
-// GET /woocommerce/:accId/all-products?page=&cursor=&search=  → página con flag `indexed`.
+// GET /woocommerce/:accId/all-products?page=&cursor=&search=&mode=
+//   mode='semantic' → busca por la BASE VECTORIAL (comparación); si no, búsqueda
+//   tradicional (API de la tienda). En ambos casos marca `indexed` por producto.
 const listProducts = async (req, res) => {
   const { accId } = req.params
   try {
+    const search = String(req.query.search || '')
+    if (req.query.mode === 'semantic') {
+      if (!search.trim()) return res.json({ products: [], hasMore: false, semantic: true })
+      const r = await productIndex.searchVector(accId, search, { limit: 30, source: 'store' })
+      // null = índice vacío o sin API key de OpenAI → el front lo indica.
+      if (r === null) return res.json({ products: [], hasMore: false, semantic: true, unavailable: true })
+      return res.json({ products: (r || []).map(p => ({ ...p, indexed: true })), hasMore: false, semantic: true })
+    }
     const r = await store.fetchProductsPage(accId, {
       page: Number(req.query.page) || 1,
       cursor: req.query.cursor || null,
-      search: req.query.search || '',
+      search,
     })
     const idx = await productIndex.indexedIds(accId, 'store').catch(() => new Set())
     r.products = (r.products || []).map(p => ({ ...p, indexed: idx.has(String(p.id)) }))
