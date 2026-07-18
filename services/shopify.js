@@ -256,12 +256,23 @@ async function createOrder(accId, { items, customer = {}, convId = null, agId = 
     .map(it => ({ variant_id: Number(it.variantId || it.variant_id), quantity: Math.max(1, Number(it.quantity || 1)) }))
     .filter(li => li.variant_id)
   if (!lineItems.length) throw new Error('No se pudo resolver la variante del producto en Shopify.')
+  const c = customer || {}
+  const fullName = String(c.nombre || c.name || '').trim()
+  const parts = fullName ? fullName.split(/\s+/) : []
+  const hasAddr = c.direccion || c.ciudad || c.codigo_postal
+  const shipping = hasAddr ? {
+    first_name: parts[0] || 'Cliente', last_name: parts.slice(1).join(' ') || '',
+    address1: c.direccion || '', address2: c.direccion2 || '', city: c.ciudad || '',
+    province: c.departamento || '', zip: c.codigo_postal || '', phone: c.telefono || c.phone || '',
+    ...(c.pais && String(c.pais).trim().length === 2 ? { country_code: String(c.pais).trim().toUpperCase() } : {}),
+  } : undefined
   const draft = await shopFetch(cfg, '/draft_orders.json', {
     method: 'POST',
     body: { draft_order: {
       line_items: lineItems,
-      email: customer.email || undefined,
-      note: 'Pedido creado por el asistente IA de AVI',
+      email: c.email || undefined,
+      ...(shipping ? { shipping_address: shipping } : {}),
+      note: c.notas ? String(c.notas).slice(0, 500) : 'Pedido creado por el asistente IA de AVI',
     } },
   })
   const d = draft?.draft_order || {}

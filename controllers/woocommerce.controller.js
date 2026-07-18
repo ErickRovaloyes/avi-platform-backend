@@ -62,6 +62,8 @@ const saveConfig = async (req, res) => {
       currency: b.currency ?? cur.currency ?? '',
       maxImagesPerProduct: b.maxImagesPerProduct != null ? Math.max(1, Math.min(10, parseInt(b.maxImagesPerProduct) || 4)) : (cur.maxImagesPerProduct ?? 4),
       abandonedCart: b.abandonedCart || cur.abandonedCart || { enabled: false, hours: 20, maxReminders: 1, message: '' },
+      // Datos a pedir al crear un pedido (envío/facturación): [{ key, required }].
+      orderForm: Array.isArray(b.orderForm) ? b.orderForm.map(f => ({ key: String(f.key), required: !!f.required })) : (cur.orderForm || undefined),
       webhook: cur.webhook || null,
     }
     // Si cambia la tienda/llaves, invalida el webhook anterior (apunta a otra tienda)

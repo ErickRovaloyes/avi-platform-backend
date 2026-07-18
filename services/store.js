@@ -19,6 +19,31 @@ async function saveConfig(accId, cfg) { await pool.query('UPDATE accounts SET wo
 const platformOf = cfg => (cfg?.platform === 'shopify' ? 'shopify' : 'woocommerce')
 const impl = cfg => (platformOf(cfg) === 'shopify' ? shopify : woo)
 
+// ── Datos del pedido (checkout) que la IA puede pedir al crear un pedido ─────────
+// key = identificador (también el nombre del parámetro de la herramienta crear_pedido);
+// label = texto en la UI. Se mapean a billing + shipping en createOrder.
+const ORDER_FIELD_CATALOG = [
+  { key: 'nombre',        label: 'Nombre completo' },
+  { key: 'email',         label: 'Email' },
+  { key: 'telefono',      label: 'Teléfono' },
+  { key: 'direccion',     label: 'Dirección de envío' },
+  { key: 'direccion2',    label: 'Apartamento / referencia' },
+  { key: 'ciudad',        label: 'Ciudad' },
+  { key: 'departamento',  label: 'Departamento / Estado' },
+  { key: 'codigo_postal', label: 'Código postal' },
+  { key: 'pais',          label: 'País (código ISO 2 letras, ej. CO)' },
+  { key: 'notas',         label: 'Notas del pedido' },
+]
+const ORDER_FIELD_LABELS = Object.fromEntries(ORDER_FIELD_CATALOG.map(f => [f.key, f.label]))
+// Por defecto (si no se configuró): nombre, email y teléfono obligatorios.
+const DEFAULT_ORDER_FORM = [{ key: 'nombre', required: true }, { key: 'email', required: true }, { key: 'telefono', required: true }]
+// Lista efectiva de campos a pedir (filtra claves inválidas; default si no hay config).
+function orderForm(cfg) {
+  const f = cfg?.orderForm
+  if (Array.isArray(f)) return f.filter(x => x && ORDER_FIELD_LABELS[x.key]).map(x => ({ key: x.key, required: !!x.required }))
+  return DEFAULT_ORDER_FORM
+}
+
 function isEnabled(cfg) { return impl(cfg).isEnabled(cfg) }
 const DEFAULT_MAX_IMAGES = 4
 function maxImages(cfg) { const n = parseInt(cfg?.maxImagesPerProduct); return n > 0 ? Math.min(n, 10) : DEFAULT_MAX_IMAGES }
@@ -34,6 +59,7 @@ function publicConfig(cfg) {
     maxImagesPerProduct: maxImages(cfg),
     gateway: cfg?.gateway || { mode: 'native' },
     abandonedCart: cfg?.abandonedCart || { enabled: false, hours: 20, maxReminders: 1, message: '' },
+    orderForm: orderForm(cfg),
     vectorIndex: {   // sin webhookSecret (no sale del servidor)
       enabled: !!vi.enabled, mode: vi.mode === 'scheduled' ? 'scheduled' : 'realtime',
       everyHours: vi.everyHours ?? 24, dayOfWeek: vi.dayOfWeek ?? null, hour: vi.hour ?? 3,
@@ -62,4 +88,5 @@ module.exports = {
   loadConfig, saveConfig, platformOf, isEnabled, maxImages, publicConfig,
   searchProducts, searchProductsSmart, fetchProductsPage, updateProduct,
   createOrder, getOrderStatus, testConnection, fetchStoreCurrency, woo, shopify,
+  ORDER_FIELD_CATALOG, ORDER_FIELD_LABELS, orderForm,
 }

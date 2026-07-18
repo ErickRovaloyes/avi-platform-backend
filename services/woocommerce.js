@@ -182,17 +182,34 @@ async function createOrder(accId, { items, customer = {}, convId = null, agId = 
   if (!lineItems.length) throw new Error('No se indicaron productos válidos para el pedido.')
 
   const gw = cfg.gateway || { mode: 'native' }
+  // Datos del cliente/envío: acepta las claves del formulario configurable (nombre,
+  // direccion, ciudad…) y también las antiguas (name/phone). Se arma billing + shipping.
+  const c = customer || {}
+  const fullName = String(c.nombre || c.name || '').trim()
+  const parts = fullName ? fullName.split(/\s+/) : []
+  const firstName = c.firstName || parts[0] || 'Cliente'
+  const lastName = c.lastName || parts.slice(1).join(' ') || ''
+  const addr = {
+    first_name: firstName, last_name: lastName,
+    address_1: c.direccion || '', address_2: c.direccion2 || '',
+    city: c.ciudad || '', state: c.departamento || '', postcode: c.codigo_postal || '',
+    email: c.email || '', phone: c.telefono || c.phone || '',
+  }
+  // País: WooCommerce exige ISO de 2 letras; si no lo es, se omite (usa el de la tienda).
+  if (c.pais && String(c.pais).trim().length === 2) addr.country = String(c.pais).trim().toUpperCase()
   const body = {
     set_paid: false,
     status: 'pending',
     line_items: lineItems,
-    billing: {
-      first_name: customer.firstName || customer.name || 'Cliente',
-      last_name: customer.lastName || '',
-      email: customer.email || '',
-      phone: customer.phone || '',
+    billing: addr,
+    shipping: {
+      first_name: addr.first_name, last_name: addr.last_name,
+      address_1: addr.address_1, address_2: addr.address_2,
+      city: addr.city, state: addr.state, postcode: addr.postcode,
+      ...(addr.country ? { country: addr.country } : {}),
     },
   }
+  if (c.notas) body.customer_note = String(c.notas).slice(0, 500)
   // Pasarela: nativa (deja que el cliente elija en el order-pay) o forzar una externa.
   if (gw.mode === 'external' && gw.methodId) {
     body.payment_method = gw.methodId
