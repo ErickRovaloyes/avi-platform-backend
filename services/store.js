@@ -44,6 +44,9 @@ function publicConfig(cfg) {
 
 // Operaciones (cargan la config y delegan en la plataforma correcta).
 async function searchProducts(accId, query, opts) { const cfg = await loadConfig(accId); return impl(cfg).searchProducts(accId, query, opts) }
+// Panel "Productos": página editable + edición bidireccional (escribe a la tienda).
+async function fetchProductsPage(accId, opts) { const cfg = await loadConfig(accId); return impl(cfg).fetchProductsPage(accId, opts) }
+async function updateProduct(accId, productId, patch) { const cfg = await loadConfig(accId); return impl(cfg).updateProduct(accId, productId, patch) }
 // Búsqueda INTELIGENTE: índice vectorial (si está activo y poblado) con fallback
 // silencioso a la búsqueda viva. Require lazy para evitar el ciclo productIndex↔store.
 async function searchProductsSmart(accId, query, opts) {
@@ -57,5 +60,6 @@ async function fetchStoreCurrency(cfg) { return impl(cfg).fetchStoreCurrency(cfg
 
 module.exports = {
   loadConfig, saveConfig, platformOf, isEnabled, maxImages, publicConfig,
-  searchProducts, searchProductsSmart, createOrder, getOrderStatus, testConnection, fetchStoreCurrency, woo, shopify,
+  searchProducts, searchProductsSmart, fetchProductsPage, updateProduct,
+  createOrder, getOrderStatus, testConnection, fetchStoreCurrency, woo, shopify,
 }

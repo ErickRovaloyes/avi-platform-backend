@@ -140,6 +140,55 @@ async function fetchAllProducts(accId, { pageSize = 50 } = {}) {
   return out
 }
 
+// Una PÁGINA de productos (panel editable), por cursor. Incluye status y variantId.
+async function fetchProductsPage(accId, { perPage = 24, cursor = null, search = '' } = {}) {
+  const cfg = await loadConfig(accId)
+  if (!isEnabled(cfg)) throw new Error('La tienda Shopify no está conectada.')
+  const q = String(search || '').trim()
+  const query = `query($n:Int!,$cursor:String,$q:String){ products(first:$n, after:$cursor, query:$q){
+    pageInfo{ hasNextPage endCursor }
+    edges { node {
+      id title handle onlineStoreUrl descriptionHtml totalInventory status productType vendor tags
+      featuredImage { url } images(first:6){ edges { node { url } } }
+      priceRangeV2 { minVariantPrice { amount currencyCode } }
+      variants(first:1){ edges { node { id sku } } }
+    } } } }`
+  const data = await graphql(cfg, query, { n: Math.min(Math.max(perPage, 1), 50), cursor, q: q ? `title:*${q}* OR ${q}` : '' })
+  const conn = data?.products
+  const products = (conn?.edges || []).map(e => {
+    const m = mapNode(e.node, cfg.currency)
+    const sku = e.node.variants?.edges?.[0]?.node?.sku || ''
+    return { ...m, sku, status: String(e.node.status || '').toLowerCase(), categories: [e.node.productType, ...(e.node.tags || [])].filter(Boolean) }
+  })
+  return { products, hasMore: !!conn?.pageInfo?.hasNextPage, nextCursor: conn?.pageInfo?.endCursor || null }
+}
+
+// Edita un producto EN LA TIENDA (REST). Título/descr/estado + precio de la 1ª variante.
+async function updateProduct(accId, productId, patch = {}) {
+  const cfg = await loadConfig(accId)
+  if (!isEnabled(cfg)) throw new Error('La tienda Shopify no está conectada.')
+  const product = { id: Number(productId) }
+  if (patch.name !== undefined) product.title = String(patch.name)
+  if (patch.description !== undefined) product.body_html = String(patch.description)
+  if (patch.status !== undefined) product.status = patch.status === 'publish' ? 'active' : (patch.status || 'active')
+  if (patch.regularPrice !== undefined && patch.variantId) {
+    product.variants = [{ id: Number(patch.variantId), price: String(patch.regularPrice) }]
+  }
+  const d = await shopFetch(cfg, `/products/${encodeURIComponent(productId)}.json`, { method: 'PUT', body: { product } })
+  const p = d?.product || {}
+  const v = (p.variants || [])[0] || {}
+  return {
+    id: String(p.id), variantId: v.id ? String(v.id) : (patch.variantId || null),
+    name: p.title || '', sku: v.sku || '', price: v.price || '', currency: cfg.currency || '',
+    permalink: p.handle ? `https://${String(cfg.shopDomain).replace(/^https?:\/\//, '').replace(/\/$/, '')}/products/${p.handle}` : '',
+    stockStatus: p.status === 'active' ? 'instock' : '', status: String(p.status || '').toLowerCase(),
+    shortDescription: stripHtml(p.body_html).slice(0, 600), description: stripHtml(p.body_html).slice(0, 1500),
+    descriptionFull: stripHtml(p.body_html).slice(0, 4000),
+    images: (p.images || []).map(im => im.src).filter(Boolean),
+    categories: [p.product_type, ...(typeof p.tags === 'string' ? p.tags.split(',').map(s => s.trim()) : [])].filter(Boolean),
+  }
+}
+
 // ── Webhooks de producto (requieren cfg.apiSecret para verificar el HMAC) ───────
 const PRODUCT_TOPICS = ['products/create', 'products/update', 'products/delete']
 async function registerProductWebhooks(accId) {
@@ -255,5 +304,6 @@ async function fetchAbandonedCheckouts(cfg, sinceMs) {
 module.exports = {
   loadConfig, isEnabled, publicConfig, testConnection, fetchStoreCurrency,
   searchProducts, getProduct, createOrder, getOrderStatus, fetchAbandonedCheckouts,
-  fetchAllProducts, registerProductWebhooks, unregisterProductWebhooks, verifyWebhook, mapRestWebhookProduct,
+  fetchAllProducts, fetchProductsPage, updateProduct,
+  registerProductWebhooks, unregisterProductWebhooks, verifyWebhook, mapRestWebhookProduct,
 }

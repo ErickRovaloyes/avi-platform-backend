@@ -117,6 +117,35 @@ async function getProduct(accId, id) {
   return { ...p, currency: p.currency || cfg.currency || '' }
 }
 
+// Una PÁGINA de productos (para la pestaña "Productos" del panel, editable). Incluye
+// borradores/todos los estados y el `status` para poder editarlo. Filtro `search` opcional.
+async function fetchProductsPage(accId, { page = 1, perPage = 24, search = '' } = {}) {
+  const cfg = await loadConfig(accId)
+  if (!isEnabled(cfg)) throw new Error('La tienda WooCommerce no está conectada.')
+  const cur = cfg.currency || ''
+  const query = { per_page: Math.min(Math.max(perPage, 1), 100), page, orderby: 'title', order: 'asc' }
+  if (search) query.search = String(search).slice(0, 120)
+  const data = await wooFetch(cfg, '/products', { query })
+  const list = (Array.isArray(data) ? data : []).map(p => ({ ...mapProduct(p), currency: mapProduct(p).currency || cur, status: p.status || 'publish', manageStock: !!p.manage_stock, stockQuantity: p.stock_quantity }))
+  return { products: list, hasMore: list.length >= query.per_page, page }
+}
+
+// Edita un producto EN LA TIENDA (conexión doble canal): PUT /products/{id}.
+async function updateProduct(accId, productId, patch = {}) {
+  const cfg = await loadConfig(accId)
+  if (!isEnabled(cfg)) throw new Error('La tienda WooCommerce no está conectada.')
+  const body = {}
+  if (patch.name !== undefined) body.name = String(patch.name)
+  if (patch.regularPrice !== undefined) body.regular_price = String(patch.regularPrice)
+  if (patch.salePrice !== undefined) body.sale_price = String(patch.salePrice ?? '')
+  if (patch.description !== undefined) body.description = String(patch.description)
+  if (patch.shortDescription !== undefined) body.short_description = String(patch.shortDescription)
+  if (patch.stockStatus !== undefined) body.stock_status = patch.stockStatus
+  if (patch.status !== undefined) body.status = patch.status
+  const p = mapProduct(await wooFetch(cfg, `/products/${encodeURIComponent(productId)}`, { method: 'PUT', body }))
+  return { ...p, currency: p.currency || cfg.currency || '' }
+}
+
 // TODOS los productos publicados (para el índice vectorial). Paginado 100 en 100 con
 // pausa entre páginas (los hostings de Woo suelen limitar ráfagas). Añade
 // `descriptionFull` (descr completa sin truncar a 1500) solo para el doc del índice.
@@ -285,5 +314,6 @@ module.exports = {
   loadConfig, saveConfig, isEnabled, publicConfig,
   testConnection, fetchStoreCurrency, searchProducts, getProduct, createOrder, getOrderStatus,
   registerWebhook, verifySignature, handleOrderUpdate,
-  fetchAllProducts, registerProductWebhooks, unregisterProductWebhooks, verifyProductSignature, mapProduct,
+  fetchAllProducts, fetchProductsPage, updateProduct,
+  registerProductWebhooks, unregisterProductWebhooks, verifyProductSignature, mapProduct,
 }

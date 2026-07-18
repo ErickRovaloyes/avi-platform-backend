@@ -415,6 +415,13 @@ async function status(accId, source = 'store') {
   return { ...vi, webhookSecret: undefined, connected: ctx.connected, platform: ctx.platform, dbCount, syncing: isSyncing(accId, source) }
 }
 
+// IDs de producto ya indexados (para etiquetarlos en el panel de Productos).
+async function indexedIds(accId, source = 'store') {
+  const ctx = await loadCtx(accId, source)
+  const [rows] = await pool.query('SELECT product_id FROM product_index WHERE account_id=? AND platform=?', [accId, ctx.platform])
+  return new Set(rows.map(r => String(r.product_id)))
+}
+
 // Purga total (cambio de tienda) — la llama saveConfig del controller.
 async function purge(accId, platform = null) {
   if (platform) await pool.query('DELETE FROM product_index WHERE account_id=? AND platform=?', [accId, platform])
@@ -426,7 +433,7 @@ module.exports = {
   getSettings, saveSettings, normalizeSettings, resolveOpenaiKey,
   fullSync, syncOne, removeOne, enqueueChange, flushQueue,
   searchVector, searchSmart, searchSmartMeta,
-  startWorker, tick, status, purge, isSyncing,
+  startWorker, tick, status, purge, isSyncing, indexedIds,
   // puras (tests):
   buildStableText, buildContentDoc, hashContent, tokenScore, rankProducts, shouldRunScheduledSync,
 }

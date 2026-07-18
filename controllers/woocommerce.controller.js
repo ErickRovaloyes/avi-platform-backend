@@ -113,6 +113,37 @@ const createOrder = async (req, res) => {
   } catch (e) { res.status(400).json({ error: e.message }) }
 }
 
+// ── Pestaña "Productos" (autenticado): listar + editar (conexión doble canal) ───
+const productIndex = require('../services/productIndex')
+// GET /woocommerce/:accId/all-products?page=&cursor=&search=  → página con flag `indexed`.
+const listProducts = async (req, res) => {
+  const { accId } = req.params
+  try {
+    const r = await store.fetchProductsPage(accId, {
+      page: Number(req.query.page) || 1,
+      cursor: req.query.cursor || null,
+      search: req.query.search || '',
+    })
+    const idx = await productIndex.indexedIds(accId, 'store').catch(() => new Set())
+    r.products = (r.products || []).map(p => ({ ...p, indexed: idx.has(String(p.id)) }))
+    res.json(r)
+  } catch (e) { res.status(400).json({ error: e.message }) }
+}
+// PUT /woocommerce/:accId/products/:productId → edita en la tienda + refresca el índice.
+const updateProduct = async (req, res) => {
+  const { accId, productId } = req.params
+  try {
+    const p = await store.updateProduct(accId, productId, req.body || {})
+    // Si el índice está activo, refresca esta ficha ya (sin esperar al webhook).
+    let indexed = false
+    try {
+      const vi = await productIndex.getSettings(accId, 'store')
+      if (vi.enabled) { await productIndex.syncOne(accId, 'store', String(p.id)).catch(() => {}); indexed = (await productIndex.indexedIds(accId, 'store')).has(String(p.id)) }
+    } catch {}
+    res.json({ ...p, indexed })
+  } catch (e) { res.status(400).json({ error: e.message }) }
+}
+
 // ── Webhook de WooCommerce (order.updated) ─────────────────────────────────────
 const webhook = async (req, res) => {
   const { accId } = req.params
@@ -132,4 +163,4 @@ const webhook = async (req, res) => {
   } catch (e) { console.error('[woo webhook]', e.message) }
 }
 
-module.exports = { getConfig, saveConfig, testConnection, products, createOrder, webhook, sendConversationMessage }
+module.exports = { getConfig, saveConfig, testConnection, products, createOrder, webhook, sendConversationMessage, listProducts, updateProduct }

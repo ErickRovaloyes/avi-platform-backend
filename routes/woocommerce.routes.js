@@ -12,6 +12,10 @@ router.post('/woocommerce/:accId/test',   authMiddleware, ctrl.testConnection)
 router.post('/woocommerce/:accId/products', ctrl.products)
 router.post('/woocommerce/:accId/order',    ctrl.createOrder)
 
+// Pestaña "Productos" del panel (autenticado): listar + editar en la tienda.
+router.get('/woocommerce/:accId/all-products',          authMiddleware, ctrl.listProducts)
+router.put('/woocommerce/:accId/products/:productId',   authMiddleware, ctrl.updateProduct)
+
 // Webhook de WooCommerce (order.updated) → confirma el pago en el chat.
 router.post('/woocommerce/webhook/:accId',  ctrl.webhook)
 
