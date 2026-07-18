@@ -117,6 +117,27 @@ async function getProduct(accId, id) {
   return { ...p, currency: p.currency || cfg.currency || '' }
 }
 
+// TODOS los productos publicados (para el índice vectorial). Paginado 100 en 100 con
+// pausa entre páginas (los hostings de Woo suelen limitar ráfagas). Añade
+// `descriptionFull` (descr completa sin truncar a 1500) solo para el doc del índice.
+async function fetchAllProducts(accId, { perPage = 100 } = {}) {
+  const cfg = await loadConfig(accId)
+  if (!isEnabled(cfg)) throw new Error('La tienda WooCommerce no está conectada.')
+  const cur = cfg.currency || ''
+  const out = []
+  for (let page = 1; page <= 200; page++) {   // tope de seguridad 20k productos
+    const data = await wooFetch(cfg, '/products', { query: { status: 'publish', per_page: perPage, page } })
+    const list = Array.isArray(data) ? data : []
+    for (const p of list) {
+      const m = mapProduct(p)
+      out.push({ ...m, currency: m.currency || cur, descriptionFull: stripHtml(p.description).slice(0, 4000) })
+    }
+    if (list.length < perPage) break
+    await new Promise(r => setTimeout(r, 300))
+  }
+  return out
+}
+
 // ── Pedidos + link de pago ─────────────────────────────────────────────────────
 function payUrlFor(cfg, order) {
   if (order?.payment_url) return order.payment_url
@@ -188,6 +209,48 @@ function verifySignature(cfg, rawBody, signature) {
   } catch { return false }
 }
 
+// ── Webhooks de PRODUCTO (índice vectorial: actualización en tiempo real) ───────
+const PRODUCT_TOPICS = ['product.created', 'product.updated', 'product.deleted']
+async function registerProductWebhooks(accId) {
+  const cfg = await loadConfig(accId)
+  if (!isEnabled(cfg)) throw new Error('Conecta la tienda antes de activar los webhooks de producto.')
+  const vi = cfg.vectorIndex || {}
+  if (!vi.webhookSecret) vi.webhookSecret = crypto.randomBytes(24).toString('hex')
+  const existing = Array.isArray(vi.webhooks) ? vi.webhooks : []
+  const have = new Set(existing.map(w => w.topic))
+  const delivery = `${baseUrl()}/api/woocommerce/product-webhook/${accId}`
+  for (const topic of PRODUCT_TOPICS) {
+    if (have.has(topic)) continue
+    const wh = await wooFetch(cfg, '/webhooks', {
+      method: 'POST',
+      body: { name: `AVI · índice de productos (${topic})`, topic, delivery_url: delivery, secret: vi.webhookSecret, status: 'active' },
+    })
+    existing.push({ id: wh.id, topic })
+  }
+  vi.webhooks = existing
+  cfg.vectorIndex = vi
+  await saveConfig(accId, cfg)
+  return existing
+}
+async function unregisterProductWebhooks(accId) {
+  const cfg = await loadConfig(accId)
+  const vi = cfg?.vectorIndex
+  if (!cfg || !Array.isArray(vi?.webhooks) || !vi.webhooks.length) return
+  for (const w of vi.webhooks) {
+    try { await wooFetch(cfg, `/webhooks/${encodeURIComponent(w.id)}`, { method: 'DELETE', query: { force: true } }) } catch { /* best-effort */ }
+  }
+  vi.webhooks = []
+  await saveConfig(accId, cfg)
+}
+function verifyProductSignature(cfg, rawBody, signature) {
+  try {
+    const secret = cfg?.vectorIndex?.webhookSecret
+    if (!secret || !signature || !rawBody) return false
+    const digest = crypto.createHmac('sha256', secret).update(rawBody).digest('base64')
+    return crypto.timingSafeEqual(Buffer.from(digest), Buffer.from(String(signature)))
+  } catch { return false }
+}
+
 // Estado de un pedido (para el worker de recuperación / confirmación por sondeo).
 async function getOrderStatus(accId, rec) {
   const cfg = await loadConfig(accId)
@@ -222,4 +285,5 @@ module.exports = {
   loadConfig, saveConfig, isEnabled, publicConfig,
   testConnection, fetchStoreCurrency, searchProducts, getProduct, createOrder, getOrderStatus,
   registerWebhook, verifySignature, handleOrderUpdate,
+  fetchAllProducts, registerProductWebhooks, unregisterProductWebhooks, verifyProductSignature, mapProduct,
 }

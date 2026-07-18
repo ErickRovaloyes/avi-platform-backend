@@ -58,7 +58,10 @@ const publicSearch = async (req, res) => {
   const { accId } = req.params
   const { query = '', limit } = req.body || {}
   try {
-    const products = await svc.searchProducts(accId, query, { limit: limit ? Number(limit) : 100 })
+    // Búsqueda inteligente: índice vectorial del catálogo (si está activo) con
+    // fallback al scoring por tokens de siempre.
+    const productIndex = require('../services/productIndex')
+    const products = await productIndex.searchSmartMeta(accId, query, { limit: limit ? Number(limit) : 24 })
     res.json({ products })
   } catch (err) { console.error('[metaCatalog publicSearch]', err.message); res.status(502).json({ error: err.message || 'Error', products: [] }) }
 }

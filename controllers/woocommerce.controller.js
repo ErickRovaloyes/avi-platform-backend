@@ -54,6 +54,9 @@ const saveConfig = async (req, res) => {
       // Shopify
       shopDomain: (b.shopDomain ?? cur.shopDomain ?? '').trim().replace(/^https?:\/\//, '').replace(/\/$/, ''),
       adminToken: (b.adminToken && b.adminToken.trim()) || cur.adminToken || '',
+      // API secret de la app de Shopify: solo para VERIFICAR webhooks de producto
+      // (índice vectorial en tiempo real). Conservar-si-vacío.
+      apiSecret: (b.apiSecret && b.apiSecret.trim()) || cur.apiSecret || '',
       // Compartido
       gateway: b.gateway || cur.gateway || { mode: 'native' },
       currency: b.currency ?? cur.currency ?? '',
@@ -61,8 +64,14 @@ const saveConfig = async (req, res) => {
       abandonedCart: b.abandonedCart || cur.abandonedCart || { enabled: false, hours: 20, maxReminders: 1, message: '' },
       webhook: cur.webhook || null,
     }
-    // Si cambia la tienda/llaves, invalida el webhook anterior (apunta a otra tienda).
-    if (cur.storeUrl !== cfg.storeUrl || cur.consumerKey !== cfg.consumerKey || cur.shopDomain !== cfg.shopDomain) cfg.webhook = null
+    // Si cambia la tienda/llaves, invalida el webhook anterior (apunta a otra tienda)
+    // y PURGA el índice vectorial (pertenece a la tienda anterior).
+    const storeChanged = cur.storeUrl !== cfg.storeUrl || cur.consumerKey !== cfg.consumerKey || cur.shopDomain !== cfg.shopDomain
+    if (storeChanged) {
+      cfg.webhook = null
+      if (cfg.vectorIndex) cfg.vectorIndex = { ...cfg.vectorIndex, webhooks: [], webhookSecret: '', lastSyncAt: 0, count: 0, error: '' }
+      try { await require('../services/productIndex').purge(accId, cur.platform === 'shopify' ? 'shopify' : 'woocommerce') } catch {}
+    }
     await store.saveConfig(accId, cfg)
 
     let connection = { ok: false }
@@ -93,7 +102,8 @@ const testConnection = async (req, res) => {
 const products = async (req, res) => {
   try {
     const q = req.body?.query ?? req.query.query ?? ''
-    res.json({ products: await store.searchProducts(req.params.accId, q, { limit: Number(req.body?.limit) || 8 }) })
+    // Búsqueda inteligente: índice vectorial si está activo, con fallback a la API viva.
+    res.json({ products: await store.searchProductsSmart(req.params.accId, q, { limit: Number(req.body?.limit) || 8 }) })
   } catch (e) { res.status(400).json({ error: e.message }) }
 }
 const createOrder = async (req, res) => {

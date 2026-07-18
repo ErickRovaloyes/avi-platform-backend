@@ -770,6 +770,22 @@ app.use('/api',                recontactRoutes)
     // Mapeos [{ variable, source, value }] para guardar datos de la cita en variables
     // de la conversación al agendarse (nombre/teléfono/fecha/hora/servicio/… o valor fijo).
     "ALTER TABLE calendars ADD COLUMN booking_vars JSON",
+    // Índice vectorial de productos (Woo/Shopify/Catálogo Meta): embeddings + doc de
+    // texto + producto completo (fotos incluidas). Búsqueda híbrida del asistente IA.
+    `CREATE TABLE IF NOT EXISTS product_index (
+       id            VARCHAR(60) PRIMARY KEY,
+       account_id    VARCHAR(50) NOT NULL,
+       platform      VARCHAR(20) DEFAULT 'woocommerce',
+       product_id    VARCHAR(60) NOT NULL,
+       content       TEXT,
+       content_hash  VARCHAR(64),
+       embedding     LONGTEXT,
+       product_json  LONGTEXT,
+       updated_at    BIGINT,
+       synced_at     BIGINT,
+       UNIQUE KEY uq_pix (account_id, platform, product_id),
+       INDEX idx_pix_acc (account_id)
+     )`,
     `CREATE TABLE IF NOT EXISTS calendar_bookings (
        id           VARCHAR(50) PRIMARY KEY,
        account_id   VARCHAR(50) NOT NULL,
@@ -1302,6 +1318,8 @@ app.use('/api',                recontactRoutes)
   try { require('./services/bookings').startPaymentSweeper() } catch (e) { console.warn('[booking pay sweeper] no iniciado:', e.message) }
   // Recuperación de carritos / confirmación de pago de la tienda (Woo + Shopify)
   try { require('./services/storeRecovery').start() } catch (e) { console.warn('[store recovery] no iniciado:', e.message) }
+  // Índice vectorial de productos: re-sync programado + seguridad diaria del modo realtime.
+  try { require('./services/productIndex').startWorker() } catch (e) { console.warn('[product index] worker no iniciado:', e.message) }
   // Worker de mensajes masivos: procesa campañas programadas vencidas.
   try { require('./services/campaigns').startWorker() } catch (e) { console.warn('[campaigns] worker no iniciado:', e.message) }
   // Reglas/playbooks del CRM: evalúa disparadores y crea tareas automáticamente.

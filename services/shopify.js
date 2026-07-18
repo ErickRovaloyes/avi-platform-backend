@@ -5,9 +5,11 @@
  * el Admin API access token (X-Shopify-Access-Token). Mismas funciones que el
  * servicio de WooCommerce para que el dispatcher (services/store) las use igual.
  */
+const crypto = require('crypto')
 const pool = require('../db')
 const { uid, parseJ } = require('../utils')
 
+const baseUrl = () => (process.env.PUBLIC_URL || process.env.BASE_URL || 'https://platform.aviasistente.com').replace(/\/$/, '')
 const API_VERSION = '2024-10'
 const numId = gid => String(gid || '').split('/').pop()
 const stripHtml = s => String(s || '').replace(/<[^>]*>/g, ' ').replace(/&[a-z]+;/gi, ' ').replace(/\s+/g, ' ').trim()
@@ -24,6 +26,9 @@ function publicConfig(cfg) {
     hasKeys: !!cfg?.adminToken,
     adminTokenMasked: cfg?.adminToken ? cfg.adminToken.slice(0, 8) + '…' : '',
     currency: cfg?.currency || '',
+    // API secret de la custom app: necesaria para VERIFICAR los webhooks de producto
+    // (índice vectorial en tiempo real). Sin ella solo funciona el modo programado.
+    hasApiSecret: !!cfg?.apiSecret,
   }
 }
 
@@ -96,6 +101,105 @@ async function getProduct(accId, id) {
   return list.find(p => String(p.id) === String(id)) || null
 }
 
+// ── Índice vectorial: TODOS los productos activos (paginado por cursor) ─────────
+const PRODUCTS_PAGE = `query($n:Int!,$cursor:String){ products(first:$n, after:$cursor, query:"status:active"){
+  pageInfo{ hasNextPage endCursor }
+  edges { node {
+    id title handle onlineStoreUrl descriptionHtml totalInventory
+    productType vendor tags
+    featuredImage { url }
+    images(first:6){ edges { node { url } } }
+    priceRangeV2 { minVariantPrice { amount currencyCode } }
+    variants(first:1){ edges { node { id sku } } }
+  } } } }`
+async function fetchAllProducts(accId, { pageSize = 50 } = {}) {
+  const cfg = await loadConfig(accId)
+  if (!isEnabled(cfg)) throw new Error('La tienda Shopify no está conectada.')
+  const out = []
+  let cursor = null
+  for (let i = 0; i < 400; i++) {   // tope de seguridad 20k
+    let data
+    try {
+      data = await graphql(cfg, PRODUCTS_PAGE, { n: pageSize, cursor })
+    } catch (e) {
+      if (/THROTTLED/i.test(e.message)) { await new Promise(r => setTimeout(r, 2000)); i--; continue }
+      throw e
+    }
+    const conn = data?.products
+    for (const e of (conn?.edges || [])) {
+      const node = e.node
+      const m = mapNode(node, cfg.currency)
+      const sku = node.variants?.edges?.[0]?.node?.sku || ''
+      const categories = [node.productType, ...(Array.isArray(node.tags) ? node.tags : [])].filter(Boolean)
+      out.push({ ...m, sku, categories, descriptionFull: stripHtml(node.descriptionHtml).slice(0, 4000) })
+    }
+    if (!conn?.pageInfo?.hasNextPage) break
+    cursor = conn.pageInfo.endCursor
+    await new Promise(r => setTimeout(r, 250))
+  }
+  return out
+}
+
+// ── Webhooks de producto (requieren cfg.apiSecret para verificar el HMAC) ───────
+const PRODUCT_TOPICS = ['products/create', 'products/update', 'products/delete']
+async function registerProductWebhooks(accId) {
+  const cfg = await loadConfig(accId)
+  if (!isEnabled(cfg)) throw new Error('Conecta la tienda antes de activar los webhooks de producto.')
+  if (!cfg.apiSecret) throw new Error('Falta la API secret key de la app de Shopify (necesaria para verificar los webhooks). Añádela en la conexión o usa el modo programado.')
+  const vi = cfg.vectorIndex || {}
+  const existing = Array.isArray(vi.webhooks) ? vi.webhooks : []
+  const have = new Set(existing.map(w => w.topic))
+  const address = `${baseUrl()}/api/shopify/product-webhook/${accId}`
+  for (const topic of PRODUCT_TOPICS) {
+    if (have.has(topic)) continue
+    const d = await shopFetch(cfg, '/webhooks.json', { method: 'POST', body: { webhook: { topic, address, format: 'json' } } })
+    if (d?.webhook?.id) existing.push({ id: d.webhook.id, topic })
+  }
+  vi.webhooks = existing
+  cfg.vectorIndex = vi
+  await pool.query('UPDATE accounts SET woocommerce=? WHERE id=?', [JSON.stringify(cfg), accId])
+  return existing
+}
+async function unregisterProductWebhooks(accId) {
+  const cfg = await loadConfig(accId)
+  const vi = cfg?.vectorIndex
+  if (!cfg || !Array.isArray(vi?.webhooks) || !vi.webhooks.length) return
+  for (const w of vi.webhooks) {
+    try { await shopFetch(cfg, `/webhooks/${encodeURIComponent(w.id)}.json`, { method: 'DELETE' }) } catch { /* best-effort */ }
+  }
+  vi.webhooks = []
+  await pool.query('UPDATE accounts SET woocommerce=? WHERE id=?', [JSON.stringify(cfg), accId])
+}
+function verifyWebhook(cfg, rawBody, hmacHeader) {
+  try {
+    if (!cfg?.apiSecret || !hmacHeader || !rawBody) return false
+    const digest = crypto.createHmac('sha256', cfg.apiSecret).update(rawBody).digest('base64')
+    return crypto.timingSafeEqual(Buffer.from(digest), Buffer.from(String(hmacHeader)))
+  } catch { return false }
+}
+// El payload del webhook llega en shape REST (body_html, images[].src, variants[],
+// product_type, tags como string CSV) → mapear al shape Product estándar.
+function mapRestWebhookProduct(p, cfg) {
+  const v = (p.variants || [])[0] || {}
+  const tags = typeof p.tags === 'string' ? p.tags.split(',').map(s => s.trim()).filter(Boolean) : (p.tags || [])
+  const domain = String(cfg?.shopDomain || '').replace(/^https?:\/\//, '').replace(/\/$/, '')
+  return {
+    id: String(p.id),
+    variantId: v.id ? String(v.id) : null,
+    name: p.title || '',
+    sku: v.sku || '',
+    price: v.price || '',
+    currency: cfg?.currency || '',
+    permalink: (p.handle && domain) ? `https://${domain}/products/${p.handle}` : '',
+    stockStatus: p.status === 'active' ? 'instock' : '',
+    shortDescription: stripHtml(p.body_html).slice(0, 600),
+    description: stripHtml(p.body_html).slice(0, 1500),
+    descriptionFull: stripHtml(p.body_html).slice(0, 4000),
+    images: (p.images || []).map(im => im.src).filter(Boolean),
+    categories: [p.product_type, ...tags].filter(Boolean),
+  }
+}
+
 async function createOrder(accId, { items, customer = {}, convId = null, agId = null } = {}) {
   const cfg = await loadConfig(accId)
   if (!isEnabled(cfg)) throw new Error('La tienda Shopify no está conectada.')
@@ -151,4 +255,5 @@ async function fetchAbandonedCheckouts(cfg, sinceMs) {
 module.exports = {
   loadConfig, isEnabled, publicConfig, testConnection, fetchStoreCurrency,
   searchProducts, getProduct, createOrder, getOrderStatus, fetchAbandonedCheckouts,
+  fetchAllProducts, registerProductWebhooks, unregisterProductWebhooks, verifyWebhook, mapRestWebhookProduct,
 }

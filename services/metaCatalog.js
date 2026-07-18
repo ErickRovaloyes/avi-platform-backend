@@ -112,4 +112,45 @@ async function searchProducts(accId, query, { limit = 100 } = {}) {
   return scored.map(x => x.p)
 }
 
-module.exports = { discoverCatalogs, fetchProducts, getCatalogInfo, getStored, saveStored, listWhatsAppCreds, getProducts, searchProducts }
+// ── Índice vectorial: TODOS los productos del catálogo, en shape Product estándar ─
+// (image_url única → images:[url]; brand/category → categories[]). Paginado por cursor.
+function mapCatalogProduct(p) {
+  return {
+    id: String(p.retailer_id || p.id),
+    metaId: String(p.id),
+    retailerId: p.retailer_id || '',
+    name: p.name || '',
+    sku: p.retailer_id || '',
+    price: p.price || '',                 // Meta lo devuelve ya formateado ("$10.00")
+    currency: p.currency || '',
+    permalink: p.url || '',
+    stockStatus: String(p.availability || '').toLowerCase() === 'in stock' ? 'instock'
+      : (p.availability ? 'outofstock' : ''),
+    shortDescription: String(p.description || '').slice(0, 600),
+    description: String(p.description || '').slice(0, 1500),
+    descriptionFull: String(p.description || '').slice(0, 4000),
+    images: p.image_url ? [p.image_url] : [],
+    categories: [p.brand, p.category].filter(Boolean),
+    brand: p.brand || '', category: p.category || '',
+    availability: p.availability || '',
+    // Campos crudos de Meta preservados: las tools del catálogo (catalogExec) leen
+    // image_url / url / retailer_id directamente.
+    image_url: p.image_url || '', url: p.url || '', retailer_id: p.retailer_id || '',
+  }
+}
+async function fetchAllProducts(accId) {
+  const cfg = await getStored(accId)
+  if (!cfg?.catalogId || !cfg?.accessToken) throw new Error('El catálogo de Meta no está conectado.')
+  const out = []
+  let after = null
+  for (let i = 0; i < 200; i++) {   // tope 20k
+    const { products, after: next } = await fetchProducts(cfg.catalogId, cfg.accessToken, { limit: 100, after })
+    out.push(...products.map(mapCatalogProduct))
+    if (!next || !products.length) break
+    after = next
+    await new Promise(r => setTimeout(r, 200))
+  }
+  return out
+}
+
+module.exports = { discoverCatalogs, fetchProducts, getCatalogInfo, getStored, saveStored, listWhatsAppCreds, getProducts, searchProducts, fetchAllProducts, mapCatalogProduct }

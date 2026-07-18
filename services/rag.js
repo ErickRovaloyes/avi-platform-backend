@@ -43,6 +43,38 @@ async function getEmbedding(text, apiKey) {
   return data.data[0].embedding
 }
 
+// Embeddings por LOTE (para indexar catálogos de productos). Devuelve float[][] en el
+// mismo orden que `texts`. Lotes de 64 con reintento/backoff en 429/5xx.
+async function getEmbeddings(texts, apiKey) {
+  const out = []
+  for (let i = 0; i < texts.length; i += 64) {
+    const batch = texts.slice(i, i + 64).map(t => String(t || ' ').slice(0, 8000))
+    let attempt = 0
+    for (;;) {
+      const res = await fetch('https://api.openai.com/v1/embeddings', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${apiKey}` },
+        body: JSON.stringify({ model: EMBED_MODEL, input: batch, dimensions: EMBED_DIMS }),
+      })
+      if (res.ok) {
+        const data = await res.json()
+        // La API devuelve data[] con index — ordena por index por seguridad.
+        const sorted = (data.data || []).sort((a, b) => a.index - b.index)
+        out.push(...sorted.map(d => d.embedding))
+        break
+      }
+      if ((res.status === 429 || res.status >= 500) && attempt < 3) {
+        attempt++
+        await new Promise(r => setTimeout(r, 1500 * attempt))
+        continue
+      }
+      const err = await res.json().catch(() => ({}))
+      throw new Error(`Embeddings API error: ${err?.error?.message || res.status}`)
+    }
+  }
+  return out
+}
+
 function cosineSimilarity(a, b) {
   if (!a || !b || a.length !== b.length) return 0
   let dot = 0, normA = 0, normB = 0
@@ -79,4 +111,4 @@ async function buildRagContext(query, accId, agId, apiKey, fileIds = null) {
   }
 }
 
-module.exports = { readRagChunks, searchRelevantChunks, buildRagContext, getEmbedding }
+module.exports = { readRagChunks, searchRelevantChunks, buildRagContext, getEmbedding, getEmbeddings, cosineSimilarity, EMBED_DIMS }

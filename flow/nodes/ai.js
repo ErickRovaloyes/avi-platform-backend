@@ -243,7 +243,7 @@ async function wooExec(ctx, fnName, args) {
   const maxImgs = store.maxImages(cfg)
   try {
     if (fnName === 'buscar_productos') {
-      const list = await store.searchProducts(accId, args?.consulta || args?.query || '')
+      const list = await store.searchProductsSmart(accId, args?.consulta || args?.query || '')
       if (!list.length) return 'No encontré productos para esa búsqueda en la tienda.'
       logDebug(ctx, 'tool_result', `🛒 ${list.length} producto(s) encontrados`, {})
       return 'Productos encontrados:\n' + list.slice(0, 8).map((p, i) => {
@@ -252,7 +252,7 @@ async function wooExec(ctx, fnName, args) {
       }).join('\n')
     }
     if (fnName === 'enviar_producto') {
-      const list = await store.searchProducts(accId, args?.producto || args?.consulta || '')
+      const list = await store.searchProductsSmart(accId, args?.producto || args?.consulta || '')
       const p = list[0]
       if (!p) return 'No encontré ese producto para enviarlo.'
       const desc = p.shortDescription || p.description || ''
@@ -264,7 +264,9 @@ async function wooExec(ctx, fnName, args) {
       return `Envié el producto "${p.name}" con ${imgs.length} foto(s) al usuario.`
     }
     if (fnName === 'crear_pedido') {
-      const list = await store.searchProducts(accId, args?.producto || '')
+      // El índice solo RESUELVE el producto; el pedido se crea contra la API viva
+      // (la tienda calcula el precio real al crear el pedido).
+      const list = await store.searchProductsSmart(accId, args?.producto || '')
       const p = list[0]
       if (!p) return 'No encontré ese producto para crear el pedido.'
       const qty = Math.max(1, parseInt(args?.cantidad) || 1)
@@ -304,7 +306,7 @@ async function catalogExec(ctx, fnName, args) {
   const accId = ctx.accId
   try {
     if (fnName === 'buscar_en_catalogo') {
-      const list = await catalog.searchProducts(accId, args?.consulta || args?.query || '')
+      const list = await require("../../services/productIndex").searchSmartMeta(accId, args?.consulta || args?.query || '')
       if (!list.length) return 'No encontré productos para esa búsqueda en el catálogo.'
       logDebug(ctx, 'tool_result', `🛍 ${list.length} producto(s) en catálogo`, {})
       return 'Productos encontrados:\n' + list.slice(0, 8).map((p, i) => {
@@ -314,7 +316,7 @@ async function catalogExec(ctx, fnName, args) {
       }).join('\n')
     }
     if (fnName === 'enviar_producto_catalogo') {
-      const list = await catalog.searchProducts(accId, args?.producto || args?.consulta || '')
+      const list = await require("../../services/productIndex").searchSmartMeta(accId, args?.producto || args?.consulta || '')
       const p = list[0]
       if (!p) return 'No encontré ese producto en el catálogo para enviarlo.'
       const desc = (p.description || '').slice(0, 300)
@@ -334,7 +336,7 @@ async function catalogExec(ctx, fnName, args) {
       return `Envié el catálogo (${shown.length} de ${list.length} productos) al usuario.`
     }
     if (fnName === 'crear_pedido_catalogo') {
-      const list = await catalog.searchProducts(accId, args?.producto || '')
+      const list = await require("../../services/productIndex").searchSmartMeta(accId, args?.producto || '')
       const p = list[0]
       if (!p) return 'No encontré ese producto en el catálogo para crear el pedido.'
       const qty = Math.max(1, parseInt(args?.cantidad) || 1)

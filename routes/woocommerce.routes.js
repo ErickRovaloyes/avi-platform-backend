@@ -15,4 +15,14 @@ router.post('/woocommerce/:accId/order',    ctrl.createOrder)
 // Webhook de WooCommerce (order.updated) → confirma el pago en el chat.
 router.post('/woocommerce/webhook/:accId',  ctrl.webhook)
 
+// ── Índice vectorial de productos (búsqueda inteligente de la IA) ──────────────
+const pix = require('../controllers/productIndex.controller')
+router.get('/woocommerce/:accId/vector-index',          authMiddleware, pix.vectorStatus)
+router.put('/woocommerce/:accId/vector-index',          authMiddleware, pix.vectorSaveSettings)
+router.post('/woocommerce/:accId/vector-index/sync',    authMiddleware, pix.vectorSyncNow)
+router.post('/woocommerce/:accId/vector-index/search',  authMiddleware, pix.vectorTestSearch)
+// Receivers de webhooks de producto (públicos; verificados por HMAC).
+router.post('/woocommerce/product-webhook/:accId',  pix.wooProductWebhook)
+router.post('/shopify/product-webhook/:accId',      pix.shopifyProductWebhook)
+
 module.exports = router

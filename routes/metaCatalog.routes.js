@@ -13,4 +13,12 @@ router.get('/accounts/:accId/meta-catalog/products', authMiddleware, ctrl.produc
 router.post('/accounts/:accId/meta-catalog',         authMiddleware, ctrl.connect)
 router.delete('/accounts/:accId/meta-catalog',       authMiddleware, ctrl.disconnect)
 
+// Índice vectorial del catálogo (mismo controller que el de la tienda, source=meta).
+const pix = require('../controllers/productIndex.controller')
+const metaSrc = (req, _res, next) => { req.query.source = 'meta'; next() }
+router.get('/accounts/:accId/meta-catalog/vector-index',         authMiddleware, metaSrc, pix.vectorStatus)
+router.put('/accounts/:accId/meta-catalog/vector-index',         authMiddleware, metaSrc, pix.vectorSaveSettings)
+router.post('/accounts/:accId/meta-catalog/vector-index/sync',   authMiddleware, metaSrc, pix.vectorSyncNow)
+router.post('/accounts/:accId/meta-catalog/vector-index/search', authMiddleware, metaSrc, pix.vectorTestSearch)
+
 module.exports = router
