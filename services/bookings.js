@@ -518,7 +518,10 @@ function registerOutboxHandlers() {
       const calendar = await getCalendar(ev.accId, ev.payload.calendarId)
       const bk = await getBooking(ev.accId, ev.aggregateId)
       if (!calendar || !bk) return
-      notify(ev.accId, calendar, bk, 'confirmation').catch(() => {})
+      notify(ev.accId, calendar, bk, 'confirmation', {
+        defaultText: '✅ ¡Tu cita quedó agendada para el {{reserva_fecha}} a las {{reserva_hora}} ({{calendario}})! Te esperamos. 🙌',
+        iaInstruction: 'Confírmale al cliente que su cita quedó agendada e indícale la fecha y hora.',
+      }).catch(() => {})
       sync.pushBooking(ev.accId, calendar, bk, 'create').then(eventId => {
         if (eventId) pool.query('UPDATE calendar_bookings SET external_id=? WHERE id=?', [eventId, bk.id]).catch(() => {})
       }).catch(() => {})
@@ -530,7 +533,10 @@ function registerOutboxHandlers() {
       const calendar = await getCalendar(ev.accId, ev.payload.calendarId)
       const bk = await getBooking(ev.accId, ev.aggregateId)
       if (!calendar || !bk) return
-      notify(ev.accId, calendar, bk, 'reschedule').catch(() => {})
+      notify(ev.accId, calendar, bk, 'reschedule', {
+        defaultText: '🔄 Tu cita fue reagendada para el {{reserva_fecha}} a las {{reserva_hora}} ({{calendario}}). ¡Nos vemos! 🙌',
+        iaInstruction: 'Avísale al cliente que su cita fue reagendada e indícale la nueva fecha y hora.',
+      }).catch(() => {})
       sync.pushBooking(ev.accId, calendar, bk, 'update').catch(() => {})
     } catch (e) { console.warn('[handler BookingRescheduled]', e.message) }
   })
@@ -540,7 +546,10 @@ function registerOutboxHandlers() {
       const calendar = await getCalendar(ev.accId, ev.payload.calendarId)
       const bk = await getBooking(ev.accId, ev.aggregateId)
       if (!calendar || !bk) return
-      notify(ev.accId, calendar, bk, 'cancellation').catch(() => {})
+      notify(ev.accId, calendar, bk, 'cancellation', {
+        defaultText: '❌ Tu cita del {{reserva_fecha}} a las {{reserva_hora}} ({{calendario}}) fue cancelada. Si deseas reagendarla, con gusto te ayudo. 📅',
+        iaInstruction: 'Avísale al cliente que su cita fue cancelada y ofrécele ayuda para reagendar si lo desea.',
+      }).catch(() => {})
       sync.pushBooking(ev.accId, calendar, bk, 'delete').catch(() => {})
     } catch (e) { console.warn('[handler BookingCancelled]', e.message) }
   })

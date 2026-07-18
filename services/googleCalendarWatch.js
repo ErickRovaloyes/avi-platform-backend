@@ -88,13 +88,65 @@ async function handleNotification(channelId, channelTokenHeader, resourceState) 
   } catch (e) { console.warn('[gcal handleNotification]', e.message) }
 }
 
-// Refleja en la plataforma los cambios externos relevantes (cancelaciones de
-// eventos que correspondían a reservas creadas por la plataforma).
+const saveMeta = (bkId, meta) => pool.query('UPDATE calendar_bookings SET meta=? WHERE id=?', [JSON.stringify(meta), bkId]).catch(() => {})
+
+// Avisa al chat la RESPUESTA del invitado en su Google Calendar (confirmar/cancelar).
+// Reutiliza el dispatcher de calendarNotify (mensaje por defecto / IA / flujo).
+async function notifyGuestResponse(accId, calendarId, booking, kind) {
+  try {
+    const bookings = require('./bookings')
+    const calendar = await bookings.getCalendar(accId, calendarId)
+    if (!calendar) return
+    const calendarNotify = require('./calendarNotify')
+    if (kind === 'accepted') {
+      await calendarNotify.notify(accId, calendar, booking, 'confirmed', {
+        force: true,
+        defaultText: '✅ ¡Gracias por confirmar tu asistencia a la cita del {{reserva_fecha}} a las {{reserva_hora}}! Te esperamos. 🙌',
+        iaInstruction: 'Agradécele al cliente por CONFIRMAR su asistencia a la cita y dile que lo esperas.',
+      })
+    } else {
+      await calendarNotify.notify(accId, calendar, booking, 'cancelled_by_guest', {
+        force: true,
+        defaultText: '❌ Vimos que cancelaste tu cita del {{reserva_fecha}} a las {{reserva_hora}}. ¿Deseas reagendarla? Con gusto te ayudo a buscar otro horario. 📅',
+        iaInstruction: 'Dile al cliente que vimos que canceló su cita y pregúntale amablemente si desea REAGENDARLA, ofreciéndote a ayudar.',
+      })
+    }
+  } catch (e) { console.warn('[gcal notifyGuest]', e.message) }
+}
+
+// Refleja en la plataforma los cambios externos de eventos que corresponden a reservas
+// creadas por la plataforma: borrado/cancelación en Google, y la RESPUESTA del invitado
+// (aceptar/rechazar). Idempotente por reserva vía meta.gcalResp.
 async function processChanges(accId, items) {
   for (const ev of (items || [])) {
     if (!ev?.id) continue
+    const [[bk]] = await pool.query('SELECT * FROM calendar_bookings WHERE account_id=? AND external_id=? LIMIT 1', [accId, ev.id])
+    if (!bk) continue
+    const meta = parseJ(bk.meta, {})
+    const booking = { id: bk.id, clientName: bk.client_name, clientPhone: bk.client_phone, clientEmail: bk.client_email, date: bk.date, time: bk.time, meta }
+
+    // Evento borrado/cancelado en Google → cancelar en la plataforma + avisar (una vez).
     if (ev.status === 'cancelled') {
-      await pool.query("UPDATE calendar_bookings SET status='cancelled' WHERE account_id=? AND external_id=? AND status<>'cancelled'", [accId, ev.id]).catch(() => {})
+      if (bk.status !== 'cancelled') await pool.query("UPDATE calendar_bookings SET status='cancelled', updated_at=? WHERE id=?", [Date.now(), bk.id]).catch(() => {})
+      if (meta.gcalResp !== 'cancelled' && meta.gcalResp !== 'declined') { meta.gcalResp = 'cancelled'; await saveMeta(bk.id, meta); await notifyGuestResponse(accId, bk.calendar_id, booking, 'declined') }
+      continue
+    }
+
+    // Respuesta del INVITADO (attendee del email del cliente, o el no-organizador).
+    const attendees = ev.attendees || []
+    const guest = attendees.find(a => a.email && bk.client_email && String(a.email).toLowerCase() === String(bk.client_email).toLowerCase())
+      || attendees.find(a => !a.organizer && !a.self)
+    const resp = String(guest?.responseStatus || '')
+    if (!resp || resp === 'needsAction' || resp === 'tentative' || resp === meta.gcalResp) continue
+
+    if (resp === 'accepted') {
+      if (bk.status !== 'confirmed' && bk.status !== 'cancelled') await pool.query("UPDATE calendar_bookings SET status='confirmed', updated_at=? WHERE id=?", [Date.now(), bk.id]).catch(() => {})
+      meta.gcalResp = 'accepted'; await saveMeta(bk.id, meta)
+      await notifyGuestResponse(accId, bk.calendar_id, booking, 'accepted')
+    } else if (resp === 'declined') {
+      if (bk.status !== 'cancelled') await pool.query("UPDATE calendar_bookings SET status='cancelled', updated_at=? WHERE id=?", [Date.now(), bk.id]).catch(() => {})
+      meta.gcalResp = 'declined'; await saveMeta(bk.id, meta)
+      await notifyGuestResponse(accId, bk.calendar_id, booking, 'declined')
     }
   }
 }
@@ -107,4 +159,4 @@ function startWorker() {
   setTimeout(() => ensureWatches().catch(() => {}), 45000) // primer pase a los 45s
 }
 
-module.exports = { ensureWatches, handleNotification, registerWatch, startWorker }
+module.exports = { ensureWatches, handleNotification, registerWatch, startWorker, processChanges, notifyGuestResponse }

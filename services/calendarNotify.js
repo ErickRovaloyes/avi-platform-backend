@@ -95,16 +95,36 @@ async function ensureFormConvo(accId, agentId, calendar, booking) {
   return convId
 }
 
-// Ejecuta el flujo de notificación de un evento en la conversación adecuada.
-async function runEventFlow(accId, calendar, booking, event, flowId) {
+// Resuelve la conversación de la reserva (la de origen si nació en un chat; si no,
+// una de WhatsApp del cliente; en último caso una de tipo formulario) + su outbound.
+async function resolveBookingConvo(accId, calendar, booking) {
   const store = require('../flow/store')
-  const engine = require('../flow/engine')
   const account = await store.loadAccount(accId)
-  if (!account) return false
+  if (!account) return null
   const n = calendar.notifications || {}
   const agent = (n.whatsappAgentId && account.agents?.find(a => a.id === n.whatsappAgentId)) || account.agents?.[0]
-  if (!agent) return false
+  if (!agent) return null
+  let convId = booking.meta?.conversationId || booking.meta?.convId || null
+  let outbound = null
+  if (convId) {
+    const [[c]] = await pool.query('SELECT * FROM conversations WHERE id=? AND account_id=?', [convId, accId])
+    if (c) { const to = c.wa_from || c.messenger_from || c.ig_from || c.guest_id; outbound = buildOutbound(agent, c.channel_type, c.channel_id, to) }
+    else convId = null
+  }
+  if (!convId && booking.clientPhone) {
+    const channel = await resolveWhatsAppChannel(accId, agent.id, n.whatsappChannelId)
+    const phone = String(booking.clientPhone).replace(/[^\d]/g, '')
+    if (channel && phone) { convId = await store.createOrGetWhatsAppConvo(accId, agent.id, phone, booking.clientName, channel.id); outbound = buildOutbound(agent, 'whatsapp', channel.id, phone) }
+  }
+  if (!convId) convId = await ensureFormConvo(accId, agent.id, calendar, booking)
+  return { account, agent, convId, outbound }
+}
 
+// Ejecuta el flujo de notificación de un evento en la conversación adecuada.
+async function runEventFlow(accId, calendar, booking, event, flowId) {
+  const engine = require('../flow/engine')
+  const r = await resolveBookingConvo(accId, calendar, booking)
+  if (!r) return false
   const triggerContext = {
     ...bookingVars(calendar, booking),
     booking_id: booking.id, reserva_id: booking.id,
@@ -113,29 +133,41 @@ async function runEventFlow(accId, calendar, booking, event, flowId) {
     evento: event, notification_event: event,
     message: `Notificación de reserva (${event}): ${booking.date} ${booking.time}`,
   }
-
-  let convId = booking.meta?.conversationId || booking.meta?.convId || null
-  let outbound = null
-  if (convId) {
-    const [[c]] = await pool.query('SELECT * FROM conversations WHERE id=? AND account_id=?', [convId, accId])
-    if (c) {
-      const to = c.wa_from || c.messenger_from || c.ig_from || c.guest_id
-      outbound = buildOutbound(agent, c.channel_type, c.channel_id, to)
-    } else { convId = null }
-  }
-  if (!convId && booking.clientPhone) {
-    const channel = await resolveWhatsAppChannel(accId, agent.id, n.whatsappChannelId)
-    const phone = String(booking.clientPhone).replace(/[^\d]/g, '')
-    if (channel && phone) {
-      convId = await store.createOrGetWhatsAppConvo(accId, agent.id, phone, booking.clientName, channel.id)
-      outbound = buildOutbound(agent, 'whatsapp', channel.id, phone)
-    }
-  }
-  if (!convId) convId = await ensureFormConvo(accId, agent.id, calendar, booking)
-
-  await engine.executeFlow({ flowId, accId, agId: agent.id, convId, triggerContext, triggeredBy: { type: 'booking' }, outbound })
-  console.log(`[calendarNotify] ${event} → flujo ${flowId} (conv ${convId})`)
+  await engine.executeFlow({ flowId, accId, agId: r.agent.id, convId: r.convId, triggerContext, triggeredBy: { type: 'booking' }, outbound: r.outbound })
+  console.log(`[calendarNotify] ${event} → flujo ${flowId} (conv ${r.convId})`)
   return true
+}
+
+// Envía un texto (mensaje por defecto/integrado) en la conversación de la reserva.
+async function sendEventText(accId, calendar, booking, text) {
+  const r = await resolveBookingConvo(accId, calendar, booking)
+  if (!r) return false
+  const { sendBotMsg } = require('../flow/common')
+  await sendBotMsg({ accId, agId: r.agent.id, convId: r.convId, _outbound: r.outbound }, interp(text, bookingVars(calendar, booking)))
+  return true
+}
+
+// Redacta el mensaje con la IA usando el prompt activo del agente y lo envía.
+async function notifyIa(accId, calendar, booking, event, instruction) {
+  const r = await resolveBookingConvo(accId, calendar, booking)
+  if (!r) return false
+  const { callAI, detectProvider, resolveProviderKey } = require('../controllers/promptGenerator.controller')
+  const active = r.agent?.prompts?.find(p => p.isActive) || r.agent?.prompts?.[0]
+  const model = active?.model || 'gpt-4o-mini'
+  const provider = active?.provider || detectProvider(model)
+  const { key } = await resolveProviderKey(accId, provider)
+  if (!key) return false
+  const v = bookingVars(calendar, booking)
+  const persona = active?.content ? `Sigue esta personalidad/estilo:\n${String(active.content).slice(0, 1000)}\n\n` : ''
+  const sys = `${persona}Eres ${r.agent?.name || 'el asistente'}. ${instruction} Datos de la cita — cliente: ${v.cliente_nombre || 'el cliente'}, fecha: ${v.reserva_fecha}, hora: ${v.reserva_hora}, servicio: ${v.calendario}. Máximo 2 frases, tono natural y cálido, sin inventar datos. Responde SOLO con el mensaje para el cliente, sin comillas.`
+  try {
+    const resp = await callAI({ provider, model, apiKey: key, systemPrompt: sys, userPrompt: 'Mensaje:', maxTokens: 200, temperature: 0.5 })
+    const text = (resp.text || '').trim()
+    if (!text) return false
+    const { sendBotMsg } = require('../flow/common')
+    await sendBotMsg({ accId, agId: r.agent.id, convId: r.convId, _outbound: r.outbound }, text)
+    return true
+  } catch (e) { console.warn('[calendarNotify IA]', e.message); return false }
 }
 
 // Legacy: envío de plantilla de WhatsApp (si el evento no tiene flujo).
@@ -158,16 +190,27 @@ async function notifyTemplate(accId, calendar, booking, event, cfg) {
   return true
 }
 
-// Notifica un evento. Preferencia: ejecutar un FLUJO. Compatibilidad: plantilla.
-async function notify(accId, calendar, booking, event) {
+// Notifica un evento de reserva según su config:
+//   mode 'flow' → ejecuta un flujo · 'ia' → lo redacta la IA con el prompt activo ·
+//   'template' → plantilla de WhatsApp · 'default' → mensaje integrado (opts.defaultText).
+// opts.force = disparar aunque el evento no tenga enabled:true (eventos de Google).
+async function notify(accId, calendar, booking, event, opts = {}) {
   try {
     const n = calendar.notifications || {}
     const cfg = n.events?.[event] || {}
-    if (!cfg.enabled) return false
-    const flowId = cfg.flowId || n.flowId
-    if (flowId) return await runEventFlow(accId, calendar, booking, event, flowId)
-    return await notifyTemplate(accId, calendar, booking, event, cfg)
+    const mode = cfg.mode || (cfg.flowId ? 'flow' : (cfg.template ? 'template' : 'default'))
+    if (mode === 'off') return false
+    // Eventos legacy (confirmation/reschedule/cancellation/reminder) requieren enabled:true.
+    // Los de Google (confirmed/cancelled_by_guest) usan force → disparan salvo mode='off'.
+    if (!opts.force && cfg.enabled !== true) return false
+    if (mode === 'flow') { const flowId = cfg.flowId || n.flowId; if (flowId) return await runEventFlow(accId, calendar, booking, event, flowId) }
+    if (mode === 'ia') { const instr = cfg.iaInstruction || opts.iaInstruction; if (instr && await notifyIa(accId, calendar, booking, event, instr)) return true }
+    if (mode === 'template' && cfg.template) return await notifyTemplate(accId, calendar, booking, event, cfg)
+    // default (o fallback si flow/ia/template no pudieron): mensaje integrado.
+    const text = cfg.message || opts.defaultText
+    if (text) return await sendEventText(accId, calendar, booking, text)
+    return false
   } catch (e) { console.warn('[calendarNotify]', event, e.message); return false }
 }
 
-module.exports = { notify, runEventFlow, resolveWhatsAppChannel, bookingVars, buildOutbound }
+module.exports = { notify, runEventFlow, notifyIa, sendEventText, resolveBookingConvo, resolveWhatsAppChannel, bookingVars, buildOutbound }

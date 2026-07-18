@@ -33,7 +33,9 @@ async function tick() {
     for (const cr of cals) {
       const notifications = parseJ(cr.notifications, {})
       const rem = notifications.events?.reminder
-      if (!rem?.enabled || !rem.template || !notifications.whatsappAgentId) continue
+      // Basta con que esté habilitado: el modo puede ser plantilla, flujo, IA o mensaje
+      // por defecto (calendarNotify resuelve la conversación/canal).
+      if (!rem?.enabled) continue
       const minutesBefore = Number(rem.minutesBefore) || 60
       const tz = cr.timezone || 'UTC'
       const [bks] = await pool.query(
@@ -50,8 +52,11 @@ async function tick() {
         const fireAt = apptMs - minutesBefore * 60000
         if (now >= fireAt && now < apptMs) {
           const calendar = { id: cr.id, name: cr.name, timezone: tz, notifications }
-          const booking = { id: b.id, clientName: b.client_name, clientPhone: b.client_phone, clientEmail: b.client_email, date: b.date, time: b.time }
-          await notify(cr.account_id, calendar, booking, 'reminder')
+          const booking = { id: b.id, clientName: b.client_name, clientPhone: b.client_phone, clientEmail: b.client_email, date: b.date, time: b.time, meta }
+          await notify(cr.account_id, calendar, booking, 'reminder', {
+            defaultText: `👋 Hola${b.client_name ? ' ' + b.client_name : ''}, te recordamos tu cita del {{reserva_fecha}} a las {{reserva_hora}}${cr.name ? ` (${cr.name})` : ''}. ¿Nos confirmas tu asistencia? 🙏`,
+            iaInstruction: 'Recuérdale amablemente su cita próxima y PÍDELE que confirme su asistencia (que responda para confirmar).',
+          })
           meta.reminderSent = true
           await pool.query('UPDATE calendar_bookings SET meta=? WHERE id=?', [JSON.stringify(meta), b.id])
         }
