@@ -11,6 +11,7 @@ router.post('/woocommerce/:accId/test',   authMiddleware, ctrl.testConnection)
 // Proxy usado por el asistente (webchat-en-navegador y motor): NO expone llaves.
 router.post('/woocommerce/:accId/products', ctrl.products)
 router.post('/woocommerce/:accId/order',    ctrl.createOrder)
+router.post('/woocommerce/:accId/order-status', ctrl.orderStatus)
 
 // Pestaña "Productos" del panel (autenticado): listar + editar en la tienda.
 router.get('/woocommerce/:accId/all-products',          authMiddleware, ctrl.listProducts)

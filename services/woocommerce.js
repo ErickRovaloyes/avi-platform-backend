@@ -317,20 +317,37 @@ async function handleOrderUpdate(accId, order) {
   const status = String(order.status || '').toLowerCase()
   const [[row]] = await pool.query('SELECT * FROM woo_orders WHERE account_id=? AND order_id=? LIMIT 1', [accId, orderId])
   if (!row) return null
-  await pool.query('UPDATE woo_orders SET status=?, total=?, currency=?, updated_at=? WHERE id=?',
-    [status, String(order.total || row.total || ''), order.currency || row.currency || '', Date.now(), row.id])
-  if (!PAID_STATUSES.has(status) || row.paid_notified) return null
-  await pool.query('UPDATE woo_orders SET paid_notified=1, updated_at=? WHERE id=?', [Date.now(), row.id])
-  return {
-    convId: row.conv_id, agId: row.agent_id, orderId,
-    total: String(order.total || row.total || ''), currency: order.currency || row.currency || '',
+  const prevStatus = String(row.status || '').toLowerCase()
+  const total = String(order.total || row.total || ''), currency = order.currency || row.currency || ''
+  await pool.query('UPDATE woo_orders SET status=?, total=?, currency=?, updated_at=? WHERE id=?', [status, total, currency, Date.now(), row.id])
+  const out = { convId: row.conv_id, agId: row.agent_id, orderId, total, currency, status, paidNow: false, statusChanged: false }
+  // Pago confirmado (una sola vez).
+  if (PAID_STATUSES.has(status) && !row.paid_notified) {
+    await pool.query('UPDATE woo_orders SET paid_notified=1 WHERE id=?', [row.id])
+    out.paidNow = true
   }
+  // Cambio de estado (una sola vez por estado; independiente del pago).
+  if (status && status !== prevStatus && String(row.notified_status || '') !== status) {
+    await pool.query('UPDATE woo_orders SET notified_status=? WHERE id=?', [status, row.id])
+    out.statusChanged = true
+  }
+  return out
+}
+
+// Estado actual de un pedido (para el seguimiento con la herramienta ver_pedido).
+async function getOrder(accId, orderId) {
+  const cfg = await loadConfig(accId)
+  if (!isEnabled(cfg)) return null
+  try {
+    const o = await wooFetch(cfg, `/orders/${encodeURIComponent(orderId)}`)
+    return { id: String(o.id), status: String(o.status || '').toLowerCase(), total: o.total || '', currency: o.currency || cfg.currency || '', payUrl: payUrlFor(cfg, o) }
+  } catch { return null }
 }
 
 module.exports = {
   loadConfig, saveConfig, isEnabled, publicConfig,
   testConnection, fetchStoreCurrency, searchProducts, getProduct, createOrder, getOrderStatus,
-  registerWebhook, verifySignature, handleOrderUpdate,
+  registerWebhook, verifySignature, handleOrderUpdate, getOrder,
   fetchAllProducts, fetchProductsPage, updateProduct,
   registerProductWebhooks, unregisterProductWebhooks, verifyProductSignature, mapProduct,
 }

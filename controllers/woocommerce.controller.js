@@ -64,6 +64,8 @@ const saveConfig = async (req, res) => {
       abandonedCart: b.abandonedCart || cur.abandonedCart || { enabled: false, hours: 20, maxReminders: 1, message: '' },
       // Datos a pedir al crear un pedido (envío/facturación): [{ key, required }].
       orderForm: Array.isArray(b.orderForm) ? b.orderForm.map(f => ({ key: String(f.key), required: !!f.required })) : (cur.orderForm || undefined),
+      // Mensajes de eventos del pedido: { created|paid|status: { mode, flowId } }.
+      orderNotify: b.orderNotify && typeof b.orderNotify === 'object' ? b.orderNotify : (cur.orderNotify || undefined),
       webhook: cur.webhook || null,
     }
     // Si cambia la tienda/llaves, invalida el webhook anterior (apunta a otra tienda)
@@ -112,6 +114,21 @@ const createOrder = async (req, res) => {
   try {
     const { items, customer, convId, agId } = req.body || {}
     res.json(await store.createOrder(req.params.accId, { items, customer, convId, agId }))
+  } catch (e) { res.status(400).json({ error: e.message }) }
+}
+// Seguimiento del pedido (proxy público para el webchat/motor browser).
+const orderStatus = async (req, res) => {
+  const { accId } = req.params
+  try {
+    let orderId = String(req.body?.numero_pedido || '').replace(/[^\d]/g, '')
+    if (!orderId && req.body?.convId) {
+      const [[r]] = await pool.query('SELECT order_id FROM woo_orders WHERE account_id=? AND conv_id=? ORDER BY created_at DESC LIMIT 1', [accId, req.body.convId])
+      orderId = r?.order_id || ''
+    }
+    if (!orderId) return res.json({ found: false, needNumber: true })
+    const o = await store.getOrder(accId, orderId)
+    if (!o) return res.json({ found: false })
+    res.json({ found: true, ...o, statusEs: require('../services/orderNotify').statusEs(o.status) })
   } catch (e) { res.status(400).json({ error: e.message }) }
 }
 
@@ -168,11 +185,13 @@ const webhook = async (req, res) => {
     if (!woo.verifySignature(cfg, req.rawBody, sig)) { console.warn('[woo webhook] firma inválida', accId); return }
     const mapping = await woo.handleOrderUpdate(accId, req.body)
     if (mapping?.convId) {
-      const tot = mapping.total ? ` por ${mapping.total} ${mapping.currency}`.trimEnd() : ''
-      await sendConversationMessage(accId, mapping.agId, mapping.convId,
-        `✅ ¡Pago confirmado! Recibimos tu pago del pedido #${mapping.orderId}${tot}. ¡Gracias por tu compra! 🎉`)
+      const orderNotify = require('../services/orderNotify')
+      const vars = { pedido_id: mapping.orderId, total: mapping.total, currency: mapping.currency, pedido_estado: mapping.status }
+      // Pago confirmado tiene prioridad (una transición a pagado también es cambio de estado).
+      if (mapping.paidNow) await orderNotify.emit(accId, mapping.agId, mapping.convId, 'paid', vars)
+      else if (mapping.statusChanged) await orderNotify.emit(accId, mapping.agId, mapping.convId, 'status', vars)
     }
   } catch (e) { console.error('[woo webhook]', e.message) }
 }
 
-module.exports = { getConfig, saveConfig, testConnection, products, createOrder, webhook, sendConversationMessage, listProducts, updateProduct }
+module.exports = { getConfig, saveConfig, testConnection, products, createOrder, orderStatus, webhook, sendConversationMessage, listProducts, updateProduct }

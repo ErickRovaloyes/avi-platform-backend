@@ -222,7 +222,7 @@ async function sendCmsResource(ctx, args) {
 }
 
 // ── Tienda WooCommerce: herramienta especial con varias funciones ──────────────
-const WOO_FUNCS = new Set(['buscar_productos', 'enviar_producto', 'crear_pedido'])
+const WOO_FUNCS = new Set(['buscar_productos', 'enviar_producto', 'crear_pedido', 'ver_pedido'])
 function buildWooToolDefs(account) {
   const storeSvc = require('../../services/store')
   const fields = account?.woocommerce?.orderForm || []
@@ -251,6 +251,11 @@ function buildWooToolDefs(account) {
     { type: 'function', function: { name: 'crear_pedido',
       description: pedidoDesc,
       parameters: { type: 'object', properties: pedidoProps, required: ['producto'] } } },
+    { type: 'function', function: { name: 'ver_pedido',
+      description: 'Consulta el ESTADO actual de un pedido en la tienda (seguimiento). Úsalo cuando el cliente pregunte por su pedido, envío o estado. Si no da el número, se usa el último pedido de esta conversación.',
+      parameters: { type: 'object', properties: {
+        numero_pedido: { type: 'string', description: 'Número/ID del pedido (opcional; si no, se usa el último de la conversación)' },
+      } } } },
   ]
 }
 async function wooExec(ctx, fnName, args) {
@@ -309,9 +314,23 @@ async function wooExec(ctx, fnName, args) {
       const missing = fields.filter(f => f.required && labels[f.key] && !String(customer[f.key] || '').trim()).map(f => labels[f.key])
       if (missing.length) return `Antes de crear el pedido necesito estos datos del cliente para el envío/facturación: ${missing.join(', ')}. Pídeselos al cliente y vuelve a llamar crear_pedido con esos datos.`
       const order = await store.createOrder(accId, { items: [{ productId: p.id, variantId: p.variantId, quantity: qty }], customer, convId: ctx.convId, agId: ctx.agId })
-      await sendBotMsg(ctx, `🛒 Pedido creado: ${qty} × ${p.name}\nTotal: ${order.total} ${order.currency}\n\n💳 Paga aquí:\n${order.payUrl}\n\nApenas completes el pago te confirmo automáticamente.`)
+      // Mensaje del evento "pedido creado" según la config (default/IA/flujo/off).
+      const vars = { pay_url: order.payUrl, total: order.total, currency: order.currency, pedido_id: order.orderId, pedido_items: `${qty} × ${p.name}`, pedido_estado: order.status || 'pending' }
+      await require('../../services/orderNotify').emit(accId, ctx.agId, ctx.convId, 'created', vars, ctx)
       logDebug(ctx, 'tool_result', `🛒 Pedido #${order.orderId} creado (${order.total} ${order.currency})`, {})
-      return `Pedido #${order.orderId} creado por ${order.total} ${order.currency}. Ya envié el link de pago al usuario.`
+      return `Pedido #${order.orderId} creado por ${order.total} ${order.currency}. Link de pago: ${order.payUrl}.`
+    }
+    if (fnName === 'ver_pedido') {
+      let orderId = String(args?.numero_pedido || '').replace(/[^\d]/g, '')
+      if (!orderId && ctx.convId) {
+        try { const [[r]] = await require('../../db').query('SELECT order_id FROM woo_orders WHERE account_id=? AND conv_id=? ORDER BY created_at DESC LIMIT 1', [accId, ctx.convId]); orderId = r?.order_id || '' } catch {}
+      }
+      if (!orderId) return 'Pídele al cliente el número de su pedido para consultarlo.'
+      const o = await store.getOrder(accId, orderId)
+      if (!o) return `No encontré el pedido #${orderId} en la tienda. Verifica el número con el cliente.`
+      const es = require('../../services/orderNotify').statusEs(o.status)
+      logDebug(ctx, 'tool_result', `🛒 Pedido #${o.id}: ${o.status}`, {})
+      return `Pedido #${o.id}: estado "${es}"${o.total ? ` · total ${o.total} ${o.currency}` : ''}. Infórmale al cliente en lenguaje natural.`
     }
   } catch (e) {
     logDebug(ctx, 'error', `Tienda (${fnName}): ${e.message}`, {})

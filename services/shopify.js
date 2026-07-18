@@ -298,6 +298,18 @@ async function getOrderStatus(accId, rec) {
   } catch { return null }
 }
 
+// Estado actual de un pedido (draft order) para el seguimiento con ver_pedido.
+async function getOrder(accId, orderId) {
+  const cfg = await loadConfig(accId)
+  if (!isEnabled(cfg)) return null
+  try {
+    const d = await shopFetch(cfg, `/draft_orders/${encodeURIComponent(orderId)}.json`)
+    const o = d?.draft_order || {}
+    // status del draft: 'open' | 'invoice_sent' | 'completed'. 'completed' = pagado.
+    return { id: String(o.id || orderId), status: o.status === 'completed' ? 'completed' : (o.status || 'open'), total: o.total_price || '', currency: o.currency || cfg.currency || '', payUrl: o.invoice_url || '' }
+  } catch { return null }
+}
+
 // Checkouts abandonados nativos (clientes que iniciaron compra en la web y no la
 // terminaron). Devuelve los que tienen teléfono y URL de recuperación.
 async function fetchAbandonedCheckouts(cfg, sinceMs) {
@@ -314,7 +326,7 @@ async function fetchAbandonedCheckouts(cfg, sinceMs) {
 
 module.exports = {
   loadConfig, isEnabled, publicConfig, testConnection, fetchStoreCurrency,
-  searchProducts, getProduct, createOrder, getOrderStatus, fetchAbandonedCheckouts,
+  searchProducts, getProduct, createOrder, getOrderStatus, getOrder, fetchAbandonedCheckouts,
   fetchAllProducts, fetchProductsPage, updateProduct,
   registerProductWebhooks, unregisterProductWebhooks, verifyWebhook, mapRestWebhookProduct,
 }

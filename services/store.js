@@ -44,6 +44,22 @@ function orderForm(cfg) {
   return DEFAULT_ORDER_FORM
 }
 
+// ── Mensajes de eventos del pedido (creado / pagado / cambio de estado) ──────────
+// mode: 'default' (mensaje integrado) | 'ia' (lo redacta la IA con el prompt activo) |
+//       'flow' (ejecuta un flujo, que lleva el mensaje dentro) | 'off' (no envía nada).
+const ORDER_EVENTS = ['created', 'paid', 'status']
+const DEFAULT_ORDER_NOTIFY = { created: 'default', paid: 'default', status: 'off' }
+function orderNotify(cfg) {
+  const n = cfg?.orderNotify || {}
+  const out = {}
+  for (const ev of ORDER_EVENTS) {
+    const c = n[ev] || {}
+    const mode = ['default', 'ia', 'flow', 'off'].includes(c.mode) ? c.mode : DEFAULT_ORDER_NOTIFY[ev]
+    out[ev] = { mode, flowId: c.flowId || null }
+  }
+  return out
+}
+
 function isEnabled(cfg) { return impl(cfg).isEnabled(cfg) }
 const DEFAULT_MAX_IMAGES = 4
 function maxImages(cfg) { const n = parseInt(cfg?.maxImagesPerProduct); return n > 0 ? Math.min(n, 10) : DEFAULT_MAX_IMAGES }
@@ -60,6 +76,7 @@ function publicConfig(cfg) {
     gateway: cfg?.gateway || { mode: 'native' },
     abandonedCart: cfg?.abandonedCart || { enabled: false, hours: 20, maxReminders: 1, message: '' },
     orderForm: orderForm(cfg),
+    orderNotify: orderNotify(cfg),
     vectorIndex: {   // sin webhookSecret (no sale del servidor)
       enabled: !!vi.enabled, mode: vi.mode === 'scheduled' ? 'scheduled' : 'realtime',
       everyHours: vi.everyHours ?? 24, dayOfWeek: vi.dayOfWeek ?? null, hour: vi.hour ?? 3,
@@ -73,6 +90,8 @@ async function searchProducts(accId, query, opts) { const cfg = await loadConfig
 // Panel "Productos": página editable + edición bidireccional (escribe a la tienda).
 async function fetchProductsPage(accId, opts) { const cfg = await loadConfig(accId); return impl(cfg).fetchProductsPage(accId, opts) }
 async function updateProduct(accId, productId, patch) { const cfg = await loadConfig(accId); return impl(cfg).updateProduct(accId, productId, patch) }
+// Seguimiento: estado actual de un pedido en la tienda.
+async function getOrder(accId, orderId) { const cfg = await loadConfig(accId); return impl(cfg).getOrder(accId, orderId) }
 // Búsqueda INTELIGENTE: índice vectorial (si está activo y poblado) con fallback
 // silencioso a la búsqueda viva. Require lazy para evitar el ciclo productIndex↔store.
 async function searchProductsSmart(accId, query, opts) {
@@ -86,7 +105,7 @@ async function fetchStoreCurrency(cfg) { return impl(cfg).fetchStoreCurrency(cfg
 
 module.exports = {
   loadConfig, saveConfig, platformOf, isEnabled, maxImages, publicConfig,
-  searchProducts, searchProductsSmart, fetchProductsPage, updateProduct,
+  searchProducts, searchProductsSmart, fetchProductsPage, updateProduct, getOrder,
   createOrder, getOrderStatus, testConnection, fetchStoreCurrency, woo, shopify,
-  ORDER_FIELD_CATALOG, ORDER_FIELD_LABELS, orderForm,
+  ORDER_FIELD_CATALOG, ORDER_FIELD_LABELS, orderForm, ORDER_EVENTS, orderNotify,
 }

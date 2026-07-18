@@ -596,6 +596,8 @@ app.use('/api',                recontactRoutes)
     "ALTER TABLE woo_orders ADD COLUMN platform VARCHAR(20) DEFAULT 'woocommerce'",
     "ALTER TABLE woo_orders ADD COLUMN reminders_sent TINYINT(1) DEFAULT 0",
     "ALTER TABLE woo_orders ADD COLUMN last_reminder_at BIGINT",
+    // Último estado por el que ya se notificó (idempotencia del webhook order.updated).
+    "ALTER TABLE woo_orders ADD COLUMN notified_status VARCHAR(30)",
     // Pasarela de pago general (Wompi …): config por cuenta.
     "ALTER TABLE accounts ADD COLUMN payments JSON",
     // Tokens de push de la app móvil (Expo). Un token por dispositivo/cuenta.
