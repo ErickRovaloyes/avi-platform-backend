@@ -232,8 +232,14 @@ function buildWooToolDefs() {
       description: 'Envía al usuario un producto con sus FOTOS y una ficha (nombre, precio, link). Úsalo cuando el usuario quiera VER un producto o pida su foto/presentación/catálogo.',
       parameters: { type: 'object', properties: { producto: { type: 'string', description: 'Nombre o palabras clave del producto a enviar' } }, required: ['producto'] } } },
     { type: 'function', function: { name: 'crear_pedido',
-      description: 'Crea un pedido en la tienda y envía al usuario el LINK DE PAGO. Úsalo SOLO cuando el usuario confirme que quiere comprar. Tras el pago, se confirma automáticamente.',
-      parameters: { type: 'object', properties: { producto: { type: 'string', description: 'Producto que quiere comprar' }, cantidad: { type: 'string', description: 'Cantidad (por defecto 1)' } }, required: ['producto'] } } },
+      description: 'Crea un pedido en la tienda y envía al usuario el LINK DE PAGO. Úsalo SOLO cuando el usuario confirme que quiere comprar. Incluye el email del cliente (la tienda suele necesitarlo para la factura/pago); si no lo tienes, PÍDESELO antes. Tras el pago, se confirma automáticamente.',
+      parameters: { type: 'object', properties: {
+        producto: { type: 'string', description: 'Producto que quiere comprar' },
+        cantidad: { type: 'string', description: 'Cantidad (por defecto 1)' },
+        nombre: { type: 'string', description: 'Nombre del cliente (si lo sabes)' },
+        email: { type: 'string', description: 'Email del cliente para la factura/pago. Muchas tiendas lo requieren: si no lo tienes, pídeselo antes de crear el pedido.' },
+        telefono: { type: 'string', description: 'Teléfono del cliente (si lo sabes)' },
+      }, required: ['producto'] } } },
   ]
 }
 async function wooExec(ctx, fnName, args) {
@@ -268,16 +274,31 @@ async function wooExec(ctx, fnName, args) {
       // (la tienda calcula el precio real al crear el pedido).
       const list = await store.searchProductsSmart(accId, args?.producto || '')
       const p = list[0]
-      if (!p) return 'No encontré ese producto para crear el pedido.'
+      if (!p) return `No encontré el producto "${args?.producto || ''}" en la tienda. Pídele al cliente que confirme el nombre exacto o búscalo con buscar_productos.`
       const qty = Math.max(1, parseInt(args?.cantidad) || 1)
-      const customer = { name: ctx.variables?.var_nombre || ctx.variables?.nombre || '', phone: ctx.variables?.telefono || '', email: ctx.variables?.email || '' }
-      const order = await store.createOrder(accId, { items: [{ productId: p.id, variantId: p.variantId, quantity: qty }], customer, convId: ctx.convId, agId: ctx.agId })
+      // Datos del cliente: argumentos de la IA > variables de la conversación > datos de la conv (WhatsApp).
+      let name = args?.nombre || ctx.variables?.var_nombre || ctx.variables?.nombre || ''
+      let email = args?.email || ctx.variables?.email || ''
+      let phone = args?.telefono || ctx.variables?.telefono || ctx.variables?.var_telefono || ''
+      if ((!name || !phone) && ctx.convId) {
+        try {
+          const [[c]] = await require('../../db').query('SELECT guest_name, wa_from FROM conversations WHERE id=? AND account_id=?', [ctx.convId, accId])
+          if (c) {
+            if (!name && c.guest_name && !/^(Visitante|Guest|WA #|FB #|IG #)/i.test(c.guest_name)) name = c.guest_name
+            if (!phone && c.wa_from) phone = c.wa_from
+          }
+        } catch { /* no bloquea */ }
+      }
+      const order = await store.createOrder(accId, { items: [{ productId: p.id, variantId: p.variantId, quantity: qty }], customer: { name, email, phone }, convId: ctx.convId, agId: ctx.agId })
       await sendBotMsg(ctx, `🛒 Pedido creado: ${qty} × ${p.name}\nTotal: ${order.total} ${order.currency}\n\n💳 Paga aquí:\n${order.payUrl}\n\nApenas completes el pago te confirmo automáticamente.`)
       logDebug(ctx, 'tool_result', `🛒 Pedido #${order.orderId} creado (${order.total} ${order.currency})`, {})
       return `Pedido #${order.orderId} creado por ${order.total} ${order.currency}. Ya envié el link de pago al usuario.`
     }
   } catch (e) {
-    logDebug(ctx, 'error', `Tienda: ${e.message}`, {})
+    logDebug(ctx, 'error', `Tienda (${fnName}): ${e.message}`, {})
+    // Devuelve el MOTIVO real para que el modelo se lo diga al cliente (email requerido,
+    // producto sin stock, variante, etc.) en vez de un genérico "no se pudo".
+    if (fnName === 'crear_pedido') return `No se pudo crear el pedido. Motivo exacto de la tienda: "${e.message}". Dile al cliente ese motivo tal cual; si falta un dato (p. ej. su email), pídeselo y reintenta.`
     return `No se pudo completar la acción de la tienda: ${e.message}`
   }
   return 'Acción de tienda no reconocida.'
