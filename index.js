@@ -87,6 +87,7 @@ const agentRoutes         = require('./routes/agents.routes')
 const memberRoutes        = require('./routes/members.routes')
 const pipelineRoutes      = require('./routes/pipelines.routes')
 const resourceRoutes      = require('./routes/resources.routes')
+const galleryRoutes       = require('./routes/gallery.routes')
 const conversationRoutes  = require('./routes/conversations.routes')
 const teamchatRoutes      = require('./routes/teamchat.routes')
 const supportRoutes       = require('./routes/support.routes')
@@ -136,6 +137,7 @@ app.use('/api',               agentRoutes)
 app.use('/api',               memberRoutes)
 app.use('/api',               pipelineRoutes)
 app.use('/api',               resourceRoutes)
+app.use('/api',               galleryRoutes)
 app.use('/api',               savedFiltersRoutes)
 app.use('/api',               campaignsRoutes)
 app.use('/api/conversations',  conversationRoutes)
@@ -190,6 +192,23 @@ app.use('/api',                recontactRoutes)
     // Respuestas rápidas de audio: adjunto (data URL) y tipo del medio pre-guardado.
     "ALTER TABLE quick_replies ADD COLUMN media_data LONGTEXT",
     "ALTER TABLE quick_replies ADD COLUMN media_kind VARCHAR(16)",
+    // Galería de medios (personal / equipo). El CMS se lee aparte (unidireccional).
+    `CREATE TABLE IF NOT EXISTS gallery_items (
+      id VARCHAR(60) PRIMARY KEY,
+      account_id VARCHAR(50) NOT NULL,
+      scope VARCHAR(16) NOT NULL DEFAULT 'personal',
+      owner_id VARCHAR(60),
+      name VARCHAR(255),
+      kind VARCHAR(16),
+      media_id VARCHAR(80),
+      mime VARCHAR(160),
+      size_bytes BIGINT DEFAULT 0,
+      filename VARCHAR(255),
+      created_by VARCHAR(160),
+      created_at BIGINT,
+      INDEX idx_gal_acc (account_id),
+      INDEX idx_gal_owner (account_id, owner_id)
+    )`,
     // Tema de chat predeterminado de la cuenta (aplica a todos sus usuarios).
     "ALTER TABLE accounts ADD COLUMN chat_theme JSON",
     // Optimizador más descriptivo: por qué del cambio + ejemplos reales.
