@@ -187,6 +187,9 @@ app.use('/api',                recontactRoutes)
     "ALTER TABLE platform_settings ADD COLUMN brand_logo LONGTEXT",
     "ALTER TABLE platform_settings ADD COLUMN brand_favicon LONGTEXT",
     "ALTER TABLE platform_settings ADD COLUMN brand_name VARCHAR(120)",
+    // Respuestas rápidas de audio: adjunto (data URL) y tipo del medio pre-guardado.
+    "ALTER TABLE quick_replies ADD COLUMN media_data LONGTEXT",
+    "ALTER TABLE quick_replies ADD COLUMN media_kind VARCHAR(16)",
     // Tema de chat predeterminado de la cuenta (aplica a todos sus usuarios).
     "ALTER TABLE accounts ADD COLUMN chat_theme JSON",
     // Optimizador más descriptivo: por qué del cambio + ejemplos reales.
