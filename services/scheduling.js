@@ -172,6 +172,33 @@ async function upcomingForPhone(accId, cals, phone, tz) {
   return out.sort((a, b) => (a.date + a.time).localeCompare(b.date + b.time))
 }
 
+// Reservas próximas (activas) vinculadas a ESTA conversación (por _bookingIds o
+// meta.conversationId). Cubre webchat / chats sin teléfono, donde el emparejamiento por
+// teléfono no encuentra nada.
+async function upcomingForConv(accId, convId, cals, tz) {
+  if (!convId) return []
+  const today = todayInTz(tz)
+  const allowed = new Set(cals.map(c => c.id))
+  const calName = id => cals.find(x => x.id === id)?.name || ''
+  const out = new Map()
+  const consider = async (id) => {
+    if (!id || out.has(id)) return
+    let b = null
+    try { b = await bookings.getBooking(accId, id) } catch {}
+    if (b && allowed.has(b.calendarId) && b.date >= today && !['cancelled', 'noshow', 'completed'].includes(b.status)) out.set(b.id, { ...b, calendarName: calName(b.calendarId) })
+  }
+  try { const [[c]] = await pool.query('SELECT local_vars FROM conversations WHERE id=? AND account_id=?', [convId, accId]); const ids = parseJ(c?.local_vars, {})?._bookingIds; if (Array.isArray(ids)) for (const id of ids) await consider(id) } catch {}
+  try { const [rows] = await pool.query('SELECT id, meta FROM calendar_bookings WHERE account_id=? AND meta LIKE ?', [accId, `%${convId}%`]); for (const r of rows) { const m = parseJ(r.meta, {}); if (m.conversationId === convId || m.convId === convId) await consider(r.id) } } catch {}
+  return [...out.values()]
+}
+
+// Próximas de la conversación + (si hay teléfono) las emparejadas por teléfono, sin duplicar.
+async function upcomingForConvOrPhone(accId, convId, cals, phone, tz) {
+  const byId = new Map((await upcomingForConv(accId, convId, cals, tz)).map(b => [b.id, b]))
+  if (phone) for (const b of await upcomingForPhone(accId, cals, phone, tz)) if (!byId.has(b.id)) byId.set(b.id, b)
+  return [...byId.values()].sort((a, b) => (a.date + a.time).localeCompare(b.date + b.time))
+}
+
 // TODAS las reservas del cliente (por teléfono) → separadas en próximas y pasadas.
 async function allForPhone(accId, cals, phone, tz) {
   if (!phone) return { upcoming: [], past: [] }
@@ -394,7 +421,7 @@ async function toolCall(accId, fn, args = {}, meta = {}) {
 
     if (fn === 'mover_cita') {
       const cust = await customerFromConv(accId, meta.convId, args)
-      const up = await upcomingForPhone(accId, cals, cust.phone, tz)
+      const up = await upcomingForConvOrPhone(accId, meta.convId, cals, cust.phone, tz)
       if (!up.length) return { text: 'No encontré una cita próxima de este cliente para mover. Pídele el nombre/fecha o que confirme su número.' }
       const target = args.bookingId ? up.find(b => b.id === args.bookingId) : (up.length === 1 ? up[0] : null)
       if (!target) return { text: `El cliente tiene varias citas próximas. Pregúntale cuál mover:\n${up.map(b => `• ${b.calendarName}: ${prettyDate(b.date)} ${b.time} (id ${b.id})`).join('\n')}` }
@@ -409,7 +436,7 @@ async function toolCall(accId, fn, args = {}, meta = {}) {
 
     if (fn === 'cancelar_cita') {
       const cust = await customerFromConv(accId, meta.convId, args)
-      const up = await upcomingForPhone(accId, cals, cust.phone, tz)
+      const up = await upcomingForConvOrPhone(accId, meta.convId, cals, cust.phone, tz)
       if (!up.length) return { text: 'No encontré una cita próxima de este cliente para cancelar. Confirma su nombre o número.' }
       const target = args.bookingId ? up.find(b => b.id === args.bookingId) : (up.length === 1 ? up[0] : null)
       if (!target) return { text: `El cliente tiene varias citas. Pregúntale cuál cancelar:\n${up.map(b => `• ${b.calendarName}: ${prettyDate(b.date)} ${b.time} (id ${b.id})`).join('\n')}` }
@@ -421,7 +448,7 @@ async function toolCall(accId, fn, args = {}, meta = {}) {
 
     if (fn === 'confirmar_cita') {
       const cust = await customerFromConv(accId, meta.convId, args)
-      const up = await upcomingForPhone(accId, cals, cust.phone, tz)
+      const up = await upcomingForConvOrPhone(accId, meta.convId, cals, cust.phone, tz)
       if (!up.length) return { text: 'No encontré una cita próxima de este cliente para confirmar. Confirma su nombre o número.' }
       const target = args.bookingId ? up.find(b => b.id === args.bookingId) : (up.length === 1 ? up[0] : null)
       if (!target) return { text: `El cliente tiene varias citas. Pregúntale cuál confirmar:\n${up.map(b => `• ${b.calendarName}: ${prettyDate(b.date)} ${b.time} (id ${b.id})`).join('\n')}` }
