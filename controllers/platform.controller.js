@@ -103,6 +103,9 @@ const getSettings = async (req, res) => {
           smtpSecure: !!r.smtp_secure,
           signupVerifyEnabled: !!r.signup_verify_enabled,
           login2faEnabled: !!r.login_2fa_enabled,
+          brandLogo: r.brand_logo || '',
+          brandFavicon: r.brand_favicon || '',
+          brandName: r.brand_name || '',
         }
       : {
           changeAgentModel: 'gpt-4o-mini',
@@ -143,6 +146,7 @@ const getSettings = async (req, res) => {
           smtpHost: '', smtpPort: 587, smtpUser: '', hasSmtpPass: false, smtpSecure: false,
           signupVerifyEnabled: false,
           login2faEnabled: false,
+          brandLogo: '', brandFavicon: '', brandName: '',
         })
   } catch (err) { res.status(500).json({ error: 'Error interno' }) }
 }
@@ -164,9 +168,13 @@ const updateSettings = async (req, res) => {
     demoAdsEnabled, demoAdsHtml,
     emailProvider, emailApiKey, emailFrom, emailFromName, signupVerifyEnabled, login2faEnabled,
     smtpHost, smtpPort, smtpUser, smtpPass, smtpSecure,
+    brandLogo, brandFavicon, brandName,
   } = req.body
   try {
     const sets = []; const vals = []
+    if (brandLogo    !== undefined) { sets.push('brand_logo=?');    vals.push(brandLogo || null) }
+    if (brandFavicon !== undefined) { sets.push('brand_favicon=?'); vals.push(brandFavicon || null) }
+    if (brandName    !== undefined) { sets.push('brand_name=?');    vals.push(String(brandName || '').slice(0, 120) || null) }
     if (changeAgentModel          !== undefined) { sets.push('change_agent_model=?');           vals.push(changeAgentModel) }
     if (changeAgentDefaultLimit   !== undefined) { sets.push('change_agent_default_limit=?');   vals.push(changeAgentDefaultLimit) }
     if (changeAgentTokenLimits    !== undefined) { sets.push('change_agent_token_limits=?');    vals.push(JSON.stringify(changeAgentTokenLimits)) }
@@ -238,11 +246,15 @@ const updateSettings = async (req, res) => {
 // Public endpoint — returns only safe/public platform fields (no auth required)
 const getPublicIntegrations = async (req, res) => {
   try {
-    const [[r]] = await pool.query('SELECT meta_app_id, meta_config_id, media_max_size_mb FROM platform_settings WHERE id=1')
+    const [[r]] = await pool.query('SELECT meta_app_id, meta_config_id, media_max_size_mb, brand_logo, brand_favicon, brand_name FROM platform_settings WHERE id=1')
     res.json({
       metaAppId: r?.meta_app_id || '',
       metaConfigId: r?.meta_config_id || '',
       mediaMaxSizeMb: r?.media_max_size_mb || 30,
+      // Marca pública (para logo y favicon incluso antes de iniciar sesión).
+      brandLogo: r?.brand_logo || '',
+      brandFavicon: r?.brand_favicon || '',
+      brandName: r?.brand_name || '',
     })
   } catch (err) { res.status(500).json({ error: 'Error interno' }) }
 }

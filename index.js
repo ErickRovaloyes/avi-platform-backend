@@ -183,6 +183,10 @@ app.use('/api',                recontactRoutes)
     // Perfil de usuario: foto propia (data URL o enlace) por miembro y super admin.
     "ALTER TABLE members ADD COLUMN photo MEDIUMTEXT",
     "ALTER TABLE super_admins ADD COLUMN photo MEDIUMTEXT",
+    // Marca de la plataforma (super admin): logo, favicon y nombre mostrado en la pestaña.
+    "ALTER TABLE platform_settings ADD COLUMN brand_logo LONGTEXT",
+    "ALTER TABLE platform_settings ADD COLUMN brand_favicon LONGTEXT",
+    "ALTER TABLE platform_settings ADD COLUMN brand_name VARCHAR(120)",
     // Tema de chat predeterminado de la cuenta (aplica a todos sus usuarios).
     "ALTER TABLE accounts ADD COLUMN chat_theme JSON",
     // Optimizador más descriptivo: por qué del cambio + ejemplos reales.
