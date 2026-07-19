@@ -198,12 +198,14 @@ async function notify(accId, calendar, booking, event, opts = {}) {
   try {
     const n = calendar.notifications || {}
     const cfg = n.events?.[event] || {}
-    const mode = cfg.mode || (cfg.flowId ? 'flow' : (cfg.template ? 'template' : 'default'))
+    // opts.mode/opts.flowId permiten forzar el método por reserva (p. ej. una cita manual
+    // que elige "confirmación por IA" o "por flujo"), por encima de la config del calendario.
+    const mode = opts.mode || cfg.mode || (cfg.flowId ? 'flow' : (cfg.template ? 'template' : 'default'))
     if (mode === 'off') return false
     // Eventos legacy (confirmation/reschedule/cancellation/reminder) requieren enabled:true.
     // Los de Google (confirmed/cancelled_by_guest) usan force → disparan salvo mode='off'.
     if (!opts.force && cfg.enabled !== true) return false
-    if (mode === 'flow') { const flowId = cfg.flowId || n.flowId; if (flowId) return await runEventFlow(accId, calendar, booking, event, flowId) }
+    if (mode === 'flow') { const flowId = opts.flowId || cfg.flowId || n.flowId; if (flowId) return await runEventFlow(accId, calendar, booking, event, flowId) }
     if (mode === 'ia') { const instr = cfg.iaInstruction || opts.iaInstruction; if (instr && await notifyIa(accId, calendar, booking, event, instr)) return true }
     if (mode === 'template' && cfg.template) return await notifyTemplate(accId, calendar, booking, event, cfg)
     // default (o fallback si flow/ia/template no pudieron): mensaje integrado.

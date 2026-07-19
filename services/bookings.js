@@ -518,10 +518,20 @@ function registerOutboxHandlers() {
       const calendar = await getCalendar(ev.accId, ev.payload.calendarId)
       const bk = await getBooking(ev.accId, ev.aggregateId)
       if (!calendar || !bk) return
-      notify(ev.accId, calendar, bk, 'confirmation', {
+      const cDefault = {
         defaultText: '✅ ¡Tu cita quedó agendada para el {{reserva_fecha}} a las {{reserva_hora}} ({{calendario}})! Te esperamos. 🙌',
         iaInstruction: 'Confírmale al cliente que su cita quedó agendada e indícale la fecha y hora.',
-      }).catch(() => {})
+      }
+      // Directiva de confirmación por reserva (citas manuales): elige método IA/flujo/ninguno,
+      // por encima de la config del calendario. Sin directiva → comportamiento por defecto.
+      const cf = bk.meta?.confirm
+      if (cf && cf.method) {
+        if (cf.method === 'flow' && cf.flowId) notify(ev.accId, calendar, bk, 'confirmation', { ...cDefault, force: true, mode: 'flow', flowId: cf.flowId }).catch(() => {})
+        else if (cf.method === 'ia') notify(ev.accId, calendar, bk, 'confirmation', { ...cDefault, force: true, mode: 'ia' }).catch(() => {})
+        // cf.method === 'none' → no se envía confirmación.
+      } else {
+        notify(ev.accId, calendar, bk, 'confirmation', cDefault).catch(() => {})
+      }
       sync.pushBooking(ev.accId, calendar, bk, 'create').then(eventId => {
         if (eventId) pool.query('UPDATE calendar_bookings SET external_id=? WHERE id=?', [eventId, bk.id]).catch(() => {})
       }).catch(() => {})
