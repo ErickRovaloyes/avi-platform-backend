@@ -334,7 +334,7 @@ async function toolCall(accId, fn, args = {}, meta = {}) {
             // conversación y lo pasa como argumento (dato_<slug de la etiqueta>). Se
             // guarda en la variable indicada (id personalizada o nombre de sistema).
             const bvList = Array.isArray(cal.bookingVars) ? cal.bookingVars : []
-            const bvSaved = {}, bvMissing = []
+            const bvSaved = {}, bvMissing = [], savedVarNames = []
             for (const bv of bvList) {
               if (!bv?.label || !bv?.variable) continue
               const pname = bookings.bookingVarParam(bv.label)
@@ -354,10 +354,17 @@ async function toolCall(accId, fn, args = {}, meta = {}) {
                 else if (/hora|time/.test(nl)) val = time
                 else if (/servicio|calendario|agenda/.test(nl)) val = args.servicio || cal.name
               }
-              if (val !== undefined && val !== null && String(val).trim() !== '') { lv[bv.variable] = val; bvSaved[bv.label] = val }
+              if (val !== undefined && val !== null && String(val).trim() !== '') { lv[bv.variable] = val; bvSaved[bv.label] = val; savedVarNames.push(bv.variable) }
               else bvMissing.push(`${bv.label} (${pname})`)
             }
             await pool.query('UPDATE conversations SET local_vars=? WHERE id=? AND account_id=?', [JSON.stringify(lv), meta.convId, accId])
+            // Anclaje al lead: refleja en el contacto SOLO los campos (nombre/teléfono/email)
+            // que se acaban de capturar en variables al agendar (no toca los demás). Best-effort.
+            try {
+              const contactSync = require('./contactSync')
+              const only = [...new Set(savedVarNames.map(v => contactSync.contactFieldForVar(v)).filter(Boolean))]
+              if (only.length) await contactSync.syncContactFromVars(accId, lv, only)
+            } catch { /* non-critical */ }
             // Diagnóstico visible en el debug del chat: cuántos datos se guardaron, cuáles
             // faltaron (la IA no los pasó) y si el calendario tenía campos configurados.
             if (bvList.length) {

@@ -410,6 +410,12 @@ const patchVars = async (req, res) => {
     vars[varId] = value
     // Local var changes don't reorder the chat list — only new messages do.
     await pool.query('UPDATE conversations SET local_vars=? WHERE id=?', [JSON.stringify(vars), convId])
+    // Anclaje al lead: si la variable editada es nombre/teléfono/email, refleja el cambio
+    // en el contacto vinculado (o por teléfono). Best-effort, no bloquea la respuesta.
+    try {
+      const contactSync = require('../services/contactSync')
+      if (contactSync.isBoundVar(varId)) await contactSync.syncContactFromVars(accId, vars, [contactSync.contactFieldForVar(varId)])
+    } catch { /* non-critical */ }
     socket.emit(accId, 'convos:updated', { accId, agId })
     res.json({ ok: true })
   } catch (err) { res.status(500).json({ error: 'Error interno' }) }
