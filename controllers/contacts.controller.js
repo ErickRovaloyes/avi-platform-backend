@@ -55,6 +55,12 @@ const update = async (req, res) => {
     if (!sets.length) return res.json({ ok: true })
     vals.push(id, accId)
     await pool.query(`UPDATE contacts SET ${sets.join(',')} WHERE id=? AND account_id=?`, vals)
+    // Coherencia del lead: refleja el cambio en las conversaciones del contacto (nombre
+    // visible del chat + variables ancladas). Best-effort; no bloquea la respuesta.
+    try {
+      await require('../services/contactSync').syncConversationsFromContact(accId, id, { name, phone, email })
+      require('../services/socket').emit(accId, 'convos:updated', { accId })
+    } catch { /* non-critical */ }
     res.json({ ok: true })
   } catch (err) { res.status(500).json({ error: 'Error interno' }) }
 }

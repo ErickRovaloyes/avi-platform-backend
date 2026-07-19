@@ -61,4 +61,30 @@ async function syncContactFromVars(accId, lv, only = null) {
   catch { return false }
 }
 
-module.exports = { syncContactFromVars, isBoundVar, contactFieldForVar, NAME_KEYS, PHONE_KEYS, EMAIL_KEYS }
+// Dirección inversa: al editar el contacto (CRM o panel del chat) refleja nombre/teléfono/
+// email en TODAS sus conversaciones — guest_name (nombre visible del chat) + las variables
+// ancladas de local_vars — para que el lead sea el mismo en todos lados. Best-effort.
+async function syncConversationsFromContact(accId, contactId, fields = {}) {
+  if (!contactId) return false
+  const has = k => fields[k] !== undefined && fields[k] !== null
+  if (!has('name') && !has('phone') && !has('email')) return false
+  try {
+    const [rows] = await pool.query(
+      "SELECT id, guest_name, local_vars FROM conversations WHERE account_id=? AND JSON_UNQUOTE(JSON_EXTRACT(local_vars,'$.contact_id'))=?",
+      [accId, contactId]
+    )
+    for (const c of rows) {
+      const lv = (() => { try { return JSON.parse(c.local_vars) || {} } catch { return {} } })()
+      if (has('name')) for (const k of ['var_nombre', 'nombre', 'user_name']) lv[k] = String(fields.name)
+      if (has('phone')) for (const k of ['var_telefono', 'telefono', 'user_phone']) lv[k] = String(fields.phone)
+      if (has('email')) for (const k of ['var_email', 'email', 'user_email']) lv[k] = String(fields.email)
+      const sets = ['local_vars=?']; const vals = [JSON.stringify(lv)]
+      if (has('name') && String(fields.name).trim()) { sets.push('guest_name=?'); vals.push(String(fields.name)) }
+      vals.push(c.id, accId)
+      await pool.query(`UPDATE conversations SET ${sets.join(',')} WHERE id=? AND account_id=?`, vals).catch(() => {})
+    }
+    return true
+  } catch { return false }
+}
+
+module.exports = { syncContactFromVars, syncConversationsFromContact, isBoundVar, contactFieldForVar, NAME_KEYS, PHONE_KEYS, EMAIL_KEYS }
