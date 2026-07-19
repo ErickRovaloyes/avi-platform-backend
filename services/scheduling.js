@@ -202,32 +202,45 @@ async function bookingsForConv(accId, convId) {
   const tz = cals[0].timezone || 'America/Lima'
   const today = todayInTz(tz)
   const cust = await customerFromConv(accId, convId)
-  const upcoming = [], past = []
-  if (cust.phone) {
-    const r = await allForPhone(accId, cals, cust.phone, tz)
-    upcoming.push(...r.upcoming); past.push(...r.past)
+  const allowed = new Set(cals.map(c => c.id))
+  const calName = id => cals.find(x => x.id === id)?.name || ''
+
+  // SOLO las citas hechas DESDE ESTE CHAT. Se identifican por su vínculo con la
+  // conversación (meta.conversationId === convId, guardado al agendar) o por los ids
+  // registrados en local_vars._bookingIds. NO se emparejan por teléfono: así la tarjeta
+  // nunca mezcla citas de otros clientes ni de otros chats del mismo cliente.
+  const collected = new Map()
+  const consider = async (id) => {
+    if (!id || collected.has(id)) return
+    let b = null
+    try { b = await bookings.getBooking(accId, id) } catch {}
+    if (b && allowed.has(b.calendarId)) collected.set(b.id, b)
   }
-  // Además: citas vinculadas directamente a esta conversación (_bookingIds en
-  // local_vars, guardadas al agendar). Cubre webchat sin teléfono en el chat.
+  // 1) ids vinculados a la conversación (últimos agendados desde este chat).
   try {
     const [[c]] = await pool.query('SELECT local_vars FROM conversations WHERE id=? AND account_id=?', [convId, accId])
     const ids = parseJ(c?.local_vars, {})?._bookingIds
-    if (Array.isArray(ids) && ids.length) {
-      const seen = new Set([...upcoming, ...past].map(b => b.id))
-      const calName = id => cals.find(x => x.id === id)?.name || ''
-      for (const id of ids) {
-        if (seen.has(id)) continue
-        let b = null
-        try { b = await bookings.getBooking(accId, id) } catch {}
-        if (!b) continue
-        const item = { ...b, calendarName: calName(b.calendarId) }
-        const isPast = b.date < today || ['completed', 'noshow', 'cancelled'].includes(b.status)
-        if (isPast) past.push(item); else upcoming.push(item)
-      }
-      upcoming.sort((a, b) => (a.date + a.time).localeCompare(b.date + b.time))
-      past.sort((a, b) => (b.date + b.time).localeCompare(a.date + a.time))
+    if (Array.isArray(ids)) for (const id of ids) await consider(id)
+  } catch { /* best-effort */ }
+  // 2) cualquier reserva cuyo meta.conversationId sea esta conversación (cubre el
+  // historial completo, más allá de los últimos ids guardados). LIKE amplio + verificación
+  // exacta en JS (evita depender de JSON_EXTRACT y comodines de LIKE).
+  try {
+    const [rows] = await pool.query('SELECT id, meta FROM calendar_bookings WHERE account_id=? AND meta LIKE ?', [accId, `%${convId}%`])
+    for (const r of rows) {
+      const m = parseJ(r.meta, {})
+      if (m.conversationId === convId || m.convId === convId) await consider(r.id)
     }
   } catch { /* best-effort */ }
+
+  const upcoming = [], past = []
+  for (const b of collected.values()) {
+    const item = { ...b, calendarName: calName(b.calendarId) }
+    const isPast = b.date < today || ['completed', 'noshow', 'cancelled'].includes(b.status)
+    if (isPast) past.push(item); else upcoming.push(item)
+  }
+  upcoming.sort((a, b) => (a.date + a.time).localeCompare(b.date + b.time))
+  past.sort((a, b) => (b.date + b.time).localeCompare(a.date + a.time))
   const map = b => ({ id: b.id, date: b.date, time: b.time, duration: Number(b.duration) || null, calendarId: b.calendarId, calendarName: b.calendarName, status: b.status || 'pending', statusLabel: STATUS_ES[b.status] || b.status || 'pendiente', clientName: b.clientName || '', notes: b.notes || '' })
   return { enabled: true, customer: cust, upcoming: upcoming.map(map), past: past.slice(0, 10).map(map) }
 }
