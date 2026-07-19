@@ -393,6 +393,19 @@ async function toolCall(accId, fn, args = {}, meta = {}) {
         return { text: `✅ Cita cancelada: ${prettyDate(target.date)} ${target.time} en "${target.calendarName}".` }
       } catch (e) { return { text: `No se pudo cancelar: ${e.message}.` } }
     }
+
+    if (fn === 'confirmar_cita') {
+      const cust = await customerFromConv(accId, meta.convId, args)
+      const up = await upcomingForPhone(accId, cals, cust.phone, tz)
+      if (!up.length) return { text: 'No encontré una cita próxima de este cliente para confirmar. Confirma su nombre o número.' }
+      const target = args.bookingId ? up.find(b => b.id === args.bookingId) : (up.length === 1 ? up[0] : null)
+      if (!target) return { text: `El cliente tiene varias citas. Pregúntale cuál confirmar:\n${up.map(b => `• ${b.calendarName}: ${prettyDate(b.date)} ${b.time} (id ${b.id})`).join('\n')}` }
+      if (target.status === 'confirmed') return { text: `Su cita del ${prettyDate(target.date)} ${target.time} en "${target.calendarName}" ya estaba confirmada. Agradécele.` }
+      try {
+        await bookings.setBookingStatus(accId, target.id, 'confirmed')
+        return { text: `✅ Asistencia confirmada para la cita del ${prettyDate(target.date)} (${target.date}) ${target.time} en "${target.calendarName}". Agradécele al cliente por confirmar.` }
+      } catch (e) { return { text: `No se pudo confirmar: ${e.message}.` } }
+    }
   } catch (e) { return { text: `No se pudo completar la acción de agenda: ${e.message}` } }
   return { text: 'Acción de agenda no reconocida.' }
 }

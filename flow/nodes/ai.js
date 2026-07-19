@@ -420,7 +420,7 @@ async function catalogExec(ctx, fnName, args) {
 }
 
 // ── Agenda de citas: herramienta especial con varias funciones ─────────────────
-const AGENDA_FUNCS = new Set(['ver_disponibilidad', 'recomendar_citas', 'agendar_cita', 'mover_cita', 'cancelar_cita', 'ver_mis_citas'])
+const AGENDA_FUNCS = new Set(['ver_disponibilidad', 'recomendar_citas', 'agendar_cita', 'mover_cita', 'cancelar_cita', 'confirmar_cita', 'ver_mis_citas'])
 function buildAgendaToolDefs(account) {
   const cals = account?.scheduling?.calendars || []
   if (!cals.length) return []
@@ -454,6 +454,7 @@ function buildAgendaToolDefs(account) {
     { type: 'function', function: { name: 'agendar_cita', description: agendarDesc, parameters: { type: 'object', properties: { fecha: { type: 'string', description: 'Fecha tal cual la dijo el cliente ("lunes", "15 de julio") o YYYY-MM-DD; NO la calcules tú.' }, hora: { type: 'string', description: 'HH:MM' }, servicio: { type: 'string', description: servicioDesc }, nombre: { type: 'string', description: 'Nombre del cliente' }, telefono: { type: 'string' }, email: { type: 'string' }, nota: { type: 'string' }, ...collectProps }, required: ['fecha', 'hora'] } } },
     { type: 'function', function: { name: 'mover_cita', description: 'Reagenda la cita del cliente a otra fecha/hora.', parameters: { type: 'object', properties: { nueva_fecha: { type: 'string', description: 'Fecha tal cual la dijo el cliente ("lunes", "15 de julio") o YYYY-MM-DD; NO la calcules tú.' }, nueva_hora: { type: 'string', description: 'HH:MM' }, telefono: { type: 'string' }, bookingId: { type: 'string', description: 'id de la cita si el cliente tiene varias' } }, required: ['nueva_fecha', 'nueva_hora'] } } },
     { type: 'function', function: { name: 'cancelar_cita', description: 'Cancela la cita del cliente.', parameters: { type: 'object', properties: { telefono: { type: 'string' }, bookingId: { type: 'string', description: 'id de la cita si tiene varias' } } } } },
+    { type: 'function', function: { name: 'confirmar_cita', description: 'Marca como CONFIRMADA la asistencia del cliente a su próxima cita. Úsalo cuando el cliente confirme que sí asistirá (responde "sí", "confirmo", "ahí estaré", "asistiré", etc.), típicamente tras un recordatorio.', parameters: { type: 'object', properties: { telefono: { type: 'string' }, bookingId: { type: 'string', description: 'id de la cita si el cliente tiene varias' } } } } },
     { type: 'function', function: { name: 'ver_mis_citas', description: 'Muestra las citas del cliente: las ACTIVAS/próximas y las ANTERIORES (historial). Úsalo cuando el cliente pregunte "¿qué citas tengo?" o por su historial.', parameters: { type: 'object', properties: { telefono: { type: 'string', description: 'Teléfono del cliente (si no, se toma el de la conversación)' } } } } },
   ]
 }
@@ -1050,7 +1051,7 @@ const aiNodes = [
       if (_sch?.connected) {
         let hoy = ''
         try { hoy = new Date().toLocaleDateString('es-CO', { timeZone: _sch.timezone || 'America/Lima', weekday: 'long', year: 'numeric', month: 'long', day: 'numeric' }) } catch { hoy = new Date().toISOString().slice(0, 10) }
-        sysWithRag = `${sysWithRag}\n\n📅 HOY es ${hoy} (zona horaria ${_sch.timezone || 'America/Lima'}). Para citas usa SIEMPRE la herramienta de agenda (ver_disponibilidad / recomendar_citas / agendar_cita / mover_cita / cancelar_cita); NO inventes horarios ni confirmes citas sin la herramienta.`
+        sysWithRag = `${sysWithRag}\n\n📅 HOY es ${hoy} (zona horaria ${_sch.timezone || 'America/Lima'}). Para citas usa SIEMPRE la herramienta de agenda (ver_disponibilidad / recomendar_citas / agendar_cita / mover_cita / cancelar_cita / confirmar_cita); NO inventes horarios ni confirmes citas sin la herramienta. Si el cliente confirma su asistencia (p. ej. tras un recordatorio: "sí", "confirmo", "ahí estaré"), llama a confirmar_cita.`
       }
 
       // Recontacto: si el flujo se disparó como recontacto inteligente, inyecta la

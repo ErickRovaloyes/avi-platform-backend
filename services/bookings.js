@@ -541,6 +541,20 @@ function registerOutboxHandlers() {
     } catch (e) { console.warn('[handler BookingRescheduled]', e.message) }
   })
 
+  // El cliente confirmó su asistencia desde el chat → reflejarlo en Google Calendar
+  // (marca al invitado como "accepted"). Marcamos meta.gcalResp='accepted' ANTES para que
+  // el eco del webhook de Google (nuestro propio PATCH) no dispare "gracias por confirmar".
+  events.on('BookingConfirmed', async (ev) => {
+    try {
+      const calendar = await getCalendar(ev.accId, ev.payload.calendarId)
+      const bk = await getBooking(ev.accId, ev.aggregateId)
+      if (!calendar || !bk) return
+      const meta = { ...(bk.meta || {}), gcalResp: 'accepted' }
+      await pool.query('UPDATE calendar_bookings SET meta=? WHERE id=? AND account_id=?', [JSON.stringify(meta), bk.id, ev.accId]).catch(() => {})
+      sync.pushResponseStatus(ev.accId, calendar, { ...bk, meta }, 'accepted').catch(() => {})
+    } catch (e) { console.warn('[handler BookingConfirmed]', e.message) }
+  })
+
   events.on('BookingCancelled', async (ev) => {
     try {
       const calendar = await getCalendar(ev.accId, ev.payload.calendarId)

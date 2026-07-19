@@ -381,6 +381,14 @@ async function deleteCalendarEvent(token, calendarId, eventId) {
   if (!res.ok && res.status !== 404 && res.status !== 410) throw new Error(`Calendar delete HTTP ${res.status}`)
   return true
 }
+function getCalendarEvent(token, calendarId, eventId) {
+  return calApi(token, `calendars/${encodeURIComponent(calendarId)}/events/${encodeURIComponent(eventId)}`)
+}
+// PATCH silencioso (sendUpdates=none) — para reflejar el RSVP del invitado sin reenviar
+// correos de invitación. El organizador (la cuenta) puede fijar el responseStatus de un asistente.
+function updateCalendarEventQuiet(token, calendarId, eventId, event) {
+  return calApi(token, `calendars/${encodeURIComponent(calendarId)}/events/${encodeURIComponent(eventId)}`, { method: 'PATCH', body: event, qs: { sendUpdates: 'none' } })
+}
 async function freeBusy(token, calendarId, timeMinIso, timeMaxIso) {
   const data = await calApi(token, 'freeBusy', { method: 'POST', body: { timeMin: timeMinIso, timeMax: timeMaxIso, items: [{ id: calendarId }] } })
   return data?.calendars?.[calendarId]?.busy || []
@@ -432,6 +440,6 @@ module.exports = {
   saveIntegration, getValidAccessToken, listConnections, disconnectConnection,
   readRows, appendRow, updateRange, clearRange, extractSpreadsheetId,
   rowsToRecords, filterSheetRows, runSheetsOperation,
-  createCalendarEvent, updateCalendarEvent, deleteCalendarEvent, freeBusy,
+  createCalendarEvent, updateCalendarEvent, deleteCalendarEvent, getCalendarEvent, updateCalendarEventQuiet, freeBusy,
   watchEvents, stopChannel, getInitialSyncToken, listChanges,
 }

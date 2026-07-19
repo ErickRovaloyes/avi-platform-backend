@@ -148,6 +148,28 @@ async function pushBooking(accId, calendar, booking, action) {
   }
 }
 
+// Refleja en Google el RSVP del invitado (cuando el cliente confirma/rechaza desde el
+// chat): fija el responseStatus del asistente (su correo) en el evento. El organizador
+// (la cuenta dueña del calendario) puede modificarlo. Best-effort; no reenvía correos.
+async function pushResponseStatus(accId, calendar, booking, responseStatus) {
+  const gi = calendar.integrations?.google
+  if (!gi?.enabled || !booking.externalId) return false
+  const email = String(booking.clientEmail || '').trim()
+  if (!email || !/@/.test(email)) return false // sin invitado con correo no hay a quién marcar
+  const calId = gi.calendarId || 'primary'
+  try {
+    const token = await g.getValidAccessToken(accId, gi.connectionId)
+    const ev = await g.getCalendarEvent(token, calId, booking.externalId)
+    const attendees = Array.isArray(ev.attendees) ? ev.attendees.map(a => ({ ...a })) : []
+    const lc = email.toLowerCase()
+    let found = false
+    for (const a of attendees) { if (a.email && String(a.email).toLowerCase() === lc) { a.responseStatus = responseStatus; found = true } }
+    if (!found) attendees.push({ email, displayName: booking.clientName || undefined, responseStatus })
+    await g.updateCalendarEventQuiet(token, calId, booking.externalId, { attendees })
+    return true
+  } catch (e) { console.warn('[calendarSync response]', e.message); return false }
+}
+
 // Intervalos ocupados de Google para una fecha → "reservas" virtuales (bloquean).
 async function googleBusyForDate(accId, calendar, dateStr) {
   try {
@@ -200,4 +222,4 @@ async function busyForDate(accId, calendar, dateStr) {
   return [...g, ...o]
 }
 
-module.exports = { pushBooking, googleBusyForDate, outlookBusyForDate, busyForDate }
+module.exports = { pushBooking, pushResponseStatus, googleBusyForDate, outlookBusyForDate, busyForDate }
