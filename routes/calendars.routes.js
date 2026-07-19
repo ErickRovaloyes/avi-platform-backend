@@ -25,6 +25,9 @@ router.put('/accounts/:accId/bookings/:bookingId',           authMiddleware, ctr
 router.post('/accounts/:accId/bookings/:bookingId/reschedule', authMiddleware, ctrl.rescheduleBooking)
 router.post('/accounts/:accId/bookings/:bookingId/status',   authMiddleware, ctrl.setStatus)
 router.delete('/accounts/:accId/bookings/:bookingId',        authMiddleware, ctrl.deleteBooking)
+router.get('/accounts/:accId/bookings/:bookingId/chat',      authMiddleware, ctrl.bookingChat)
+// Agenda general: reservas de todos los calendarios + tareas del CRM en un rango.
+router.get('/accounts/:accId/agenda',                        authMiddleware, ctrl.agenda)
 // Cliente / paciente / huésped — historial (datos + reservas)
 router.get('/accounts/:accId/customers/:customerId/history', authMiddleware, ctrl.customerHistory)
 

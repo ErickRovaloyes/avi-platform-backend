@@ -135,6 +135,78 @@ const createBooking = async (req, res) => {
   } catch (err) { res.status(400).json({ error: err.message || 'Error' }) }
 }
 
+// ── Agenda general: reservas de TODOS los calendarios + tareas del CRM en un rango.
+// Alimenta el "Calendario general" (capas por origen, color por calendario).
+const { parseJ } = require('../utils')
+const agenda = async (req, res) => {
+  const { accId } = req.params
+  const from = String(req.query.from || '').slice(0, 10)
+  const to = String(req.query.to || '').slice(0, 10)
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(from) || !/^\d{4}-\d{2}-\d{2}$/.test(to)) return res.status(400).json({ error: 'from/to (YYYY-MM-DD) requeridos' })
+  try {
+    const [cals] = await pool.query('SELECT id, name, color, vertical, timezone FROM calendars WHERE account_id=?', [accId])
+    const calMap = Object.fromEntries(cals.map(c => [c.id, c]))
+    const [bks] = await pool.query(
+      `SELECT * FROM calendar_bookings WHERE account_id=? AND date BETWEEN ? AND ? AND status <> 'cancelled' ORDER BY date, time`,
+      [accId, from, to]
+    )
+    const bookingItems = bks.map(r => {
+      const c = calMap[r.calendar_id] || {}
+      const meta = parseJ(r.meta, {})
+      return {
+        type: 'booking', id: r.id, calendarId: r.calendar_id, calendarName: c.name || 'Calendario',
+        color: c.color || '#7c6fff', title: r.client_name || c.name || 'Reserva',
+        clientName: r.client_name || '', clientPhone: r.client_phone || '', clientEmail: r.client_email || '',
+        date: r.date, time: r.time, duration: Number(r.duration) || 30, status: r.status || 'pending',
+        channel: r.channel || 'manual', convId: meta.conversationId || meta.convId || null,
+        externalId: r.external_id || null, notes: r.notes || '',
+      }
+    })
+    // Tareas con vencimiento (due_at) dentro del rango [from 00:00, to 23:59:59] en ms.
+    const fromMs = Date.parse(`${from}T00:00:00`)
+    const toMs = Date.parse(`${to}T23:59:59.999`)
+    const [tks] = await pool.query(
+      'SELECT * FROM crm_tasks WHERE account_id=? AND due_at IS NOT NULL AND due_at BETWEEN ? AND ? ORDER BY due_at',
+      [accId, fromMs, toMs]
+    )
+    const taskItems = tks.map(r => ({
+      type: 'task', id: r.id, title: r.title || 'Tarea', description: r.description || '',
+      dueAt: Number(r.due_at), status: r.status || 'open', priority: r.priority || 'normal',
+      refs: parseJ(r.refs, []), targetType: r.target_type || null, targetId: r.target_id || null,
+      assigneeName: r.assignee_name || '',
+    }))
+    res.json({
+      calendars: cals.map(c => ({ id: c.id, name: c.name, color: c.color || '#7c6fff' })),
+      items: [...bookingItems, ...taskItems],
+    })
+  } catch (err) { console.error('[agenda]', err); res.status(500).json({ error: 'Error interno' }) }
+}
+
+// Resuelve la conversación (chat) asociada a una reserva → { agentId, convId } | nulls.
+// Usa meta.conversationId; si no, busca un chat de WhatsApp por el teléfono del cliente.
+const bookingChat = async (req, res) => {
+  const { accId, bookingId } = req.params
+  try {
+    const [[b]] = await pool.query('SELECT * FROM calendar_bookings WHERE id=? AND account_id=?', [bookingId, accId])
+    if (!b) return res.status(404).json({ error: 'Reserva no encontrada' })
+    const meta = parseJ(b.meta, {})
+    const convId = meta.conversationId || meta.convId || null
+    if (convId) {
+      const [[c]] = await pool.query('SELECT id, agent_id FROM conversations WHERE id=? AND account_id=?', [convId, accId])
+      if (c) return res.json({ agentId: c.agent_id, convId: c.id })
+    }
+    const phone = String(b.client_phone || '').replace(/[^\d]/g, '')
+    if (phone.length >= 7) {
+      const [[c]] = await pool.query(
+        "SELECT id, agent_id FROM conversations WHERE account_id=? AND REPLACE(REPLACE(REPLACE(wa_from,'+',''),' ',''),'-','') LIKE ? ORDER BY updated_at DESC LIMIT 1",
+        [accId, `%${phone.slice(-9)}`]
+      )
+      if (c) return res.json({ agentId: c.agent_id, convId: c.id })
+    }
+    res.json({ agentId: null, convId: null })
+  } catch (err) { res.status(500).json({ error: 'Error interno' }) }
+}
+
 const updateBooking = async (req, res) => {
   const { accId, bookingId } = req.params
   try { res.json(await bookings.updateBooking(accId, bookingId, req.body || {})) }
@@ -396,6 +468,7 @@ const holidays = async (req, res) => {
 module.exports = {
   list, get, create, update, remove, availability, monthAvailability,
   listBookings, createBooking, updateBooking, rescheduleBooking, setStatus, deleteBooking, exportBookings,
+  agenda, bookingChat,
   getPublic, getPublicAvailability, getPublicMonthAvailability, createPublicBooking, flowOp, holidays,
   customerHistory, runBookingFlow,
 }

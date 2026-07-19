@@ -145,10 +145,15 @@ async function customerFromConv(accId, convId, args = {}) {
   }
 }
 
+// Coincidencia de teléfonos ROBUSTA: ambos deben tener ≥8 dígitos y compartir el
+// mismo sufijo de min(len,10) dígitos. Evita que un teléfono corto/erróneo del
+// contacto (p. ej. una variable mal configurada) haga match con TODOS los clientes.
 const phoneMatch = (bookingPhone, phone) => {
   const a = String(bookingPhone || '').replace(/[^\d]/g, '')
-  if (!a || !phone) return false
-  return a.endsWith(phone.slice(-8)) || phone.endsWith(a.slice(-8))
+  const b = String(phone || '').replace(/[^\d]/g, '')
+  if (a.length < 8 || b.length < 8) return false
+  const n = Math.min(a.length, b.length, 10)
+  return a.slice(-n) === b.slice(-n)
 }
 
 // Reservas próximas (activas) del cliente, por teléfono, en los calendarios permitidos.
@@ -223,7 +228,7 @@ async function bookingsForConv(accId, convId) {
       past.sort((a, b) => (b.date + b.time).localeCompare(a.date + a.time))
     }
   } catch { /* best-effort */ }
-  const map = b => ({ id: b.id, date: b.date, time: b.time, duration: Number(b.duration) || null, calendarName: b.calendarName, status: b.status || 'pending', statusLabel: STATUS_ES[b.status] || b.status || 'pendiente', clientName: b.clientName || '', notes: b.notes || '' })
+  const map = b => ({ id: b.id, date: b.date, time: b.time, duration: Number(b.duration) || null, calendarId: b.calendarId, calendarName: b.calendarName, status: b.status || 'pending', statusLabel: STATUS_ES[b.status] || b.status || 'pendiente', clientName: b.clientName || '', notes: b.notes || '' })
   return { enabled: true, customer: cust, upcoming: upcoming.map(map), past: past.slice(0, 10).map(map) }
 }
 

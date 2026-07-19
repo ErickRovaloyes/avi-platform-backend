@@ -90,6 +90,29 @@ async function handleNotification(channelId, channelTokenHeader, resourceState) 
 
 const saveMeta = (bkId, meta) => pool.query('UPDATE calendar_bookings SET meta=? WHERE id=?', [JSON.stringify(meta), bkId]).catch(() => {})
 
+// Fecha/hora wall-clock (YYYY-MM-DD, HH:MM) de un instante UTC en una zona horaria.
+function wallClockInTz(utcMs, tz) {
+  const o = {}
+  new Intl.DateTimeFormat('en-CA', { timeZone: tz || 'UTC', year: 'numeric', month: '2-digit', day: '2-digit', hour: '2-digit', minute: '2-digit', hour12: false })
+    .formatToParts(new Date(utcMs)).forEach(p => { o[p.type] = p.value })
+  return { date: `${o.year}-${o.month}-${o.day}`, time: `${o.hour === '24' ? '00' : o.hour}:${o.minute}` }
+}
+
+// Avisa al chat que la cita se reagendó (movida directamente en Google Calendar).
+async function notifyReschedule(accId, calendarId, booking) {
+  try {
+    const bookings = require('./bookings')
+    const calendar = await bookings.getCalendar(accId, calendarId)
+    if (!calendar) return
+    const calendarNotify = require('./calendarNotify')
+    await calendarNotify.notify(accId, calendar, booking, 'reschedule', {
+      force: true,
+      defaultText: '🔄 Tu cita fue reagendada para el {{reserva_fecha}} a las {{reserva_hora}}. ¡Nos vemos! 🙌',
+      iaInstruction: 'Avísale al cliente que su cita fue reagendada e indícale la nueva fecha y hora.',
+    })
+  } catch (e) { console.warn('[gcal notifyReschedule]', e.message) }
+}
+
 // Avisa al chat la RESPUESTA del invitado en su Google Calendar (confirmar/cancelar).
 // Reutiliza el dispatcher de calendarNotify (mensaje por defecto / IA / flujo).
 async function notifyGuestResponse(accId, calendarId, booking, kind) {
@@ -130,6 +153,26 @@ async function processChanges(accId, items) {
       if (bk.status !== 'cancelled') await pool.query("UPDATE calendar_bookings SET status='cancelled', updated_at=? WHERE id=?", [Date.now(), bk.id]).catch(() => {})
       if (meta.gcalResp !== 'cancelled' && meta.gcalResp !== 'declined') { meta.gcalResp = 'cancelled'; await saveMeta(bk.id, meta); await notifyGuestResponse(accId, bk.calendar_id, booking, 'declined') }
       continue
+    }
+
+    // Evento MOVIDO en Google (cambió la hora de inicio) → reflejar en la plataforma +
+    // avisar al chat que se reagendó. Solo eventos con hora (no all-day). Idempotente:
+    // tras actualizar, el eco del webhook ya no ve diferencia (y nuestros propios push
+    // actualizan la reserva antes, así que tampoco disparan bucle).
+    if (bk.status !== 'cancelled' && ev.start?.dateTime) {
+      const inst = Date.parse(ev.start.dateTime)
+      if (!Number.isNaN(inst)) {
+        const bookingsSvc = require('./bookings')
+        const cal = await bookingsSvc.getCalendar(accId, bk.calendar_id)
+        const tz = cal?.timezone || 'UTC'
+        const { date: nd, time: nt } = wallClockInTz(inst, tz)
+        if ((nd !== bk.date || nt !== bk.time)) {
+          const meta2 = { ...meta }; delete meta2.reminderSent; delete meta2.gcalResp
+          await pool.query('UPDATE calendar_bookings SET date=?, time=?, updated_at=?, meta=? WHERE id=?', [nd, nt, Date.now(), JSON.stringify(meta2), bk.id]).catch(() => {})
+          await notifyReschedule(accId, bk.calendar_id, { ...booking, date: nd, time: nt, meta: meta2 })
+          continue
+        }
+      }
     }
 
     // Respuesta del INVITADO (attendee del email del cliente, o el no-organizador).
