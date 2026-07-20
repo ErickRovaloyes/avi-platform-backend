@@ -434,7 +434,12 @@ async function toolCall(accId, fn, args = {}, { convId, agId } = {}) {
         payment: onlinePay,
       })
     } catch (e) {
-      return { text: `No se pudo crear la reserva en el PMS del hotel: ${e.message}${cashPay ? '. Es posible que este hotel EXIJA pago en línea; ofrécele esa opción al cliente.' : '. Reintenta o verifica los datos del huésped y las fechas.'}` }
+      // Registra el error CRUDO de HosRoom (+ el cuerpo que enviamos) en el modo debug del
+      // chat y en el log del servidor, para diagnosticar exactamente qué campo pide el PMS.
+      const detail = { hosroomError: e.message, status: e.status || null, requestBody: { rateId: target.rateId, availability: { [target.rateId]: 1 }, payment: onlinePay, checkin, checkout, adults, children, customer: { name, email, phone } } }
+      try { require('../flow/store').appendDebugEntry(accId, agId, convId, { type: 'error', title: '🏨 HosRoom: fallo al crear la reserva', detail }) } catch {}
+      console.warn('[PMS book] HosRoom error:', e.message, JSON.stringify(detail.requestBody))
+      return { text: `No se pudo crear la reserva en el PMS del hotel. Error técnico REAL de HosRoom: "${e.message}".${cashPay ? ' Puede que el hotel EXIJA pago en línea.' : ''} (El detalle técnico quedó registrado en el modo debug 🐛 de este chat.) Relata al cliente que hubo un inconveniente y NO inventes que se reservó.` }
     }
 
     const totalTxt = booking.total ? fmtMoney(booking.total, currency) : (target.total != null ? fmtMoney(target.total, currency) : null)
