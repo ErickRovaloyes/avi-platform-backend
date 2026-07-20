@@ -58,6 +58,7 @@ const getSettings = async (req, res) => {
           channelLimits: parseJ(r.channel_limits, {}),
           metaAppId: r.meta_app_id || '',
           metaConfigId: r.meta_config_id || '',
+          metaPagesConfigId: r.meta_pages_config_id || '',
           // El App Secret solo lo ve el super admin; al resto se le indica si existe.
           metaAppSecret: isSA ? (r.meta_app_secret || '') : '',
           hasMetaAppSecret: !!r.meta_app_secret,
@@ -116,6 +117,7 @@ const getSettings = async (req, res) => {
           channelLimits: {},
           metaAppId: '',
           metaConfigId: '',
+          metaPagesConfigId: '',
           metaAppSecret: '',
           hasMetaAppSecret: false,
           googleClientId: '',
@@ -155,7 +157,7 @@ const updateSettings = async (req, res) => {
   if (req.user.type !== 'superadmin') return res.status(403).json({ error: 'Solo super admin' })
   const {
     changeAgentModel, changeAgentDefaultLimit, changeAgentTokenLimits, changeAgentTokenLimit, changeAgentCaps,
-    channelLimits, metaAppId, metaConfigId, metaAppSecret,
+    channelLimits, metaAppId, metaConfigId, metaPagesConfigId, metaAppSecret,
     googleClientId, googleClientSecret, googleRedirectUri,
     promptGeneratorModel, promptGeneratorStructure, promptGeneratorConditions,
     promptGeneratorMaxTokens, promptGeneratorTemperature, promptGeneratorMaxDocChars,
@@ -183,6 +185,7 @@ const updateSettings = async (req, res) => {
     if (channelLimits             !== undefined) { sets.push('channel_limits=?');               vals.push(JSON.stringify(channelLimits)) }
     if (metaAppId                 !== undefined) { sets.push('meta_app_id=?');                  vals.push(metaAppId) }
     if (metaConfigId              !== undefined) { sets.push('meta_config_id=?');               vals.push(metaConfigId) }
+    if (metaPagesConfigId         !== undefined) { sets.push('meta_pages_config_id=?');         vals.push(String(metaPagesConfigId || '').trim()) }
     if (returningNoticeDefault    !== undefined) { sets.push('returning_notice_default=?');     vals.push(String(returningNoticeDefault || '').slice(0, 4000)) }
     // Solo se actualiza el secret si llega un valor no vacío (evita borrarlo al guardar enmascarado)
     if (metaAppSecret             !== undefined && metaAppSecret !== '') { sets.push('meta_app_secret=?'); vals.push(metaAppSecret) }

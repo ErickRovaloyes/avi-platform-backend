@@ -192,6 +192,8 @@ app.use('/api',                recontactRoutes)
     // Respuestas rápidas de audio: adjunto (data URL) y tipo del medio pre-guardado.
     "ALTER TABLE quick_replies ADD COLUMN media_data LONGTEXT",
     "ALTER TABLE quick_replies ADD COLUMN media_kind VARCHAR(16)",
+    // Config ID de Facebook Login for Business para páginas (Messenger/Instagram).
+    "ALTER TABLE platform_settings ADD COLUMN meta_pages_config_id VARCHAR(120)",
     // Galería de medios (personal / equipo). El CMS se lee aparte (unidireccional).
     `CREATE TABLE IF NOT EXISTS gallery_items (
       id VARCHAR(60) PRIMARY KEY,
