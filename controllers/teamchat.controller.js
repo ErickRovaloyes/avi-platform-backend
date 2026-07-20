@@ -95,10 +95,29 @@ const createChannel = async (req, res) => {
   } catch (err) { console.error('[TC CREATE CHAN]', err); res.status(500).json({ error: 'Error interno' }) }
 }
 
+// ¿El solicitante puede administrar el chat de equipo? (owner o rol con permiso 'admins').
+async function canManageTeam(req, accId) {
+  if (req.user?.type === 'superadmin') return true
+  const memId = req.user?.id
+  if (!memId) return false
+  try {
+    const [[m]] = await pool.query('SELECT role_id FROM members WHERE id=? AND account_id=?', [memId, accId])
+    if (!m) return false
+    const [[r]] = await pool.query('SELECT name, is_system, permissions FROM roles WHERE id=?', [m.role_id])
+    if (!r) return false
+    if (r.is_system && r.name === 'Owner') return true
+    return !!parseJ(r.permissions, {}).admins
+  } catch { return false }
+}
+
+// Elimina una conversación del chat de equipo (canal personalizado o DM) + sus mensajes.
+// Solo owner o roles con el permiso. Los canales del sistema (general / ag_*) no se borran.
 const deleteChannel = async (req, res) => {
   const { accId, chId } = req.params
+  if (!(await canManageTeam(req, accId))) return res.status(403).json({ error: 'No tienes permiso para eliminar conversaciones del chat de equipo.' })
+  if (chId === 'general' || chId.startsWith('ag_')) return res.status(400).json({ error: 'Este canal del sistema no se puede eliminar.' })
   try {
-    await pool.query('DELETE FROM team_channels WHERE id=? AND account_id=? AND type="channel"', [chId, accId])
+    await pool.query('DELETE FROM team_channels WHERE id=? AND account_id=?', [chId, accId])
     await pool.query('DELETE FROM team_chat WHERE account_id=? AND channel=?', [accId, chId])
     socket.emit(accId, 'teamchat:channels', { accId })
     res.json({ ok: true })
