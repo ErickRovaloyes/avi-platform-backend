@@ -76,7 +76,7 @@ function normRoom(r, base = 'https://sys.hosroom.com') {
     capacity: Number(first(r.capacity, r.max_occupancy, 2)),
     description: first(r.description, r.summary, ''),
     photos,
-    rates: arr(first(r.rates, r.plans, [])).map(normRate),
+    rates: arr(first(r.rates, r.plans, r.ratePlans, r.rate_plans, r.tarifas, [])).map(normRate),
     raw: r,
   }
 }
@@ -227,11 +227,17 @@ const hosroom = {
   // al recorte de tamaño del diagnóstico.
   async debug(cfg) {
     const out = {}
-    const trimRooms = root => arr(first(root?.rooms, root?.availability, root?.data, [])).map(r => ({
-      id: r.id, name: r.name, capacity: r.capacity,
-      photos: arr(first(r.gallery, r.photos, r.images, [])).length,
-      rates: r.rates || r.plans || [],
-    }))
+    const trimRooms = root => arr(first(root?.rooms, root?.availability, root?.data, [])).map(r => {
+      const rates = arr(first(r.rates, r.plans, r.ratePlans, r.rate_plans, r.tarifas, []))
+      return {
+        id: first(r.id, r.room_id, r.code), name: first(r.name, r.title), capacity: first(r.capacity, r.max_occupancy),
+        roomKeys: Object.keys(r || {}),
+        photos: arr(first(r.gallery, r.photos, r.images, [])).length,
+        ratesCount: rates.length,
+        rateKeys: rates[0] ? Object.keys(rates[0]) : [],
+        rates,
+      }
+    })
     try {
       const ci = new Date(Date.now() + 86400000).toISOString().slice(0, 10)
       const co = new Date(Date.now() + 3 * 86400000).toISOString().slice(0, 10)
