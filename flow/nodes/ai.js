@@ -570,7 +570,7 @@ function buildPmsToolDefs(account) {
         codigo: { type: 'string', description: 'Código de la reserva' },
       }, required: ['codigo'] } } },
     { type: 'function', function: { name: 'reagendar_reserva',
-      description: 'Registra la solicitud de CAMBIO DE FECHAS de una reserva existente (el equipo del hotel la procesa y confirma). Pide el código y las nuevas fechas.',
+      description: 'Registra una SOLICITUD de cambio de fechas de una reserva (el hotel la procesa MANUALMENTE; el PMS no reagenda por API). Pide el código y las nuevas fechas. NO le digas al cliente que ya quedó reagendada: es una solicitud pendiente de confirmación del hotel.',
       parameters: { type: 'object', properties: {
         codigo: { type: 'string', description: 'Código de la reserva (HR-…)' },
         nueva_checkin: { type: 'string', description: 'Nueva fecha de entrada YYYY-MM-DD' },
@@ -578,7 +578,7 @@ function buildPmsToolDefs(account) {
         motivo: { type: 'string' },
       }, required: ['codigo', 'nueva_checkin', 'nueva_checkout'] } } },
     { type: 'function', function: { name: 'cancelar_reserva',
-      description: 'Registra la solicitud de CANCELACIÓN de una reserva (el equipo del hotel la procesa y confirma). Pide el código de la reserva.',
+      description: 'Registra una SOLICITUD de cancelación de una reserva (el hotel la procesa MANUALMENTE; el PMS no cancela por API). Pide el código. NO le digas al cliente que ya quedó cancelada: es una solicitud pendiente de confirmación del hotel.',
       parameters: { type: 'object', properties: {
         codigo: { type: 'string', description: 'Código de la reserva (HR-…)' },
         motivo: { type: 'string' },

@@ -494,7 +494,7 @@ async function toolCall(accId, fn, args = {}, { convId, agId } = {}) {
       }
     }
     await internalNote(accId, agId, convId, `🏨 SOLICITUD PMS: el cliente pide CANCELAR la reserva ${code}${detail}.${motivo ? ` Motivo: ${motivo}` : ''} — Requiere gestión manual en ${pub.providerLabel || 'el PMS'}.`)
-    return { text: `Solicitud de cancelación de la reserva ${code} registrada. El equipo del hotel la procesará y el cliente recibirá confirmación. Dile al cliente que su solicitud quedó registrada.` }
+    return { text: `⚠ La cancelación NO se ejecutó automáticamente en el PMS (${pub.providerLabel || 'este PMS'} no permite cancelar por API). Se registró la SOLICITUD y se avisó al equipo del hotel, que la procesará y confirmará. IMPORTANTE para tu respuesta al cliente: dile que su SOLICITUD de cancelación quedó registrada y que el hotel se la confirmará en breve; NO afirmes que la reserva ya está cancelada.` }
   }
 
   // ── Reagendar: solicitud gestionada (aviso al equipo) ─────────────────────
@@ -507,7 +507,7 @@ async function toolCall(accId, fn, args = {}, { convId, agId } = {}) {
     const cleanDate = s => (isDate(s) ? s : '?')
     const motivo = String(args.motivo || '').replace(/\s+/g, ' ').trim().slice(0, 200)
     await internalNote(accId, agId, convId, `🏨 SOLICITUD PMS: el cliente pide REAGENDAR la reserva ${code}${detail} → nuevas fechas: ${cleanDate(args.nueva_checkin)} a ${cleanDate(args.nueva_checkout)}.${motivo ? ` Motivo: ${motivo}` : ''} — Requiere gestión manual en ${pub.providerLabel || 'el PMS'}.`)
-    return { text: `Solicitud de reagendamiento de la reserva ${code} registrada. El equipo del hotel la procesará y el cliente recibirá confirmación. Dile al cliente que su solicitud quedó registrada.` }
+    return { text: `⚠ El cambio de fechas NO se ejecutó automáticamente en el PMS (${pub.providerLabel || 'este PMS'} no permite reagendar por API). Se registró la SOLICITUD y se avisó al equipo del hotel. IMPORTANTE para tu respuesta al cliente: dile que su SOLICITUD de cambio de fechas quedó registrada y que el hotel se la confirmará; NO afirmes que la reserva ya quedó reagendada.` }
   }
 
   return { text: `Función PMS desconocida: ${fn}` }
