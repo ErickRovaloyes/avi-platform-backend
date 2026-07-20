@@ -100,6 +100,42 @@ function normRate(rt) {
   }
 }
 
+// ── Disponibilidad de HosRoom (/api/engine/availability) ──────────────────────
+// La respuesta trae `results:[{ roomType:{id,name,capacity,description}, available,
+// availabilityRates:[{ id, name, mealType, prices:{fecha:precio}, total, roomsAvailable }] }]`.
+// Estructura DISTINTA a /api/engine/settings (ahí la habitación y sus rates van al nivel
+// raíz), por eso necesita su propio normalizador.
+function normAvailRate(rt) {
+  const prices = (rt.prices && typeof rt.prices === 'object') ? Object.values(rt.prices).map(Number).filter(n => !isNaN(n)) : []
+  const sumPrices = prices.length ? prices.reduce((a, b) => a + b, 0) : null
+  const total = (() => { const n = Number(first(rt.total, rt.amount, rt.price, rt.value)); return (isNaN(n) || n === 0) ? sumPrices : n })()
+  const perNight = (() => { const n = Number(first(rt.night, rt.nightly, rt.per_night, rt.rate)); if (!isNaN(n) && n) return n; return prices.length ? Math.round(sumPrices / prices.length) : null })()
+  // Capacidad: del campo si viene; si no, se infiere del nombre del plan ("… 3 Personas").
+  const capacity = (() => { const c = Number(first(rt.capacity, 0)); if (c) return c; const m = String(rt.name || '').match(/(\d+)\s*persona/i); return m ? Number(m[1]) : null })()
+  const available = (() => { const n = Number(first(rt.roomsAvailable, rt.rooms_available, rt.available, rt.allotment, rt.quantity, rt.stock)); return isNaN(n) ? null : n })()
+  return {
+    id: String(first(rt.id, rt.rate_id, rt.rate_plan_id, '')),
+    name: first(rt.name, rt.title, 'Tarifa'),
+    capacity, description: first(rt.description, '') || '',
+    mealType: first(rt.mealType, rt.meal_type, '') || '',
+    total, perNight, available, raw: rt,
+  }
+}
+function normAvailRoom(r, base = 'https://sys.hosroom.com') {
+  const rt = r.roomType || r.room_type || r   // la habitación viene anidada en roomType
+  const rates = arr(first(r.availabilityRates, r.availability_rates, r.rates, r.plans, r.ratePlans, r.rate_plans, r.tarifas, []))
+  return {
+    id: String(first(rt.id, rt.room_id, rt.code, r.id, '')),
+    name: first(rt.name, rt.title, 'Habitación'),
+    capacity: Number(first(rt.capacity, rt.max_occupancy, r.capacity, 2)),
+    description: first(rt.description, rt.summary, '') || '',
+    photos: imagesOf(rt, base),
+    available: (() => { const n = Number(first(r.available, r.roomsAvailable, null)); return isNaN(n) ? null : n })(),
+    rates: rates.map(normAvailRate),
+    raw: r,
+  }
+}
+
 // Caché corta del payload /api/engine/settings (es pesado, ~25 s): habitaciones y
 // ficha de propiedad lo comparten para no pedirlo dos veces por operación.
 const _hosSettingsCache = new Map()   // token|base → { at, data }
@@ -184,9 +220,10 @@ const hosroom = {
     if (agencyCode) query.code = agencyCode
     const data = await hosFetch(cfg, '/api/engine/availability', { query })
     const root = data?.settings || data || {}
-    const list = arr(first(root.rooms, root.availability, root.data, []))
+    // HosRoom devuelve las opciones en `results` (habitación en roomType + availabilityRates).
+    const list = arr(first(root.results, root.rooms, root.availability, root.data, []))
     const base = cfg.baseUrl || 'https://sys.hosroom.com'
-    return { rooms: list.map(r => normRoom(r, base)), raw: data }
+    return { rooms: list.map(r => normAvailRoom(r, base)), raw: data }
   },
 
   // Crea la reserva. availability = { [rateId]: cantidad }.
@@ -227,12 +264,14 @@ const hosroom = {
   // al recorte de tamaño del diagnóstico.
   async debug(cfg) {
     const out = {}
-    const trimRooms = root => arr(first(root?.rooms, root?.availability, root?.data, [])).map(r => {
-      const rates = arr(first(r.rates, r.plans, r.ratePlans, r.rate_plans, r.tarifas, []))
+    const trimRooms = root => arr(first(root?.results, root?.rooms, root?.availability, root?.data, [])).map(r => {
+      const rt = r.roomType || r.room_type || r
+      const rates = arr(first(r.availabilityRates, r.availability_rates, r.rates, r.plans, r.ratePlans, r.rate_plans, r.tarifas, []))
       return {
-        id: first(r.id, r.room_id, r.code), name: first(r.name, r.title), capacity: first(r.capacity, r.max_occupancy),
+        id: first(rt.id, rt.room_id, rt.code, r.id), name: first(rt.name, rt.title, r.name), capacity: first(rt.capacity, rt.max_occupancy, r.capacity),
+        available: r.available,
         roomKeys: Object.keys(r || {}),
-        photos: arr(first(r.gallery, r.photos, r.images, [])).length,
+        photos: arr(first(rt.gallery, rt.photos, rt.images, r.gallery, r.photos, [])).length,
         ratesCount: rates.length,
         rateKeys: rates[0] ? Object.keys(rates[0]) : [],
         rates,
