@@ -548,7 +548,7 @@ function buildPmsToolDefs(account) {
         ...propParam,
       }, required: ['checkin', 'checkout', 'adultos'] } } },
     { type: 'function', function: { name: 'reservar_habitacion',
-      description: 'Crea la RESERVA en el PMS del hotel. Úsalo SOLO cuando el cliente confirme fechas y opción, y tengas su nombre, email y teléfono. Devuelve el código de reserva y el link de pago.',
+      description: 'Crea la RESERVA en el PMS del hotel. Úsalo SOLO cuando el cliente confirme fechas y opción, y tengas su nombre, email y teléfono. ANTES de reservar, PREGÚNTALE cómo desea pagar: "online" (pago en línea, se le envía un link) o "efectivo" (paga al llegar al hotel), y pásalo en "metodo_pago". Devuelve el código de reserva y, si es en línea, el link de pago.',
       parameters: { type: 'object', properties: {
         checkin: { type: 'string', description: 'YYYY-MM-DD' },
         checkout: { type: 'string', description: 'YYYY-MM-DD' },
@@ -559,6 +559,7 @@ function buildPmsToolDefs(account) {
         nombre: { type: 'string', description: 'Nombre completo del huésped' },
         email: { type: 'string', description: 'Email del huésped (obligatorio para la reserva)' },
         telefono: { type: 'string', description: 'Teléfono del huésped (si no, se toma el de la conversación)' },
+        metodo_pago: { type: 'string', description: 'Cómo paga el cliente: "online" (pago en línea con link) o "efectivo" (paga al llegar al hotel). Pregúntaselo antes de reservar.' },
         nota: { type: 'string', description: 'Petición especial del huésped (opcional)' },
         codigo_promocional: { type: 'string' },
         ...propParam,

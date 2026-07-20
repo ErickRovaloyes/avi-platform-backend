@@ -415,23 +415,38 @@ async function toolCall(accId, fn, args = {}, { convId, agId } = {}) {
       if (!target) return { text: `Indica qué opción reservar. Disponibles del ${checkin} al ${checkout}:\n${optionsText(liveOptions, { checkin, checkout, currency })}\nVuelve a llamar reservar_habitacion con "opcion": <número>.` }
     }
 
+    // Método de pago: HosRoom EXIGE el campo `payment` (true = pago en línea → genera link;
+    // false = paga en efectivo/al llegar al hotel). Por defecto online si no se especifica.
+    const metodo = String(args.metodo_pago || '').toLowerCase()
+    const cashPay = /efectivo|hotel|llegada|contado|cash|presencial|recepci/.test(metodo)
+    const onlinePay = !cashPay
+
     const surnameSplit = name.split(/\s+/)
-    const booking = await prov.book(scoped, {
-      checkin, checkout, adults, children,
-      infants: Number(args.infantes) || 0,
-      availability: { [target.rateId]: 1 },
-      customer: { name: surnameSplit[0], surname: surnameSplit.slice(1).join(' ') || undefined, mail: email, phone },
-      notes: args.nota || undefined,
-      promoCode: args.codigo_promocional || cached?.promoCode || undefined,
-    })
+    let booking
+    try {
+      booking = await prov.book(scoped, {
+        checkin, checkout, adults, children,
+        infants: Number(args.infantes) || 0,
+        availability: { [target.rateId]: 1 },
+        customer: { name: surnameSplit[0], surname: surnameSplit.slice(1).join(' ') || undefined, mail: email, phone },
+        notes: args.nota || undefined,
+        promoCode: args.codigo_promocional || cached?.promoCode || undefined,
+        payment: onlinePay,
+      })
+    } catch (e) {
+      return { text: `No se pudo crear la reserva en el PMS del hotel: ${e.message}${cashPay ? '. Es posible que este hotel EXIJA pago en línea; ofrécele esa opción al cliente.' : '. Reintenta o verifica los datos del huésped y las fechas.'}` }
+    }
 
     const totalTxt = booking.total ? fmtMoney(booking.total, currency) : (target.total != null ? fmtMoney(target.total, currency) : null)
     // CRM + nota interna (no críticos).
     upsertCrmContact(accId, { name, phone, email }, `Reserva ${booking.code} · ${checkin}→${checkout} · ${target.roomName}`).catch(() => {})
     if (cfg.notifyTeam !== false) internalNote(accId, agId, convId, `🏨 RESERVA PMS creada por el asistente: ${booking.code} — ${target.roomName} (${target.rateName}) del ${checkin} al ${checkout} para ${adults + children} persona(s). Huésped: ${name} · ${phone} · ${email}${totalTxt ? ` · Total: ${totalTxt}` : ''}`).catch(() => {})
 
+    const payLine = onlinePay
+      ? (booking.paymentUrl ? `\n• Pago EN LÍNEA — link: ${booking.paymentUrl}` : '\n• Pago en línea (el hotel enviará el detalle de pago).')
+      : '\n• Pago EN EFECTIVO al llegar al hotel.'
     return {
-      text: `✅ Reserva CREADA en el PMS.\n• Código: ${booking.code}\n• ${target.roomName} — ${target.rateName}\n• ${checkin} → ${checkout} (${nightsBetween(checkin, checkout)} noche(s))\n• Huésped: ${name}${totalTxt ? `\n• Total: ${totalTxt}` : ''}${booking.paymentUrl ? `\n• Link de pago: ${booking.paymentUrl}` : ''}\nConfírmale al cliente el código de reserva${booking.paymentUrl ? ' y envíale el link de pago' : ''}.`,
+      text: `✅ Reserva CREADA en el PMS.\n• Código: ${booking.code}\n• ${target.roomName} — ${target.rateName}\n• ${checkin} → ${checkout} (${nightsBetween(checkin, checkout)} noche(s))\n• Huésped: ${name}${totalTxt ? `\n• Total: ${totalTxt}` : ''}${payLine}\nConfírmale al cliente el código de reserva${onlinePay && booking.paymentUrl ? ' y envíale el link de pago' : (onlinePay ? '' : ' e indícale que pagará en efectivo al llegar')}.`,
       booked: true,
       bookingCode: booking.code,
     }
