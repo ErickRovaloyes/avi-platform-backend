@@ -242,7 +242,9 @@ const hosroom = {
       source: 'bot',
     }
     if (roomsCount) body.rooms = Number(roomsCount)
-    if (notes) body.notes = String(notes).slice(0, 500)
+    // HosRoom lee `notes` SIEMPRE (acceso directo al array): hay que enviarlo aunque esté
+    // vacío, o el book falla con 422 "Undefined array key notes".
+    body.notes = notes ? String(notes).slice(0, 500) : ''
     if (promoCode) body.promoCode = promoCode
     if (agencyCode) body.code = agencyCode
     if (payment !== undefined) body.payment = !!payment
