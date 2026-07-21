@@ -17,6 +17,7 @@
 
 const pool = require('../db')
 const { parseJ } = require('../utils')
+const { resolveVar } = require('./varAliases')
 const {
   sendWhatsAppText, sendWhatsAppMedia, sendMessengerText, sendMessengerButtons, sendInstagramText, sendWhatsAppTemplate, sendWhatsAppCtaUrl,
 } = require('./metaSend')
@@ -29,12 +30,15 @@ async function resolveWhatsAppChannel(accId, agentId, channelId) {
 }
 
 function interp(text, vars) {
-  return String(text || '').replace(/\{\{([^}]+)\}\}/g, (_, k) => vars[k.trim()] ?? '')
+  return String(text || '').replace(/\{\{([^}]+)\}\}/g, (_, k) => resolveVar(vars, k.trim()) ?? '')
 }
 
 function bookingVars(calendar, booking) {
+  const name = booking.clientName || '', phone = booking.clientPhone || '', email = booking.clientEmail || ''
   return {
-    cliente_nombre: booking.clientName || '', cliente_telefono: booking.clientPhone || '', cliente_email: booking.clientEmail || '',
+    cliente_nombre: name, cliente_telefono: phone, cliente_email: email,
+    // Variables canónicas del usuario (para que {{user_name}} funcione también aquí).
+    user_name: name, user_phone: phone, user_email: email,
     reserva_fecha: booking.date, reserva_hora: booking.time, reserva_id: booking.id, calendario: calendar.name || '',
   }
 }

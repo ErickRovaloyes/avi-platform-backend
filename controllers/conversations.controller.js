@@ -118,7 +118,7 @@ const createConvo = async (req, res) => {
 
   const { id: contactId, existed, hasMemory } = await findOrCreateContact(accId, { guestName, guestId, waFrom, messengerFrom, igFrom, channelType })
   const returning = !!(existed || hasMemory)
-  const localVars = { var_nombre: guestName || '' }
+  const localVars = { user_name: guestName || '' }   // variable canónica del nombre (antes var_nombre)
   if (contactId) {
     localVars.contact_id = contactId
     // Memoria permanente del cliente (de conversaciones pasadas) → la nueva
@@ -452,7 +452,7 @@ async function createOrGetSocialConvo(accId, agId, lookupCol, lookupVal, guestNa
   else if (lookupCol === 'ig_from')   contactArgs.igFrom        = lookupVal
   const { id: contactId, existed, hasMemory } = await findOrCreateContact(accId, contactArgs)
   const returning = !!(existed || hasMemory)
-  const localVars = { var_nombre: guestName || '' }
+  const localVars = { user_name: guestName || '' }   // variable canónica del nombre (antes var_nombre)
   if (contactId) {
     localVars.contact_id = contactId
     try { const mem = await require('../services/conversationMemory').getContactMemory(accId, contactId); if (mem) localVars._summary = mem } catch {}

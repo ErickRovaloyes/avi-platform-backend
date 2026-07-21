@@ -298,8 +298,8 @@ async function wooExec(ctx, fnName, args) {
       const labels = store.ORDER_FIELD_LABELS
       const customer = {}
       for (const f of fields) { const v = String(args?.[f.key] ?? '').trim(); if (v) customer[f.key] = v }
-      if (!customer.nombre) customer.nombre = ctx.variables?.var_nombre || ctx.variables?.nombre || ''
-      if (!customer.email) customer.email = ctx.variables?.email || ''
+      if (!customer.nombre) customer.nombre = ctx.variables?.user_name || ctx.variables?.var_nombre || ctx.variables?.nombre || ''
+      if (!customer.email) customer.email = ctx.variables?.user_email || ctx.variables?.var_email || ctx.variables?.email || ''
       if (!customer.telefono) customer.telefono = ctx.variables?.telefono || ctx.variables?.var_telefono || ''
       if ((!customer.nombre || !customer.telefono) && ctx.convId) {
         try {

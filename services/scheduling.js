@@ -139,9 +139,9 @@ async function customerFromConv(accId, convId, args = {}) {
   const lv = parseJ(conv?.local_vars, {})
   const digits = s => String(s || '').replace(/[^\d]/g, '')
   return {
-    name: String(args.nombre || lv.var_nombre || conv?.guest_name || '').trim(),
-    phone: digits(args.telefono || conv?.wa_from || lv.telefono || lv.var_telefono || ''),
-    email: String(args.email || lv.email || lv.var_email || '').trim(),
+    name: String(args.nombre || lv.user_name || lv.var_nombre || conv?.guest_name || '').trim(),
+    phone: digits(args.telefono || lv.user_phone || conv?.wa_from || lv.telefono || lv.var_telefono || ''),
+    email: String(args.email || lv.user_email || lv.email || lv.var_email || '').trim(),
   }
 }
 

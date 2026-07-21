@@ -7,13 +7,17 @@
  */
 
 const store = require('./store')
+const { resolveVar: resolveVarAlias } = require('../services/varAliases')
 
-// Interpolación de variables — soporta {{var}}; deja literal si no existe
+// Interpolación de variables — soporta {{var}}; deja literal si no existe.
+// Las variables base del usuario (nombre/email/teléfono) se resuelven por alias:
+// {{user_name}} y {{var_nombre}}/{{nombre}}/{{cliente_nombre}} son intercambiables.
 function interpolate(text, vars = {}) {
   if (text === undefined || text === null) return ''
   return String(text).replace(/\{\{([^}]+)\}\}/g, (_, key) => {
     const k = key.trim()
-    return vars[k] ?? `{{${k}}}`
+    const v = resolveVarAlias(vars, k)
+    return v ?? `{{${k}}}`
   })
 }
 

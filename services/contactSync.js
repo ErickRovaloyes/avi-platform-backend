@@ -9,11 +9,14 @@
  * funcione sin importar a cuál mapeó el usuario (agenda, herramientas IA, edición manual).
  */
 const pool = require('../db')
+const { ALIAS_GROUPS } = require('./varAliases')
 
-const NAME_KEYS = ['nombre', 'var_nombre', 'user_name', 'cliente_nombre', 'nombre_cliente', 'nombre_lead']
-const PHONE_KEYS = ['telefono', 'teléfono', 'var_telefono', 'user_phone', 'cliente_telefono', 'celular', 'whatsapp', 'telefono_cliente']
-const EMAIL_KEYS = ['email', 'correo', 'var_email', 'user_email', 'cliente_email', 'correo_electronico', 'email_cliente']
+// Reusa los grupos de alias compartidos (canónica primero: user_name/user_email/user_phone).
+const NAME_KEYS = ALIAS_GROUPS.name
+const PHONE_KEYS = ALIAS_GROUPS.phone
+const EMAIL_KEYS = ALIAS_GROUPS.email
 const CONTACT_FIELD_KEYS = { name: NAME_KEYS, phone: PHONE_KEYS, email: EMAIL_KEYS }
+const CANONICAL = { name: NAME_KEYS[0], phone: PHONE_KEYS[0], email: EMAIL_KEYS[0] }
 
 function contactFieldForVar(varId) {
   const k = String(varId || '').toLowerCase()
@@ -73,11 +76,18 @@ async function syncConversationsFromContact(accId, contactId, fields = {}) {
       "SELECT id, guest_name, local_vars FROM conversations WHERE account_id=? AND JSON_UNQUOTE(JSON_EXTRACT(local_vars,'$.contact_id'))=?",
       [accId, contactId]
     )
+    // Escribe la variable CANÓNICA (user_*) y refresca cualquier alias legado que ya exista
+    // en la conversación (evita que {{var_nombre}} devuelva un valor viejo por la capa de alias).
+    const setField = (lv, group, value) => {
+      const v = String(value)
+      lv[CANONICAL[group]] = v
+      for (const k of ALIAS_GROUPS[group]) if (k !== CANONICAL[group] && k in lv) lv[k] = v
+    }
     for (const c of rows) {
       const lv = (() => { try { return JSON.parse(c.local_vars) || {} } catch { return {} } })()
-      if (has('name')) for (const k of ['var_nombre', 'nombre', 'user_name']) lv[k] = String(fields.name)
-      if (has('phone')) for (const k of ['var_telefono', 'telefono', 'user_phone']) lv[k] = String(fields.phone)
-      if (has('email')) for (const k of ['var_email', 'email', 'user_email']) lv[k] = String(fields.email)
+      if (has('name')) setField(lv, 'name', fields.name)
+      if (has('phone')) setField(lv, 'phone', fields.phone)
+      if (has('email')) setField(lv, 'email', fields.email)
       const sets = ['local_vars=?']; const vals = [JSON.stringify(lv)]
       if (has('name') && String(fields.name).trim()) { sets.push('guest_name=?'); vals.push(String(fields.name)) }
       vals.push(c.id, accId)
