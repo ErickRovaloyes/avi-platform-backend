@@ -445,9 +445,9 @@ function buildAgendaToolDefs(account) {
   }
   // Instrucción explícita para que el modelo NO olvide pasar estos datos al agendar.
   const collectNote = collectLabels.length
-    ? ` IMPORTANTE: además de fecha/hora/nombre, INCLUYE como argumentos estos datos si el cliente los mencionó en la conversación (omítelos solo si no los dio): ${[...new Set(collectLabels)].join('; ')}.`
+    ? ` IMPORTANTE: este calendario REQUIERE recolectar estos datos para poder agendar: ${[...new Set(collectLabels)].join('; ')}. Antes de llamar a agendar_cita, PÍDESELOS al cliente y pásalos como argumentos. Si aún falta alguno, NO agendes: pídelo primero (el sistema rechazará la reserva si faltan).`
     : ''
-  const agendarDesc = 'Agenda una cita. Úsalo SOLO cuando el cliente confirme fecha y hora (de las que diste por disponibilidad) y tengas su nombre.' + collectNote
+  const agendarDesc = 'Agenda una cita. Úsalo SOLO cuando el cliente confirme fecha y hora (de las que diste por disponibilidad), tengas su nombre y hayas recolectado todos los datos requeridos.' + collectNote
   return [
     { type: 'function', function: { name: 'ver_disponibilidad', description: 'Muestra los horarios LIBRES de un calendario para una fecha. Úsalo cuando el cliente pregunte por disponibilidad de un día concreto. No inventes horarios.', parameters: { type: 'object', properties: { fecha: { type: 'string', description: 'Fecha TAL CUAL la dijo el cliente ("lunes", "el 15", "15 de julio", "mañana") o YYYY-MM-DD. NO calcules tú la fecha: pásala literal, el sistema la resuelve.' }, servicio: { type: 'string', description: servicioDesc } }, required: ['fecha'] } } },
     { type: 'function', function: { name: 'recomendar_citas', description: 'Recomienda las PRÓXIMAS citas disponibles (siguientes días con cupo). Úsalo cuando el cliente quiere agendar pero no fijó un día.', parameters: { type: 'object', properties: { servicio: { type: 'string', description: servicioDesc } } } } },

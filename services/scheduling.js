@@ -145,6 +145,51 @@ async function customerFromConv(accId, convId, args = {}) {
   }
 }
 
+// Valores "placeholder" que la IA a veces pone cuando AÚN no tiene el dato real
+// ("pendiente", "por confirmar", "n/a"…). Se tratan como VACÍO para no crear la cita
+// con datos falsos ni ocupar el horario antes de tiempo.
+const PLACEHOLDER_RE = /^(pendiente|pending|por\s+(confirmar|definir|asignar|recolectar|dar)|sin\s+(especificar|definir|dato|datos)|no\s+especificad[oa]|desconocid[oa]|no\s+aplica|n\/?a|tbd|xx+|\?+|-+|_+|\.+)$/
+function isPlaceholderVal(v) {
+  const s = String(v ?? '').trim().normalize('NFD').replace(/[̀-ͯ]/g, '').toLowerCase()
+  return s === '' || PLACEHOLDER_RE.test(s)
+}
+const cleanVal = v => (isPlaceholderVal(v) ? '' : String(v).trim())
+
+// ¿La etiqueta de un campo "guardar en variable" corresponde a un dato ESTÁNDAR de la
+// cita (nombre/teléfono/email/nota/fecha/hora/servicio) que el sistema puede rellenar
+// solo? Si devuelve null es un dato PERSONALIZADO que la IA debe recolectar antes de agendar.
+function bookingLabelKind(label) {
+  const nl = String(label).normalize('NFD').replace(/[̀-ͯ]/g, '').toLowerCase()
+  if (/nombre|name/.test(nl)) return 'name'
+  if (/tel|phone|cel|whats/.test(nl)) return 'phone'
+  if (/mail|correo/.test(nl)) return 'email'
+  if (/nota|coment|observa|motivo/.test(nl)) return 'nota'
+  if (/fecha|date/.test(nl)) return 'fecha'
+  if (/hora|time/.test(nl)) return 'hora'
+  if (/servicio|calendario|agenda/.test(nl)) return 'servicio'
+  return null
+}
+
+// Valor efectivo de un campo "guardar en variable": lo que la IA pasó (dato_<slug>) y,
+// si no, un fallback determinista desde los datos estándar de la cita. Devuelve '' si no
+// hay valor. Se usa tanto para VALIDAR antes de agendar como para GUARDAR tras agendar.
+function bookingVarValue(bv, { cust, args, date, time, cal }) {
+  const pname = require('./bookings').bookingVarParam(bv.label)
+  let val = cleanVal(args[pname])
+  if (val === '') {
+    switch (bookingLabelKind(bv.label)) {
+      case 'name':     val = cust.name  || cleanVal(args.nombre);   break
+      case 'phone':    val = cust.phone || cleanVal(args.telefono); break
+      case 'email':    val = cust.email || cleanVal(args.email);    break
+      case 'nota':     val = cleanVal(args.nota);                   break
+      case 'fecha':    val = date;                                  break
+      case 'hora':     val = time;                                  break
+      case 'servicio': val = cleanVal(args.servicio) || cal.name;   break
+    }
+  }
+  return cleanVal(val)
+}
+
 // Coincidencia de teléfonos ROBUSTA: ambos deben tener ≥8 dígitos y compartir el
 // mismo sufijo de min(len,10) dígitos. Evita que un teléfono corto/erróneo del
 // contacto (p. ej. una variable mal configurada) haga match con TODOS los clientes.
@@ -326,8 +371,21 @@ async function toolCall(accId, fn, args = {}, meta = {}) {
       const date = resolveDate(args.fecha, tz)
       const time = String(args.hora || '').slice(0, 5)
       if (!date || !/^\d{2}:\d{2}$/.test(time)) return { text: `Faltan fecha y hora válidas (hoy es ${today}). Confirma con el cliente día y hora exactos.` }
+      // Ignora valores placeholder ("pendiente", "por confirmar"…) que la IA a veces
+      // manda cuando aún no tiene el dato real, para no agendar con datos falsos.
+      args.nombre = cleanVal(args.nombre); args.telefono = cleanVal(args.telefono); args.email = cleanVal(args.email)
       const cust = await customerFromConv(accId, meta.convId, args)
       if (!cust.name) return { text: 'Falta el nombre del cliente para agendar. Pídelo.' }
+      // NO agendar hasta recolectar los datos PERSONALIZADOS que el calendario pide
+      // ("guardar en variable" con etiqueta no estándar). Evita crear la cita antes de
+      // tiempo (con datos en blanco) y que ese hueco quede ocupado. Los datos estándar
+      // (nombre/teléfono/email/fecha/hora) se rellenan solos y no bloquean.
+      const bvList = Array.isArray(cal.bookingVars) ? cal.bookingVars.filter(b => b?.label && b?.variable) : []
+      const missingData = [...new Set(
+        bvList.filter(bv => !bookingLabelKind(bv.label) && bookingVarValue(bv, { cust, args, date, time, cal }) === '')
+              .map(bv => bv.label)
+      )]
+      if (missingData.length) return { text: `Aún faltan datos que debes recolectar ANTES de agendar (no agendes todavía): ${missingData.join('; ')}. Pídeselos al cliente y, cuando los tengas, vuelve a llamar a agendar_cita incluyéndolos como argumentos.` }
       try {
         const bk = await bookings.createBooking(accId, cal.id, {
           date, time, clientName: cust.name, clientPhone: cust.phone, clientEmail: cust.email,
@@ -357,31 +415,14 @@ async function toolCall(accId, fn, args = {}, meta = {}) {
               _cita_telefono: cust.phone || '', _cita_email: cust.email || '',
               _cita_duracion: String(bk.duration || durMin(cal)), _cita_notas: args.nota || '',
             })
-            // Campos "guardar en variable" del calendario: la IA extrae cada dato de la
-            // conversación y lo pasa como argumento (dato_<slug de la etiqueta>). Se
-            // guarda en la variable indicada (id personalizada o nombre de sistema).
-            const bvList = Array.isArray(cal.bookingVars) ? cal.bookingVars : []
+            // Campos "guardar en variable" del calendario: cada valor sale de bookingVarValue
+            // (dato_<slug> que pasó la IA, con fallback determinista a los datos estándar de la
+            // cita). Los personalizados obligatorios ya se validaron arriba, así que aquí no faltan.
             const bvSaved = {}, bvMissing = [], savedVarNames = []
             for (const bv of bvList) {
-              if (!bv?.label || !bv?.variable) continue
               const pname = bookings.bookingVarParam(bv.label)
-              let val = args[pname]
-              // Fallback DETERMINISTA: si la IA no duplicó el dato_* pero la etiqueta
-              // corresponde a un dato estándar de la cita (p.ej. "nombre paciente" ≈
-              // nombre, "email paciente" ≈ email), usa ese valor directamente. Los
-              // modelos suelen rellenar solo el parámetro estándar y omiten el dato_*
-              // duplicado — sin este fallback, esos casos quedaban sin guardar.
-              if (val === undefined || val === null || String(val).trim() === '') {
-                const nl = String(bv.label).normalize('NFD').replace(/[̀-ͯ]/g, '').toLowerCase()
-                if (/nombre|name/.test(nl)) val = cust.name || args.nombre
-                else if (/tel|phone|cel|whats/.test(nl)) val = cust.phone || args.telefono
-                else if (/mail|correo/.test(nl)) val = cust.email || args.email
-                else if (/nota|coment|observa|motivo/.test(nl)) val = args.nota
-                else if (/fecha|date/.test(nl)) val = date
-                else if (/hora|time/.test(nl)) val = time
-                else if (/servicio|calendario|agenda/.test(nl)) val = args.servicio || cal.name
-              }
-              if (val !== undefined && val !== null && String(val).trim() !== '') { lv[bv.variable] = val; bvSaved[bv.label] = val; savedVarNames.push(bv.variable) }
+              const val = bookingVarValue(bv, { cust, args, date, time, cal })
+              if (val !== '') { lv[bv.variable] = val; bvSaved[bv.label] = val; savedVarNames.push(bv.variable) }
               else bvMissing.push(`${bv.label} (${pname})`)
             }
             await pool.query('UPDATE conversations SET local_vars=? WHERE id=? AND account_id=?', [JSON.stringify(lv), meta.convId, accId])

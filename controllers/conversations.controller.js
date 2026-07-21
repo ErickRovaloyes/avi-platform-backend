@@ -414,7 +414,18 @@ const patchVars = async (req, res) => {
     // en el contacto vinculado (o por teléfono). Best-effort, no bloquea la respuesta.
     try {
       const contactSync = require('../services/contactSync')
-      if (contactSync.isBoundVar(varId)) await contactSync.syncContactFromVars(accId, vars, [contactSync.contactFieldForVar(varId)])
+      const field = contactSync.isBoundVar(varId) ? contactSync.contactFieldForVar(varId) : null
+      if (field) {
+        await contactSync.syncContactFromVars(accId, vars, [field])
+        // Si cambió el NOMBRE, actualiza también el nombre visible del chat (guest_name):
+        // es lo que muestra el Inbox. Sin esto, la lista/panel seguía en "Invitado" aunque
+        // la variable y el contacto ya tuvieran el nombre nuevo.
+        if (field === 'name' && String(value ?? '').trim()) {
+          await pool.query('UPDATE conversations SET guest_name=? WHERE id=? AND account_id=?', [String(value), convId, accId])
+          // Propaga a las DEMÁS conversaciones del mismo contacto (nombre + alias ancladas).
+          if (vars.contact_id) { try { await contactSync.syncConversationsFromContact(accId, vars.contact_id, { name: String(value) }) } catch { /* best-effort */ } }
+        }
+      }
     } catch { /* non-critical */ }
     socket.emit(accId, 'convos:updated', { accId, agId })
     res.json({ ok: true })
