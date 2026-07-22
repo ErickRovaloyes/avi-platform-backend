@@ -320,9 +320,14 @@ async function toolCall(accId, fn, args = {}, { convId, agId } = {}) {
       if (!room) return { text: `No encontré una habitación llamada "${args.habitacion}". Las disponibles son: ${rooms.map(r => r.name).join(', ')}.` }
       const plans = (room.rates || []).map(rt => `• ${rt.name}${rt.mealType === 'breakfast' ? ' (con desayuno)' : ''}`).join('\n')
       const ficha = `Ficha: capacidad ${room.capacity} persona(s). ${room.description || ''}${plans ? `\nPlanes: \n${plans}` : ''}`
-      // Fotos del alojamiento: sus propias fotos (otros PMS) o la galería de SU
-      // propiedad (Kunas no da fotos por room_type; la galería es de la propiedad).
-      const roomPool = room.photos?.length ? room.photos : propPhotos
+      // Fotos del alojamiento: PRIMERO sus propias fotos. Kunas las expone por tipo de
+      // habitación (/api/room/data/room) → se traen de forma perezosa aquí. Si el
+      // alojamiento no tiene fotos propias, se usa la galería de la propiedad madre.
+      let ownPhotos = room.photos?.length ? room.photos : []
+      if (!ownPhotos.length && typeof prov.getRoomPhotos === 'function') {
+        try { ownPhotos = await prov.getRoomPhotos(scoped, room.id) } catch {}
+      }
+      const roomPool = ownPhotos.length ? ownPhotos : propPhotos
       if (!roomPool.length) return { text: `No hay fotos publicadas para "${room.name}" en el PMS. ${ficha}` }
       return sendPhotoBatch(roomPool, photoKey(convId, scoped.propertyId, room.id), { maxPhotos, reset, label: room.name, extra: ficha })
     }
@@ -334,8 +339,13 @@ async function toolCall(accId, fn, args = {}, { convId, agId } = {}) {
     if (!wantPhotos) {
       return { text: `Habitaciones${propName ? ` de ${propName}` : ''}:\n${list}\n\nEnuméraselas al cliente por su NOMBRE (no mandes fotos salvo que las pida). Para FOTOS de una, llama ver_habitaciones con "habitacion": <nombre>; para el panorama, con "fotos": true. Para precios y cupo real, usa ver_disponibilidad_hotel con fechas.` }
     }
-    // Panorama de fotos (solo si el cliente las pidió): habitaciones + propiedad.
-    const poolAll = [...(rooms.flatMap(r => r.photos || [])), ...propPhotos]
+    // Panorama de fotos (solo si el cliente las pidió): fotos PROPIAS de cada alojamiento
+    // (Kunas: traídas por tipo de habitación) + galería de la propiedad.
+    let perRoomPhotos = rooms.map(r => r.photos || [])
+    if (typeof prov.getRoomPhotos === 'function') {
+      perRoomPhotos = await Promise.all(rooms.map(async r => (r.photos?.length ? r.photos : await prov.getRoomPhotos(scoped, r.id).catch(() => []))))
+    }
+    const poolAll = [...perRoomPhotos.flat(), ...propPhotos]
     const extra = `Habitaciones:\n${list}\nPide ver_habitaciones con el nombre para la ficha de una.`
     const res = sendPhotoBatch(poolAll, photoKey(convId, scoped.propertyId, 'all'), { maxPhotos, reset, label: propName, extra })
     if (!res.media?.length && !poolAll.length) return { text: `Habitaciones${propName ? ` de ${propName}` : ''}:\n${list}\n\nEste PMS no tiene fotos publicadas; consulta disponibilidad con fechas.` }

@@ -317,6 +317,8 @@ const _kunasKeyCache = new Map()    // token → pKey (api key)
 const _kunasPropCache = new Map()   // token → id_properties (primera propiedad)
 const _kunasPropInfo = new Map()    // token → [{id, name}] (del login)
 const _kunasLoginInflight = new Map() // token → Promise (single-flight: evita logins duplicados)
+const _kunasRoomImgCache = new Map() // token:propId:rtId → { at, photos } (fotos propias del tipo de habitación)
+const KUNAS_ROOMIMG_TTL = 10 * 60 * 1000
 // Busca recursivamente una clave (pkey/apikey…) en la respuesta del login.
 function deepFind(obj, names, depth = 0) {
   if (!obj || typeof obj !== 'object' || depth > 4) return null
@@ -586,6 +588,30 @@ const kunas = {
       basePrice: Number(first(rt.price, rt.base_price, rt.rate, 0)) || 0,
       rates: [],
     }
+  },
+
+  // FOTOS PROPIAS de un tipo de habitación: POST /api/room/data/room con el id_room_types.
+  // Cada alojamiento tiene sus propias fotos (además de la galería de la propiedad madre);
+  // aquí se traen las suyas (roomDetails.images[].url). Se cachea 10 min por propiedad+tipo.
+  // Se llama de forma PEREZOSA (solo cuando el asistente va a enviar fotos), no en getRooms.
+  async getRoomPhotos(cfg, roomTypeId) {
+    if (!roomTypeId) return []
+    const propId = await this._propId(cfg)
+    const ck = `${cfg.token}:${propId}:${roomTypeId}`
+    const hit = _kunasRoomImgCache.get(ck)
+    if (hit && Date.now() - hit.at < KUNAS_ROOMIMG_TTL) return hit.photos
+    try {
+      const data = await this._post(cfg, '/api/room/data/room', { id_room_types: Number(roomTypeId) || roomTypeId })
+      const rd = data?.roomDetails || data?.data?.roomDetails || {}
+      const imgs = Array.isArray(rd.images) ? rd.images : []
+      const photos = [...new Set(
+        imgs.map(im => (typeof im === 'string' ? im : first(im.url, im.src, im.image, im.path)))
+          .map(u => absImg(u, cfg.baseUrl))
+          .filter(Boolean)
+      )]
+      _kunasRoomImgCache.set(ck, { at: Date.now(), photos })
+      return photos
+    } catch { return [] }
   },
 
   // Datos de la propiedad + sus FOTOS: /api/property/data/property.
