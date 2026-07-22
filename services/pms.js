@@ -246,6 +246,10 @@ function buildOptions(availRooms, { adults, children }) {
   const options = []
   for (const room of availRooms) {
     for (const rate of (room.rates || [])) {
+      // Sin cupo: no es una opción reservable. Se descarta SOLO cuando el cupo es
+      // conocido (available es un número). Si el proveedor no lo reporta (null), se
+      // conserva para no ocultar habitaciones válidas.
+      if (rate.available != null && Number(rate.available) <= 0) continue
       // Si la tarifa declara capacidad, respeta el tamaño del grupo.
       if (rate.capacity && rate.capacity < Math.min(wanted, room.capacity || wanted)) continue
       options.push({ rateId: rate.id, roomId: room.id, roomName: room.name, rateName: rate.name, mealType: rate.mealType, total: rate.total, perNight: rate.perNight, capacity: rate.capacity || room.capacity })
@@ -347,10 +351,29 @@ async function toolCall(accId, fn, args = {}, { convId, agId } = {}) {
     const children = Number(args.ninos) || 0
     const query = { checkin, checkout, adults, children, infants: Number(args.infantes) || 0, rooms: Number(args.habitaciones) || undefined, promoCode: args.codigo_promocional || undefined }
     const availRooms = filterBlockedRooms(cfg, scoped.propertyId, (await prov.getAvailability(scoped, query)).rooms)
-    let options = buildOptions(availRooms, { adults, children })
+
+    // Filtro opcional por alojamiento concreto: si el cliente pregunta por uno, se
+    // responde SOLO por ese (y si está lleno, se dice que no está disponible, sin
+    // ofrecer otro como si fuera ese). Cada alojamiento tiene su cupo por separado.
+    let reqRoom = null
+    const wantedRoom = norm(args.habitacion || args.alojamiento || '')
+    if (wantedRoom) {
+      reqRoom = availRooms.find(r => norm(r.name).includes(wantedRoom) || wantedRoom.includes(norm(r.name))) ||
+        availRooms.find(r => norm(r.name).split(/\s+/).some(w => wantedRoom.includes(w) && w.length > 3))
+      if (!reqRoom) {
+        const names = availRooms.map(r => r.name).join(', ')
+        return { text: `No encontré un alojamiento llamado "${args.habitacion || args.alojamiento}"${names ? `. Los que hay son: ${names}` : ''}. Confirma con el cliente cuál y vuelve a intentar.` }
+      }
+    }
+    const roomLabel = reqRoom ? `"${reqRoom.name}"` : ''
+    // Limita a ese alojamiento (si se pidió) y renumera 1..N para que "opcion" cuadre con el caché.
+    const scopeOpts = list => (reqRoom ? list.filter(o => String(o.roomId) === String(reqRoom.id)) : list).map((o, i) => ({ ...o, n: i + 1 }))
+
+    let options = scopeOpts(buildOptions(availRooms, { adults, children }))
 
     if (!options.length) {
-      // Alternativas: intenta ±1..3 días con la misma duración de estadía.
+      // Alternativas: mismas fechas ±1..3 días (misma duración). Si se pidió un
+      // alojamiento concreto, las alternativas son SOLO de ese alojamiento.
       const nights = nightsBetween(checkin, checkout)
       const alts = []
       for (const shift of [1, -1, 2, 3]) {
@@ -358,20 +381,28 @@ async function toolCall(accId, fn, args = {}, { convId, agId } = {}) {
         const co = addDays(ci, nights)
         try {
           const r = await prov.getAvailability(scoped, { ...query, checkin: ci, checkout: co })
-          const opts = buildOptions(filterBlockedRooms(cfg, scoped.propertyId, r.rooms), { adults, children })
+          const opts = scopeOpts(buildOptions(filterBlockedRooms(cfg, scoped.propertyId, r.rooms), { adults, children }))
           if (opts.length) { alts.push({ checkin: ci, checkout: co, best: opts[0] }); if (alts.length >= 2) break }
         } catch {}
       }
+      const head = reqRoom
+        ? `El alojamiento ${roomLabel} NO está disponible del ${checkin} al ${checkout} para ${adults + children} persona(s).`
+        : `No hay disponibilidad del ${checkin} al ${checkout} para ${adults + children} persona(s).`
       if (alts.length) {
         const altText = alts.map(a => `• ${a.checkin} → ${a.checkout}: ${a.best.roomName} desde ${fmtMoney(a.best.total, currency) || 'consultar'}`).join('\n')
-        return { text: `No hay disponibilidad del ${checkin} al ${checkout} para ${adults + children} persona(s). PERO hay fechas cercanas disponibles:\n${altText}\nOfrécelas al cliente.` }
+        return { text: `${head} PERO hay fechas cercanas disponibles${reqRoom ? ` para ${roomLabel}` : ''}:\n${altText}\nOfrécelas al cliente${reqRoom ? '. NO le ofrezcas otro alojamiento como si fuera ese' : ''}.` }
       }
-      return { text: `No hay disponibilidad del ${checkin} al ${checkout} para ${adults + children} persona(s), ni en fechas cercanas. Sugiere al cliente otras fechas.` }
+      // Si se pidió un alojamiento concreto y está lleno, ofrece OTROS con cupo esas fechas (bien diferenciados).
+      if (reqRoom) {
+        const otros = buildOptions(availRooms, { adults, children }).filter(o => String(o.roomId) !== String(reqRoom.id)).map((o, i) => ({ ...o, n: i + 1 }))
+        if (otros.length) return { text: `${head} Para esas fechas SÍ hay otros alojamientos con cupo:\n${optionsText(otros, { checkin, checkout, currency })}\nAclárale al cliente que ${roomLabel} está lleno; ofrécele estas alternativas solo si le interesan.` }
+      }
+      return { text: `${head}${reqRoom ? '' : ' Tampoco en fechas cercanas.'} Sugiere al cliente otras fechas${reqRoom ? ' u otro alojamiento' : ''}.` }
     }
 
     if (convId) _optionsCache.set(convId, { at: Date.now(), checkin, checkout, adults, children, promoCode: args.codigo_promocional || '', options })
     return {
-      text: `Disponibilidad del ${checkin} al ${checkout} (${adults} adulto(s)${children ? ` + ${children} niño(s)` : ''}):\n` +
+      text: `Disponibilidad${reqRoom ? ` de ${roomLabel}` : ''} del ${checkin} al ${checkout} (${adults} adulto(s)${children ? ` + ${children} niño(s)` : ''}):\n` +
         optionsText(options, { checkin, checkout, currency }) +
         `\n\nPara reservar usa reservar_habitacion con el número de opción (necesitas nombre, email y teléfono del huésped).`,
     }
@@ -665,4 +696,4 @@ async function debug(accId) {
   return s.length > 60000 ? { truncated: true, sample: s.slice(0, 60000) } : raw
 }
 
-module.exports = { loadConfig, saveConfig, publicConfig, testConnection, toolCall, listProperties, listRooms, rangeAvailability, monthAvailability, debug }
+module.exports = { loadConfig, saveConfig, publicConfig, testConnection, toolCall, listProperties, listRooms, rangeAvailability, monthAvailability, debug, buildOptions }

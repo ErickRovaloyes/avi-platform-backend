@@ -536,7 +536,7 @@ function buildPmsToolDefs(account) {
         ...propParam,
       } } } },
     { type: 'function', function: { name: 'ver_disponibilidad_hotel',
-      description: 'Consulta la disponibilidad REAL del hotel para un rango de fechas con precios y cotización total. Úsalo antes de reservar. NUNCA inventes precios ni disponibilidad.',
+      description: 'Consulta la disponibilidad REAL del hotel para un rango de fechas con precios y cotización total. Úsalo antes de reservar. NUNCA inventes precios ni disponibilidad. Cada alojamiento tiene su propio cupo: si el cliente pregunta por un alojamiento concreto, pásalo en "habitacion" para responder SOLO por ese; si está lleno, se informa que no está disponible (NO ofrezcas otro como si fuera ese).',
       parameters: { type: 'object', properties: {
         checkin: { type: 'string', description: 'Fecha de entrada YYYY-MM-DD' },
         checkout: { type: 'string', description: 'Fecha de salida YYYY-MM-DD' },
@@ -544,6 +544,7 @@ function buildPmsToolDefs(account) {
         ninos: { type: 'number', description: 'Número de niños (opcional)' },
         infantes: { type: 'number', description: 'Número de infantes (opcional)' },
         habitaciones: { type: 'number', description: 'Número de habitaciones (opcional)' },
+        habitacion: { type: 'string', description: 'Nombre del alojamiento/habitación concreto por el que pregunta el cliente. Si se indica, la disponibilidad se limita a ESE alojamiento (opcional).' },
         codigo_promocional: { type: 'string', description: 'Código promocional si el cliente tiene uno (opcional)' },
         ...propParam,
       }, required: ['checkin', 'checkout', 'adultos'] } } },
