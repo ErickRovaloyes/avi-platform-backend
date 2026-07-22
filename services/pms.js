@@ -482,10 +482,17 @@ async function toolCall(accId, fn, args = {}, { convId, agId } = {}) {
       // Registra el error CRUDO del PMS (+ el cuerpo que enviamos) en el modo debug del
       // chat y en el log del servidor, para diagnosticar exactamente qué campo pide el PMS.
       const provLabel = cfg.provider === 'kunas' ? 'Kunas' : cfg.provider === 'hosroom' ? 'HosRoom' : (cfg.provider || 'el PMS')
-      const detail = { provider: cfg.provider, pmsError: e.message, status: e.status || null, requestBody: { rateId: target.rateId, availability: { [target.rateId]: 1 }, payment: onlinePay, checkin, checkout, adults, children, customer: { name, email, phone } } }
+      // Guía accionable para errores conocidos (para el EQUIPO, no para el cliente).
+      let opHint = ''
+      if (/channel access rights|acceso.*canal|permis/i.test(e.message)) {
+        opHint = `El usuario del token de ${provLabel} NO tiene permisos de CANAL para crear reservas. En HotelSync/${provLabel}, el administrador debe otorgar a ese usuario/API acceso de escritura al canal de reservas (módulo Canales/Reservas). Si tu cuenta usa un id_channels específico, indícalo. Puedes ver los canales disponibles en Zona IA → PMS → Diagnóstico (channelProbe).`
+      }
+      const detail = { provider: cfg.provider, pmsError: e.message, status: e.status || null, opHint: opHint || undefined, requestBody: { rateId: target.rateId, availability: { [target.rateId]: 1 }, payment: onlinePay, checkin, checkout, adults, children, customer: { name, email, phone } } }
       try { require('../flow/store').appendDebugEntry(accId, agId, convId, { type: 'error', title: `🏨 ${provLabel}: fallo al crear la reserva`, detail }) } catch {}
+      // Avisa al equipo interno para que actúe (permiso de canal, etc.), no solo al cliente.
+      if (cfg.notifyTeam !== false) internalNote(accId, agId, convId, `⚠️ ${provLabel}: FALLÓ crear la reserva (${name} · ${checkin}→${checkout}). Error: "${e.message}".${opHint ? ` ▶ ${opHint}` : ''}`).catch(() => {})
       console.warn(`[PMS book] ${provLabel} error:`, e.message, JSON.stringify(detail.requestBody))
-      return { text: `No se pudo crear la reserva en el PMS del hotel. Error técnico REAL de ${provLabel}: "${e.message}".${cashPay ? ' Puede que el hotel EXIJA pago en línea.' : ''} (El detalle técnico quedó registrado en el modo debug 🐛 de este chat.) Relata al cliente que hubo un inconveniente y NO inventes que se reservó.` }
+      return { text: `No se pudo crear la reserva en el PMS del hotel. Error técnico REAL de ${provLabel}: "${e.message}".${opHint ? ` [Equipo: ${opHint}]` : ''}${cashPay ? ' Puede que el hotel EXIJA pago en línea.' : ''} (El detalle quedó en el modo debug 🐛.) Relata al cliente que hubo un inconveniente y NO inventes que se reservó.` }
     }
 
     const totalTxt = booking.total ? fmtMoney(booking.total, currency) : (target.total != null ? fmtMoney(target.total, currency) : null)

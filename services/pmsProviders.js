@@ -695,6 +695,12 @@ const kunas = {
     try { out.property = await this._post(cfg, '/api/property/data/property', {}) } catch (e) { out.propertyError = e.message }
     try { out.calendar = await this._calendar(cfg, date) } catch (e) { out.calendarError = e.message }
     try { out.avail = await this._post(cfg, '/api/avail/data/avail', { dfrom: date, dto }) } catch (e) { out.availError = e.message }
+    // Canales / permisos del usuario: para diagnosticar "Missing channel access rights"
+    // al reservar. Sondea los endpoints probables y captura lo que devuelva cada uno.
+    out.channelProbe = {}
+    for (const path of ['/api/channel/data/channels', '/api/channels/data/channels', '/api/channel/data/channel', '/api/user/data/user', '/api/user/data/rights', '/api/user/auth/me']) {
+      try { out.channelProbe[path] = await this._post(cfg, path, {}) } catch (e) { out.channelProbe[path] = `ERROR ${e.status || ''}: ${e.message}` }
+    }
     return out
   },
 
