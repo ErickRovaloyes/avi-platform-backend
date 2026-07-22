@@ -320,13 +320,14 @@ async function toolCall(accId, fn, args = {}, { convId, agId } = {}) {
       if (!room) return { text: `No encontré una habitación llamada "${args.habitacion}". Las disponibles son: ${rooms.map(r => r.name).join(', ')}.` }
       const plans = (room.rates || []).map(rt => `• ${rt.name}${rt.mealType === 'breakfast' ? ' (con desayuno)' : ''}`).join('\n')
       const ficha = `Ficha: capacidad ${room.capacity} persona(s). ${room.description || ''}${plans ? `\nPlanes: \n${plans}` : ''}`
-      // Fotos del alojamiento: PRIMERO sus propias fotos. Kunas las expone por tipo de
-      // habitación (/api/room/data/room) → se traen de forma perezosa aquí. Si el
-      // alojamiento no tiene fotos propias, se usa la galería de la propiedad madre.
-      let ownPhotos = room.photos?.length ? room.photos : []
-      if (!ownPhotos.length && typeof prov.getRoomPhotos === 'function') {
+      // Fotos del alojamiento: AUTORITATIVO las suyas propias. Kunas las expone por tipo
+      // de habitación (/api/room/data/room) → se traen aquí y mandan sobre lo que trajo el
+      // mapeo base (evita fotos compartidas). Si no tiene propias, la galería de la propiedad.
+      let ownPhotos = []
+      if (typeof prov.getRoomPhotos === 'function') {
         try { ownPhotos = await prov.getRoomPhotos(scoped, room.id) } catch {}
       }
+      if (!ownPhotos.length) ownPhotos = room.photos || []
       const roomPool = ownPhotos.length ? ownPhotos : propPhotos
       if (!roomPool.length) return { text: `No hay fotos publicadas para "${room.name}" en el PMS. ${ficha}` }
       return sendPhotoBatch(roomPool, photoKey(convId, scoped.propertyId, room.id), { maxPhotos, reset, label: room.name, extra: ficha })
@@ -340,10 +341,13 @@ async function toolCall(accId, fn, args = {}, { convId, agId } = {}) {
       return { text: `Habitaciones${propName ? ` de ${propName}` : ''}:\n${list}\n\nEnuméraselas al cliente por su NOMBRE (no mandes fotos salvo que las pida). Para FOTOS de una, llama ver_habitaciones con "habitacion": <nombre>; para el panorama, con "fotos": true. Para precios y cupo real, usa ver_disponibilidad_hotel con fechas.` }
     }
     // Panorama de fotos (solo si el cliente las pidió): fotos PROPIAS de cada alojamiento
-    // (Kunas: traídas por tipo de habitación) + galería de la propiedad.
+    // (Kunas: autoritativas, traídas por tipo de habitación) + galería de la propiedad.
     let perRoomPhotos = rooms.map(r => r.photos || [])
     if (typeof prov.getRoomPhotos === 'function') {
-      perRoomPhotos = await Promise.all(rooms.map(async r => (r.photos?.length ? r.photos : await prov.getRoomPhotos(scoped, r.id).catch(() => []))))
+      perRoomPhotos = await Promise.all(rooms.map(async r => {
+        try { const o = await prov.getRoomPhotos(scoped, r.id); if (o.length) return o } catch {}
+        return r.photos || []
+      }))
     }
     const poolAll = [...perRoomPhotos.flat(), ...propPhotos]
     const extra = `Habitaciones:\n${list}\nPide ver_habitaciones con el nombre para la ficha de una.`
@@ -592,14 +596,24 @@ async function listRooms(accId, { propertyId } = {}) {
   const p = await getPropertyCached(accId, c).catch(() => null)
   if (p) property = { id: String(propId), name: p.name || '', description: p.description || '', photos: Array.isArray(p.photos) ? p.photos.filter(Boolean) : [], blocked: blockedProps.includes(String(propId)) }
   const rooms = await getRoomsCached(accId, c)
-  // Kunas expone las fotos SOLO a nivel de propiedad: si el alojamiento no trae
-  // fotos propias, usa la galería de su propiedad (para que no salga vacío).
   const propPhotos = property?.photos || []
+  const hasOwnFetch = typeof prov.getRoomPhotos === 'function'
   // Panel admin: TODAS las habitaciones con su flag `blocked` (para togglear).
-  return {
-    rooms: rooms.map(r => { const m = mapRoomPublic(r); if (!m.photos.length) m.photos = propPhotos; return { ...m, blocked: isRoomBlocked(cfg, propId, r.id) } }),
-    property, propertyId: String(propId),
-  }
+  // Fotos PROPIAS de cada alojamiento primero (Kunas las expone por tipo de habitación);
+  // solo si el alojamiento no tiene fotos propias se usa la galería de la propiedad madre
+  // (para que no salga vacío). Así cada alojamiento muestra SUS fotos, no todas iguales.
+  const out = await Promise.all(rooms.map(async r => {
+    const m = mapRoomPublic(r)
+    // Autoritativo: las fotos PROPIAS por tipo de habitación (Kunas /api/room/data/room).
+    // Si el proveedor las expone y devuelve alguna, mandan sobre lo que trajo el mapeo base
+    // (evita que se muestren fotos compartidas de la propiedad para todas las habitaciones).
+    let own = []
+    if (hasOwnFetch) { try { own = await prov.getRoomPhotos(c, r.id) } catch {} }
+    if (own.length) m.photos = own
+    else if (!m.photos.length) m.photos = propPhotos
+    return { ...m, blocked: isRoomBlocked(cfg, propId, r.id) }
+  }))
+  return { rooms: out, property, propertyId: String(propId) }
 }
 
 // Disponibilidad para un rango (una sola consulta): habitaciones con precio.
