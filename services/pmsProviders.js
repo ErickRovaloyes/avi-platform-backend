@@ -319,6 +319,8 @@ const _kunasPropInfo = new Map()    // token → [{id, name}] (del login)
 const _kunasLoginInflight = new Map() // token → Promise (single-flight: evita logins duplicados)
 const _kunasRoomImgCache = new Map() // token:propId:rtId → { at, photos } (fotos propias del tipo de habitación)
 const KUNAS_ROOMIMG_TTL = 10 * 60 * 1000
+const _kunasChannelsCache = new Map() // token:propId → { at, channels } (canales de reserva)
+const KUNAS_CHANNELS_TTL = 10 * 60 * 1000
 // Busca recursivamente una clave (pkey/apikey…) en la respuesta del login.
 function deepFind(obj, names, depth = 0) {
   if (!obj || typeof obj !== 'object' || depth > 4) return null
@@ -704,6 +706,38 @@ const kunas = {
     return out
   },
 
+  // Canales de reserva de la propiedad (/api/channels/data/channels). Cada reserva debe
+  // imputarse a un canal (id_channels) sobre el que el usuario tenga permisos; si no, el
+  // API responde "Missing channel access rights for this user". Cacheado 10 min.
+  async getChannels(cfg) {
+    const propId = await this._propId(cfg)
+    const ck = `${cfg.token}:${propId}`
+    const hit = _kunasChannelsCache.get(ck)
+    if (hit && Date.now() - hit.at < KUNAS_CHANNELS_TTL) return hit.channels
+    let channels = []
+    try {
+      const data = await this._post(cfg, '/api/channels/data/channels', {})
+      const list = Array.isArray(data) ? data : arr(first(data?.data, data?.channels, []))
+      channels = list
+        .map(c => ({ id: String(first(c.id_channels, c.id, '')), name: first(c.name, ''), type: first(c.type, '') }))
+        .filter(c => c.id)
+      _kunasChannelsCache.set(ck, { at: Date.now(), channels })
+    } catch {}
+    return channels
+  },
+
+  // Canal para las reservas que crea el asistente: el de RESERVA DIRECTA (type "private")
+  // por defecto; si no, el motor de reservas; si no, el primero. Configurable con cfg.channelId.
+  async _directChannelId(cfg) {
+    if (cfg.channelId) return String(cfg.channelId)
+    const channels = await this.getChannels(cfg)
+    if (!channels.length) return ''
+    const pick = channels.find(c => /directa?|direct/i.test(c.name) || /private/i.test(c.type)) ||
+      channels.find(c => /motor|engine/i.test(c.name) || /engine/i.test(c.type)) ||
+      channels[0]
+    return pick?.id || ''
+  },
+
   // Crea la reserva. availability = { "plan:rtId": 1 } (o solo "rtId" si no hay plan).
   // Reconstruye el detalle en vivo. El plan de precios sale del prefijo o de cfg.pricingPlanId.
   async book(cfg, { checkin, checkout, adults, children, availability, customer }) {
@@ -723,8 +757,11 @@ const kunas = {
     const room = opt._room || {}
     const roomName = opt.name
     const guestNames = String(customer.name || '').trim().split(/\s+/)
+    // Canal al que se imputa la reserva (obligatorio: sin él → "Missing channel access rights").
+    const channelId = await this._directChannelId(cfg)
     const body = {
       status: 'confirmed',
+      ...(channelId ? { id_channels: Number(channelId) } : {}),
       rooms: [{
         id_room_types: Number(rtId), id_rooms: first(room.id_rooms, room.id, undefined),
         room_type: roomName, room_number: first(room.name, room.room_number, ''),
