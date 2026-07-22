@@ -671,9 +671,12 @@ const kunas = {
       if (!isFinite(minAvail)) minAvail = 0
       const rm = byId[String(rtId)] || { id: String(rtId), name: `Habitación ${rtId}`, capacity: 2, description: '', photos: [], basePrice: 0 }
       const total = (rm.basePrice || 0) * nights.length
+      // La tarifa lleva el plan de precios en el id ("plan:rtId") cuando está configurado,
+      // para que la reserva sepa a qué id_pricing_plans imputar. Sin plan → solo el rtId.
+      const rateId = cfg.pricingPlanId ? `${cfg.pricingPlanId}:${rtId}` : String(rtId)
       out.push({
         ...rm,
-        rates: [{ id: String(rtId), name: rm.name, capacity: rm.capacity, total: total || null, perNight: rm.basePrice || null, available: minAvail, mealType: '', _rtId: rtId, _room: {}, _nightPrices: nights.map(d => ({ date: d, price: rm.basePrice || 0 })) }],
+        rates: [{ id: rateId, name: rm.name, capacity: rm.capacity, total: total || null, perNight: rm.basePrice || null, available: minAvail, mealType: '', _rtId: rtId, _room: {}, _nightPrices: nights.map(d => ({ date: d, price: rm.basePrice || 0 })) }],
       })
     }
     return { rooms: out }
@@ -695,14 +698,18 @@ const kunas = {
     return out
   },
 
-  // Crea la reserva. availability = { "plan:rtId": 1 }. Reconstruye el detalle en vivo.
+  // Crea la reserva. availability = { "plan:rtId": 1 } (o solo "rtId" si no hay plan).
+  // Reconstruye el detalle en vivo. El plan de precios sale del prefijo o de cfg.pricingPlanId.
   async book(cfg, { checkin, checkout, adults, children, availability, customer }) {
     const rateId = Object.keys(availability || {})[0] || ''
-    const [plan, rtId] = rateId.split(':')
-    if (!plan || !rtId) throw new Error('Kunas: falta la tarifa/habitación a reservar.')
-    // Re-verifica y toma la opción viva.
+    if (!rateId) throw new Error('Kunas: falta la tarifa/habitación a reservar.')
+    const colon = rateId.indexOf(':')
+    const rtId = colon >= 0 ? rateId.slice(colon + 1) : rateId
+    const plan = colon >= 0 ? rateId.slice(0, colon) : (cfg.pricingPlanId || '')
+    if (!rtId) throw new Error('Kunas: falta la habitación a reservar.')
+    // Re-verifica y toma la opción viva (empareja por id completo o por el rtId subyacente).
     const { rooms } = await this.getAvailability(cfg, { checkin, checkout, adults, children })
-    const opt = rooms.map(r => r.rates[0]).find(rt => rt.id === rateId)
+    const opt = rooms.map(r => r.rates[0]).find(rt => rt.id === rateId || String(rt._rtId) === String(rtId))
     if (!opt) throw new Error('La habitación elegida ya no está disponible para esas fechas.')
     const nights = opt._nightPrices
     const total = opt.total || nights.reduce((s, n) => s + (n.price || 0), 0)
@@ -725,7 +732,7 @@ const kunas = {
       extras: [], payments: [],
       adults: Math.max(1, Number(adults) || 1), children_1: Number(children) || 0, seniors: 0,
       rooms_price: total, rooms_discounted: total, total_price: total,
-      id_pricing_plans: Number(plan),
+      ...(plan ? { id_pricing_plans: Number(plan) } : {}),
     }
     const data = await this._post(cfg, '/api/reservation/insert/reservation', body)
     const r = data?.reservation || data || {}
