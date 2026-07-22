@@ -68,7 +68,9 @@ const webhook = async (req, res) => {
   const { accId } = req.params
   res.sendStatus(200) // ACK inmediato al proveedor
   try {
-    const out = await payments.handleWebhook(accId, req.body)
+    // Cada proveedor verifica su propia firma: Wompi en el cuerpo; Bold en el header
+    // x-bold-signature sobre el cuerpo CRUDO (req.rawBody, capturado en index.js).
+    const out = await payments.handleWebhook(accId, { body: req.body, headers: req.headers, rawBody: req.rawBody })
     if (!out?.matched) return
     const intent = out.intent
     const convId = intent.conv_id, agId = intent.agent_id
@@ -107,7 +109,7 @@ const webhook = async (req, res) => {
       await mergeLocalVars(accId, convId, {
         pago_estado: out.status, pago_monto: String(intent.amount),
         pago_moneda: intent.currency, pago_referencia: intent.reference,
-        pago_transaccion: String(out.transaction?.id || ''),
+        pago_transaccion: String(out.transactionId || ''),
       }).catch(() => {})
     }
     // Dispara el flujo configurado (éxito / fallo) en la conversación.

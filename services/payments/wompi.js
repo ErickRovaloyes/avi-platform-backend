@@ -127,7 +127,23 @@ function normalizeStatus(wompiStatus) {
   return 'pending'
 }
 
+// Verifica la firma y normaliza el evento a { ok, status, reference, linkId, transactionId }.
+// ctx = { body, headers, rawBody }; Wompi firma en el CUERPO (event.signature).
+function parseEvent(cfg, ctx) {
+  const event = ctx?.body || {}
+  if (!verifyEvent(cfg, event)) return { ok: false, reason: 'bad signature' }
+  const tx = event?.data?.transaction
+  if (!tx) return { ok: false, reason: 'no transaction' }
+  return {
+    ok: true,
+    status: normalizeStatus(tx.status),
+    linkId: tx.payment_link_id || tx.paymentLinkId || null,
+    reference: tx.reference || null,
+    transactionId: tx.id || null,
+  }
+}
+
 module.exports = {
   isEnabled, publicConfig, testConnection,
-  createPaymentLink, getTransaction, verifyEvent, normalizeStatus, apiBase, checkoutBase,
+  createPaymentLink, getTransaction, verifyEvent, normalizeStatus, parseEvent, apiBase, checkoutBase,
 }
