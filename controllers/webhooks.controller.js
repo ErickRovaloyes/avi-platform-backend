@@ -276,6 +276,64 @@ const instagramReceive = async (req, res) => {
   flow.processInstagram(accId, agentId, payload).catch(e => console.error('[flow IG]', e))
 }
 
+// ── Webhook GLOBAL de Messenger / Instagram (app 1-clic) ───────────────────────
+// La conexión 1-clic (metaPages) suscribe la PÁGINA a la app global; sus eventos
+// llegan a la MISMA URL de la app. Aquí se resuelve la cuenta/agente por el id de la
+// página (Messenger) o de la cuenta IG (Instagram) buscando en TODOS los agentes.
+
+// Busca el agente cuyo canal `type` tiene config[key] === value.
+async function findAgentByChannel(type, key, value) {
+  if (!value) return null
+  try {
+    const [rows] = await pool.query('SELECT id, account_id, channels FROM agents WHERE channels LIKE ?', [`%"${type}"%`])
+    for (const r of rows) {
+      for (const c of parseJ(r.channels, [])) {
+        if (c.type === type && c.config && String(c.config[key]) === String(value)) return { accId: r.account_id, agentId: r.id }
+      }
+    }
+    console.warn(`[findAgentByChannel] SIN match · ${type}.${key}=${value}`)
+  } catch (e) { console.error('[findAgentByChannel]', e.message) }
+  return null
+}
+
+const messengerReceiveGlobal = async (req, res) => {
+  res.sendStatus(200)
+  for (const entry of (req.body?.entry || [])) {
+    try {
+      const target = await findAgentByChannel('messenger', 'pageId', entry.id)
+      if (!target) { console.warn(`[FB global] sin agente · pageId=${entry.id}`); continue }
+      let payload = { object: 'page', entry: [entry] }
+      try { payload = await enrichMessengerPayloadWithMedia(target.accId, target.agentId, payload) } catch (e) { console.error('[FB global media]', e.message) }
+      pushSSE({ type: 'messenger', accId: target.accId, agentId: target.agentId, ts: Date.now() })
+      await flow.processMessenger(target.accId, target.agentId, payload)
+    } catch (e) { console.error('[FB global entry]', e.message) }
+  }
+}
+
+const instagramReceiveGlobal = async (req, res) => {
+  res.sendStatus(200)
+  for (const entry of (req.body?.entry || [])) {
+    try {
+      const target = await findAgentByChannel('instagram', 'igAccountId', entry.id)
+      if (!target) { console.warn(`[IG global] sin agente · igId=${entry.id}`); continue }
+      let payload = { object: 'instagram', entry: [entry] }
+      try { payload = await enrichInstagramPayloadWithMedia(target.accId, target.agentId, payload) } catch (e) { console.error('[IG global media]', e.message) }
+      pushSSE({ type: 'instagram', accId: target.accId, agentId: target.agentId, ts: Date.now() })
+      await flow.processInstagram(target.accId, target.agentId, payload)
+    } catch (e) { console.error('[IG global entry]', e.message) }
+  }
+}
+
+// Dispatcher GLOBAL unificado: Meta manda a la MISMA URL de la app todos los eventos.
+// Enruta por `object` para funcionar sin importar qué producto (WhatsApp/Messenger/IG)
+// del panel de Meta apunte a este endpoint.
+const metaReceiveGlobal = (req, res) => {
+  const obj = req.body?.object
+  if (obj === 'page') return messengerReceiveGlobal(req, res)
+  if (obj === 'instagram') return instagramReceiveGlobal(req, res)
+  return whatsappReceiveGlobal(req, res)
+}
+
 // ── SSE stream ────────────────────────────────────────────────────────────────
 
 const sseStream = (req, res) => {
@@ -325,5 +383,6 @@ module.exports = {
   whatsappVerify, whatsappReceive, whatsappReceiveGlobal,
   messengerVerify, messengerReceive,
   instagramVerify, instagramReceive,
+  metaReceiveGlobal,
   sseStream, testMessage, getDebug, getHealth,
 }
