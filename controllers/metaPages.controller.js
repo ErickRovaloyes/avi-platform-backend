@@ -13,7 +13,9 @@ const pool = require('../db')
 
 const GRAPH = 'https://graph.facebook.com/v19.0'
 // Campos de webhook de página (Messenger + IG llegan por la suscripción de la página).
-const SUBSCRIBE_FIELDS = 'messages,messaging_postbacks,messaging_optins,message_deliveries,message_reads,messaging_referrals'
+// message_echoes = mensajes que envía el NEGOCIO (desde la app u otra herramienta) →
+// Meta los reenvía para sincronizar el inbox.
+const SUBSCRIBE_FIELDS = 'messages,message_echoes,messaging_postbacks,messaging_optins,message_deliveries,message_reads,messaging_referrals'
 
 async function globalApp() {
   const [[r]] = await pool.query('SELECT meta_app_id, meta_app_secret FROM platform_settings WHERE id=1')

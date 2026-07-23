@@ -246,19 +246,23 @@ function parseMessengerWebhook(body) {
   const messages = []
   for (const entry of body?.entry || []) {
     for (const event of entry?.messaging || []) {
-      if (event.message?.is_echo) continue   // eco de un mensaje que enviamos NOSOTROS → ignorar
+      // is_echo = mensaje que envió el NEGOCIO (desde la app, la plataforma u otra
+      // herramienta). Se registra como SALIENTE para sincronizar el inbox; se llavea la
+      // conversación por el USUARIO (recipient). El dedupe por id evita duplicar lo ya guardado.
+      const isEcho = !!event.message?.is_echo
       const text = event.message?.text || ''
       const attachments = event.message?.attachments || []
       const enriched = attachments.find(a => a._internalMedia)?._internalMedia || null
       if (!text && !enriched) continue
       messages.push({
-        senderId: event.sender?.id,
-        senderName: event.sender?.name || null,
+        senderId: isEcho ? event.recipient?.id : event.sender?.id,
+        senderName: isEcho ? null : (event.sender?.name || null),
         text,
         messageId: event.message?.mid,
         pageId: entry.id,
         timestamp: event.timestamp,
         internalMedia: enriched,
+        outbound: isEcho,
       })
     }
   }
@@ -295,19 +299,23 @@ function parseInstagramWebhook(body) {
   const messages = []
   for (const entry of body?.entry || []) {
     for (const event of entry?.messaging || []) {
-      if (event.message?.is_echo) continue   // eco de un mensaje que enviamos NOSOTROS → ignorar
+      // is_echo = mensaje enviado por el NEGOCIO (app de Instagram, plataforma u otra
+      // herramienta) → se registra como SALIENTE para sincronizar el inbox. Conversación
+      // llaveada por el USUARIO (recipient); dedupe por id evita duplicar lo ya guardado.
+      const isEcho = !!event.message?.is_echo
       const text = event.message?.text || ''
       const attachments = event.message?.attachments || []
       const enriched = attachments.find(a => a._internalMedia)?._internalMedia || null
       if (!text && !enriched) continue
       messages.push({
-        senderId: event.sender?.id,
-        senderName: event.sender?.name || null,
+        senderId: isEcho ? event.recipient?.id : event.sender?.id,
+        senderName: isEcho ? null : (event.sender?.name || null),
         text,
         messageId: event.message?.mid,
         igAccountId: entry.id,
         timestamp: event.timestamp,
         internalMedia: enriched,
+        outbound: isEcho,
       })
     }
     for (const change of entry?.changes || []) {

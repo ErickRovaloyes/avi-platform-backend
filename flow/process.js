@@ -206,6 +206,18 @@ async function processMessenger(accId, agentId, body) {
       console.log('[flow/process] FB ya procesado en DB:', msg.messageId); continue
     }
 
+    // SALIENTE (echo): lo envió el negocio desde la app de Messenger u otra herramienta.
+    // Se registra como saliente para sincronizar el inbox; NO ejecuta IA.
+    if (msg.outbound) {
+      await store.appendMsg(accId, agentId, convId, {
+        role: 'assistant', sender: 'human', senderName: 'Messenger',
+        content: msg.text || '', ts: Date.now(),
+        providerMsgId: msg.messageId, channel: 'messenger', channelId: channel.id,
+        ...(msg.internalMedia ? { mediaId: msg.internalMedia.mediaId, kind: msg.internalMedia.kind, mime: msg.internalMedia.mime, filename: msg.internalMedia.filename, sizeBytes: msg.internalMedia.sizeBytes } : {}),
+      })
+      continue
+    }
+
     // Audio → transcripción automática
     await transcribeIfAudio(accId, agentId, convId, msg)
 
@@ -270,6 +282,18 @@ async function processInstagram(accId, agentId, body) {
 
     if (await store.messageExistsByProviderId(convId, msg.messageId)) {
       console.log('[flow/process] IG ya procesado en DB:', msg.messageId); continue
+    }
+
+    // SALIENTE (echo): lo envió el negocio desde la app de Instagram u otra herramienta.
+    // Se registra en el inbox como saliente para mantener el hilo sincronizado; NO ejecuta IA.
+    if (msg.outbound) {
+      await store.appendMsg(accId, agentId, convId, {
+        role: 'assistant', sender: 'human', senderName: 'Instagram',
+        content: msg.text || '', ts: Date.now(),
+        providerMsgId: msg.messageId, channel: 'instagram', channelId: channel.id,
+        ...(msg.internalMedia ? { mediaId: msg.internalMedia.mediaId, kind: msg.internalMedia.kind, mime: msg.internalMedia.mime, filename: msg.internalMedia.filename, sizeBytes: msg.internalMedia.sizeBytes } : {}),
+      })
+      continue
     }
 
     // Audio → transcripción automática
