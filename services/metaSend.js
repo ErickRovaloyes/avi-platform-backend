@@ -266,21 +266,29 @@ function parseMessengerWebhook(body) {
 }
 
 // ─── Instagram ─────────────────────────────────────────────────────────────────
-// Instagram envía por el endpoint de la CUENTA IG: /{igAccountId}/messages. Usar
-// /me/messages (endpoint de Messenger/página) con un IGSID de destinatario provoca
-// el error #100 "No matching user found" (la página no reconoce ese id de IG).
+// El envío de Instagram tiene DOS variantes según cómo se conectó la cuenta:
+//   • /{igAccountId}/messages  (Instagram API con la cuenta profesional)
+//   • /me/messages             (Messenger Platform vía página de Facebook)
+// Como ambas se usan en la práctica y /me/messages con un IGSID da a veces (#100)
+// "No matching user found", se intenta primero el de la cuenta IG y, si falla, se
+// reintenta con /me/messages. Así funciona sin importar la variante de conexión.
 async function sendInstagramText({ igAccountId, pageAccessToken, recipientId, text }) {
-  if (!igAccountId) throw new Error('[Instagram] Falta el Instagram Account ID del canal (vuelve a Probar la conexión para detectarlo).')
-  const res = await fetch(`${GRAPH_BASE}/${igAccountId}/messages?access_token=${encodeURIComponent(pageAccessToken)}`, {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ recipient: { id: recipientId }, message: { text } }),
-  })
-  if (!res.ok) {
-    const err = await res.json().catch(() => ({}))
-    throw new Error(`[Instagram] ${err?.error?.message || `HTTP ${res.status}`}`)
+  const body = JSON.stringify({ recipient: { id: recipientId }, message: { text } })
+  const paths = []
+  if (igAccountId) paths.push(`${igAccountId}/messages`)
+  paths.push('me/messages')
+  let lastErr = 'sin respuesta'
+  for (const p of paths) {
+    try {
+      const res = await fetch(`${GRAPH_BASE}/${p}?access_token=${encodeURIComponent(pageAccessToken)}`, {
+        method: 'POST', headers: { 'Content-Type': 'application/json' }, body,
+      })
+      if (res.ok) return res.json()
+      const err = await res.json().catch(() => ({}))
+      lastErr = err?.error?.message || `HTTP ${res.status}`
+    } catch (e) { lastErr = e.message }
   }
-  return res.json()
+  throw new Error(`[Instagram] ${lastErr}`)
 }
 
 function parseInstagramWebhook(body) {
