@@ -15,7 +15,9 @@ function sign(payload) {
   // decoded token (e.g. switchAccount/impersonate/refresh spread req.user).
   // Passing `exp`/`iat` in the payload conflicts with `expiresIn`.
   const { exp, iat, nbf, ...rest } = payload || {}
-  return jwt.sign(rest, SECRET, { expiresIn: '7d' })
+  // Sesión persistente: el usuario permanece logueado hasta que cierra sesión. El token
+  // se guarda en localStorage (persiste al cerrar el navegador) y expira solo tras 1 año.
+  return jwt.sign(rest, SECRET, { expiresIn: '365d' })
 }
 
 function verify(token) {
