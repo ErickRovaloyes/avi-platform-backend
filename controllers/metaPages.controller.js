@@ -82,4 +82,22 @@ const connect = async (req, res) => {
   }
 }
 
-module.exports = { connect }
+// POST /api/meta/pages/subscribe  { pageId, pageAccessToken }
+// Suscribe la PÁGINA a los webhooks de la app (Messenger/IG). Imprescindible para recibir
+// mensajes. El 1-clic ya lo hace; en la conexión MANUAL hay que llamarlo aquí. Server-side
+// (evita CORS del navegador contra Graph).
+const subscribe = async (req, res) => {
+  const { pageId, pageAccessToken } = req.body || {}
+  if (!pageId || !pageAccessToken) return res.status(400).json({ ok: false, error: 'Falta Page ID o Page Access Token' })
+  try {
+    const sr = await fetch(`${GRAPH}/${pageId}/subscribed_apps?subscribed_fields=${SUBSCRIBE_FIELDS}&access_token=${encodeURIComponent(pageAccessToken)}`, { method: 'POST' })
+    const sd = await sr.json().catch(() => ({}))
+    if (!sr.ok || sd.success === false) return res.json({ ok: false, error: sd?.error?.message || `HTTP ${sr.status}` })
+    res.json({ ok: true })
+  } catch (e) {
+    console.error('[metaPages subscribe]', e.message)
+    res.status(502).json({ ok: false, error: e.message })
+  }
+}
+
+module.exports = { connect, subscribe }
