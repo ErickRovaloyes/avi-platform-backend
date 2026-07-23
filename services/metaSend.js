@@ -246,6 +246,7 @@ function parseMessengerWebhook(body) {
   const messages = []
   for (const entry of body?.entry || []) {
     for (const event of entry?.messaging || []) {
+      if (event.message?.is_echo) continue   // eco de un mensaje que enviamos NOSOTROS → ignorar
       const text = event.message?.text || ''
       const attachments = event.message?.attachments || []
       const enriched = attachments.find(a => a._internalMedia)?._internalMedia || null
@@ -265,8 +266,12 @@ function parseMessengerWebhook(body) {
 }
 
 // ─── Instagram ─────────────────────────────────────────────────────────────────
+// Instagram envía por el endpoint de la CUENTA IG: /{igAccountId}/messages. Usar
+// /me/messages (endpoint de Messenger/página) con un IGSID de destinatario provoca
+// el error #100 "No matching user found" (la página no reconoce ese id de IG).
 async function sendInstagramText({ igAccountId, pageAccessToken, recipientId, text }) {
-  const res = await fetch(`${GRAPH_BASE}/me/messages?access_token=${pageAccessToken}`, {
+  if (!igAccountId) throw new Error('[Instagram] Falta el Instagram Account ID del canal (vuelve a Probar la conexión para detectarlo).')
+  const res = await fetch(`${GRAPH_BASE}/${igAccountId}/messages?access_token=${encodeURIComponent(pageAccessToken)}`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({ recipient: { id: recipientId }, message: { text } }),
@@ -282,6 +287,7 @@ function parseInstagramWebhook(body) {
   const messages = []
   for (const entry of body?.entry || []) {
     for (const event of entry?.messaging || []) {
+      if (event.message?.is_echo) continue   // eco de un mensaje que enviamos NOSOTROS → ignorar
       const text = event.message?.text || ''
       const attachments = event.message?.attachments || []
       const enriched = attachments.find(a => a._internalMedia)?._internalMedia || null

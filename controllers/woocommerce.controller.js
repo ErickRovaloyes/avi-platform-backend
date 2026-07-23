@@ -24,7 +24,7 @@ async function sendConversationMessage(accId, agId, convId, text) {
       if (cfg.pageAccessToken && c.messenger_from) await sendMessengerText({ pageAccessToken: cfg.pageAccessToken, recipientId: c.messenger_from, text })
     } else if (c.channel_type === 'instagram') {
       const cfg = (channels.find(ch => ch.type === 'instagram' && ch.status === 'connected') || {}).config || {}
-      if (cfg.pageAccessToken && c.ig_from) await sendInstagramText({ pageAccessToken: cfg.pageAccessToken, recipientId: c.ig_from, text })
+      if (cfg.pageAccessToken && c.ig_from) await sendInstagramText({ igAccountId: cfg.igAccountId, pageAccessToken: cfg.pageAccessToken, recipientId: c.ig_from, text })
     }
   } catch (e) { console.warn('[woo deliver]', e.message) }
 }
