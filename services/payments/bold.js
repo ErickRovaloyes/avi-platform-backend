@@ -101,7 +101,8 @@ async function createPaymentLink(cfg, { amountInCents, currency, name, descripti
   return { linkId: String(linkId), url }
 }
 
-// Consulta el estado de un link de pago (verificación puntual).
+// Consulta el estado de un link de pago (verificación puntual). Devuelve el objeto útil
+// tolerando el envoltorio (payload/data) o campos al nivel superior.
 async function getLinkStatus(cfg, linkId) {
   if (!linkId) return null
   try {
@@ -110,8 +111,14 @@ async function getLinkStatus(cfg, linkId) {
     })
     if (!res.ok) return null
     const j = await res.json().catch(() => ({}))
-    return j?.payload || j || null
+    return (j && (j.payload || j.data)) || j || null
   } catch { return null }
+}
+
+// Extrae el string de estado de la respuesta del link, sea cual sea la clave.
+function rawLinkStatus(info) {
+  if (!info) return ''
+  return String(info.status || info.state || info.payment_status || info.link_status || (info.payload && info.payload.status) || '').toUpperCase()
 }
 
 // Sondea el estado EN VIVO del intento (no depende del webhook). Devuelve
@@ -119,9 +126,8 @@ async function getLinkStatus(cfg, linkId) {
 // PAID (aprobado), REJECTED/CANCELLED/EXPIRED (rechazado).
 async function pollStatus(cfg, intentRow) {
   const info = await getLinkStatus(cfg, intentRow?.link_id)
-  if (!info) return 'pending'
-  const s = String(info.status || info.state || '').toUpperCase()
-  if (s === 'PAID' || s === 'APPROVED') return 'approved'
+  const s = rawLinkStatus(info)
+  if (s === 'PAID' || s === 'APPROVED' || s === 'COMPLETED') return 'approved'
   if (s === 'REJECTED' || s === 'CANCELLED' || s === 'CANCELED' || s === 'EXPIRED' || s === 'FAILED') return 'declined'
   return 'pending'
 }
