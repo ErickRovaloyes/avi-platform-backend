@@ -71,58 +71,69 @@ const webhook = async (req, res) => {
     // Cada proveedor verifica su propia firma: Wompi en el cuerpo; Bold en el header
     // x-bold-signature sobre el cuerpo CRUDO (req.rawBody, capturado en index.js).
     const out = await payments.handleWebhook(accId, { body: req.body, headers: req.headers, rawBody: req.rawBody })
+    // Traza mínima para diagnosticar por qué un pago no se confirma (firma/matcheo).
+    console.warn('[payments webhook]', accId, JSON.stringify({ ok: out?.ok, reason: out?.reason, status: out?.status, matched: out?.matched }))
     if (!out?.matched) return
-    const intent = out.intent
-    const convId = intent.conv_id, agId = intent.agent_id
+    await finalizePayment(accId, out)
+  } catch (e) { console.error('[payments webhook]', e.message) }
+}
 
-    // Si el pago corresponde a una RESERVA de calendario con pago previo, la confirma
-    // (o la libera si fue rechazado) y ejecuta el flujo del calendario. Se resuelve
-    // aquí y termina (no aplica la lógica de pedido/chat genérica de abajo).
-    const meta = parseJ(intent.meta, {})
-    if (meta.bookingId) {
-      const bookings = require('../services/bookings')
-      if (out.status === 'approved') {
-        const bk = await bookings.confirmPrepaidBooking(accId, meta.bookingId).catch(() => null)
-        if (bk) {
-          try {
-            const cal = await bookings.getCalendar(accId, bk.calendarId)
-            if (cal) await require('./calendars.controller').runBookingFlow(accId, cal, bk, bk.meta?.conversationId || null)
-          } catch (e) { console.warn('[booking payment flow]', e.message) }
-        }
-      } else {
-        await bookings.cancelBooking(accId, meta.bookingId).catch(() => {}) // rechazado → libera el cupo
+// Efectos de un pago RESUELTO (aprobado/rechazado). Lo usan tanto el webhook como el
+// sondeo en vivo (verificar_pago) para producir el MISMO resultado. Idempotente por
+// intento: handleWebhook/reconcile ya marcan result_notified antes de llamar aquí.
+// opts.sendChat=false cuando lo dispara el asistente (él mismo confirma al cliente).
+async function finalizePayment(accId, out, { sendChat = true } = {}) {
+  const intent = out.intent
+  const convId = intent.conv_id, agId = intent.agent_id
+
+  // Si el pago corresponde a una RESERVA de calendario con pago previo, la confirma
+  // (o la libera si fue rechazado) y ejecuta el flujo del calendario. Termina aquí.
+  const meta = parseJ(intent.meta, {})
+  if (meta.bookingId) {
+    const bookings = require('../services/bookings')
+    if (out.status === 'approved') {
+      const bk = await bookings.confirmPrepaidBooking(accId, meta.bookingId).catch(() => null)
+      if (bk) {
+        try {
+          const cal = await bookings.getCalendar(accId, bk.calendarId)
+          if (cal) await require('./calendars.controller').runBookingFlow(accId, cal, bk, bk.meta?.conversationId || null)
+        } catch (e) { console.warn('[booking payment flow]', e.message) }
       }
-      return
+    } else {
+      await bookings.cancelBooking(accId, meta.bookingId).catch(() => {}) // rechazado → libera el cupo
     }
+    return
+  }
 
-    // Si el pago corresponde a un PEDIDO, lo marca pagado + confirmado + avisa.
-    if (out.status === 'approved' && intent.reference) {
-      try { require('../services/orders').markPaidByRef(accId, intent.reference) } catch {}
-    }
-    const amt = `${intent.amount} ${intent.currency}`
-    if (convId) {
+  // Si el pago corresponde a un PEDIDO, lo marca pagado + confirmado + avisa.
+  if (out.status === 'approved' && intent.reference) {
+    try { require('../services/orders').markPaidByRef(accId, intent.reference) } catch {}
+  }
+  const amt = `${intent.amount} ${intent.currency}`
+  if (convId) {
+    if (sendChat) {
       const msg = out.status === 'approved'
         ? `✅ ¡Pago confirmado! Recibimos tu pago de ${amt}. ¡Gracias! 🎉`
         : `⚠️ Tu pago de ${amt} no se pudo procesar. Puedes intentarlo de nuevo cuando quieras.`
       await sendConversationMessage(accId, agId, convId, msg).catch(() => {})
-      // Variables disponibles para el flujo disparado.
-      await mergeLocalVars(accId, convId, {
-        pago_estado: out.status, pago_monto: String(intent.amount),
-        pago_moneda: intent.currency, pago_referencia: intent.reference,
-        pago_transaccion: String(out.transactionId || ''),
-      }).catch(() => {})
     }
-    // Dispara el flujo configurado (éxito / fallo) en la conversación.
-    if (out.flowId && convId) {
-      try {
-        const { executeFlow } = require('../flow/engine')
-        await executeFlow({
-          flowId: out.flowId, accId, agId, convId,
-          triggerContext: { source: 'payment', status: out.status, reference: intent.reference, amount: intent.amount, currency: intent.currency },
-        })
-      } catch (e) { console.warn('[payment flow]', e.message) }
-    }
-  } catch (e) { console.error('[payments webhook]', e.message) }
+    // Variables disponibles para el flujo disparado.
+    await mergeLocalVars(accId, convId, {
+      pago_estado: out.status, pago_monto: String(intent.amount),
+      pago_moneda: intent.currency, pago_referencia: intent.reference,
+      pago_transaccion: String(out.transactionId || ''),
+    }).catch(() => {})
+  }
+  // Dispara el flujo configurado (éxito / fallo) en la conversación.
+  if (out.flowId && convId) {
+    try {
+      const { executeFlow } = require('../flow/engine')
+      await executeFlow({
+        flowId: out.flowId, accId, agId, convId,
+        triggerContext: { source: 'payment', status: out.status, reference: intent.reference, amount: intent.amount, currency: intent.currency },
+      })
+    } catch (e) { console.warn('[payment flow]', e.message) }
+  }
 }
 
 // Mezcla variables en conversations.local_vars (no pisa otras).
@@ -133,4 +144,4 @@ async function mergeLocalVars(accId, convId, vars) {
   await pool.query('UPDATE conversations SET local_vars=? WHERE id=? AND account_id=?', [JSON.stringify(lv), convId, accId])
 }
 
-module.exports = { getConfig, saveConfig, testConnection, createLink, status, webhook }
+module.exports = { getConfig, saveConfig, testConnection, createLink, status, webhook, finalizePayment }

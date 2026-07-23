@@ -114,6 +114,18 @@ async function getLinkStatus(cfg, linkId) {
   } catch { return null }
 }
 
+// Sondea el estado EN VIVO del intento (no depende del webhook). Devuelve
+// approved | declined | pending. Estados de Bold: ACTIVE/PROCESSING (pendiente),
+// PAID (aprobado), REJECTED/CANCELLED/EXPIRED (rechazado).
+async function pollStatus(cfg, intentRow) {
+  const info = await getLinkStatus(cfg, intentRow?.link_id)
+  if (!info) return 'pending'
+  const s = String(info.status || info.state || '').toUpperCase()
+  if (s === 'PAID' || s === 'APPROVED') return 'approved'
+  if (s === 'REJECTED' || s === 'CANCELLED' || s === 'CANCELED' || s === 'EXPIRED' || s === 'FAILED') return 'declined'
+  return 'pending'
+}
+
 // Verifica la firma del webhook: hex(HMAC_SHA256(secreto, base64(cuerpo_crudo))) === x-bold-signature.
 function verifyEvent(cfg, ctx) {
   try {
@@ -153,5 +165,5 @@ function parseEvent(cfg, ctx) {
 
 module.exports = {
   isEnabled, publicConfig, testConnection,
-  createPaymentLink, getLinkStatus, verifyEvent, normalizeStatus, parseEvent, API_BASE, CHECKOUT_BASE,
+  createPaymentLink, getLinkStatus, pollStatus, verifyEvent, normalizeStatus, parseEvent, API_BASE, CHECKOUT_BASE,
 }

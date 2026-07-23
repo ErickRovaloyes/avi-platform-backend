@@ -497,12 +497,18 @@ async function paymentExec(ctx, fnName, args) {
       return `Link de pago generado por ${r.amount} ${r.currency} y enviado al usuario.`
     }
     if (fnName === 'verificar_pago') {
-      const st = await payments.latestIntentStatus(accId, ctx.convId)
+      // Consulta el estado EN VIVO del proveedor (no depende del webhook). Si el pago se
+      // acaba de resolver, dispara los efectos (pedido/reserva/flujo) una sola vez; el
+      // mensaje al cliente lo da el propio asistente (sendChat:false para no duplicar).
+      const st = await payments.reconcileLatestIntent(accId, ctx.convId)
       if (!st) return 'No hay ningún pago pendiente en esta conversación.'
-      logDebug(ctx, 'tool_result', `💳 Estado pago: ${st.status}`, {})
+      logDebug(ctx, 'tool_result', `💳 Estado pago: ${st.status}${st.justResolved ? ' (recién confirmado)' : ''}`, {})
+      if (st.justResolved) {
+        try { await require('../../controllers/payments.controller').finalizePayment(accId, { status: st.status, intent: st, transactionId: st.transaction_id, flowId: st.flowId, matched: true }, { sendChat: false }) } catch (e) { logDebug(ctx, 'error', `Pago efectos: ${e.message}`, {}) }
+      }
       if (st.status === 'approved') return `El pago de ${st.amount} ${st.currency} está CONFIRMADO.`
       if (st.status === 'declined') return `El pago de ${st.amount} ${st.currency} fue RECHAZADO o no se completó.`
-      return `El pago de ${st.amount} ${st.currency} aún está PENDIENTE (sin confirmar todavía).`
+      return `El pago de ${st.amount} ${st.currency} aún está PENDIENTE (sin confirmar todavía). Pídele al cliente que complete el pago en el link; si ya pagó, dile que espere unos segundos y vuelve a verificar.`
     }
   } catch (e) {
     logDebug(ctx, 'error', `Pasarela: ${e.message}`, {})

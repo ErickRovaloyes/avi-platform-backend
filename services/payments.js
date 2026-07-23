@@ -69,7 +69,38 @@ async function createPaymentLink(accId, { amount, description, currency, convId,
      link.linkId, link.url, amt, cur, (description || 'Pago').slice(0, 255), 'pending', 0,
      meta ? JSON.stringify(meta) : null, ts, ts]
   )
+  // Confirmación AUTOMÁTICA por sondeo (además del webhook) para proveedores que exponen
+  // el estado del link en vivo (Bold). Así el pago se detecta aunque el webhook no llegue.
+  if (convId && typeof impl(cfg).pollStatus === 'function') scheduleBackgroundPolling(accId, convId)
   return { reference, url: link.url, amount: amt, currency: cur }
+}
+
+// Sondeo en SEGUNDO PLANO tras crear un link (proveedores con pollStatus, p.ej. Bold):
+// confirma el pago AUTOMÁTICAMENTE sin depender del webhook. Acotado (~8 min); se detiene
+// al resolverse. Idempotente vía result_notified (no duplica con el webhook ni con
+// verificar_pago). Los temporizadores se pierden si el server reinicia (respaldo: webhook
+// y la verificación reactiva del asistente).
+function scheduleBackgroundPolling(accId, convId) {
+  if (!convId) return
+  const delays = [20000, 25000, 45000, 90000, 120000, 180000] // 20s → ~8 min acumulado
+  let i = 0
+  const tick = async () => {
+    try {
+      const st = await reconcileLatestIntent(accId, convId)
+      if (st && st.status !== 'pending') {
+        if (st.justResolved) {
+          try {
+            require('../controllers/payments.controller').finalizePayment(
+              accId, { status: st.status, intent: st, transactionId: st.transaction_id, flowId: st.flowId, matched: true }
+            )
+          } catch (e) { console.warn('[payments poll finalize]', e.message) }
+        }
+        return // resuelto (por sondeo o webhook) → detener
+      }
+    } catch (e) { /* reintenta en el siguiente tick */ }
+    if (i < delays.length) setTimeout(tick, delays[i++]).unref?.()
+  }
+  if (i < delays.length) setTimeout(tick, delays[i++]).unref?.()
 }
 
 // Estado del último intento de pago de una conversación (lo usa la IA / proxy).
@@ -80,6 +111,33 @@ async function latestIntentStatus(accId, convId) {
     [accId, convId]
   )
   return r || null
+}
+
+// Reconcilia el último intento consultando el estado EN VIVO del proveedor (sin depender
+// del webhook). Si el proveedor soporta pollStatus y el pago ya se resolvió, actualiza el
+// intento y marca result_notified de forma ATÓMICA (para no duplicar efectos con el
+// webhook). Devuelve la fila con { status, justResolved, flowId }. justResolved=true solo
+// la primera vez que se resuelve → el llamador dispara los efectos (chat/pedido/flujo).
+async function reconcileLatestIntent(accId, convId) {
+  const row = await latestIntentStatus(accId, convId)
+  if (!row) return null
+  if (row.status !== 'pending') return { ...row, justResolved: false }
+  const cfg = await loadConfig(accId)
+  if (!isEnabled(cfg)) return { ...row, justResolved: false }
+  const im = impl(cfg)
+  if (typeof im.pollStatus !== 'function') return { ...row, justResolved: false }
+  let live = 'pending'
+  try { live = await im.pollStatus(cfg, row) } catch { return { ...row, justResolved: false } }
+  if (!live || live === 'pending') return { ...row, justResolved: false }
+  const now = Date.now()
+  const [r] = await pool.query(
+    'UPDATE payment_intents SET status=?, updated_at=?, result_notified=1 WHERE id=? AND result_notified=0',
+    [live, now, row.id]
+  )
+  const justResolved = (r?.affectedRows || 0) > 0
+  if (!justResolved) await pool.query('UPDATE payment_intents SET status=?, updated_at=? WHERE id=?', [live, now, row.id])
+  const flowId = live === 'approved' ? (cfg.successFlowId || null) : (cfg.failureFlowId || null)
+  return { ...row, status: live, justResolved, flowId }
 }
 
 // ── Webhook: procesa una transacción del proveedor ──────────────────────────
@@ -126,5 +184,5 @@ async function handleWebhook(accId, ctx) {
 
 module.exports = {
   loadConfig, saveConfig, providerOf, isEnabled, testConnection, publicConfig,
-  createPaymentLink, latestIntentStatus, handleWebhook,
+  createPaymentLink, latestIntentStatus, reconcileLatestIntent, handleWebhook,
 }
