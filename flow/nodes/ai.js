@@ -8,7 +8,7 @@ const { chat, detectProvider, getApiKey } = require('../../services/aiClient')
 const { interpolate, sendBotMsg, logDebug, setVarBoth } = require('../common')
 const store = require('../store')
 
-const DEFAULT_MODEL = { openai: 'gpt-4o-mini', deepseek: 'deepseek-chat', anthropic: 'claude-sonnet-4-6' }
+const DEFAULT_MODEL = { openai: 'gpt-4o-mini', deepseek: 'deepseek-v4-flash', anthropic: 'claude-sonnet-4-6' }
 // Fallback del aviso para clientes recurrentes cuando ni el canal ni la plataforma
 // definen uno (mismo texto que el default del super admin en platform.controller).
 const DEFAULT_RETURNING_NOTICE = 'Esta persona YA había conversado con el negocio anteriormente; NO la trates como un contacto nuevo ni la saludes como si fuera la primera vez. Retoma el hilo con naturalidad.'

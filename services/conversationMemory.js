@@ -22,7 +22,7 @@ async function resolveSummaryModel(accId) {
     const openai = (acc?.openai_key || '').trim() || (pf?.openai_key || '')
     if (openai) return { provider: 'openai', model: 'gpt-4o-mini', apiKey: openai }
     const ds = (acc?.deepseek_key || '').trim() || (pf?.deepseek_key || '')
-    if (ds) return { provider: 'deepseek', model: 'deepseek-chat', apiKey: ds }
+    if (ds) return { provider: 'deepseek', model: 'deepseek-v4-flash', apiKey: ds }
   } catch { /* sin key */ }
   return { apiKey: '' }
 }

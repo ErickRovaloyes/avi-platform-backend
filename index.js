@@ -1298,6 +1298,9 @@ app.use('/api',                recontactRoutes)
        created_by  VARCHAR(120),
        created_at  BIGINT
      )`,
+    // Precios de los modelos v4 de DeepSeek (deepseek-chat quedó deprecado). INSERT IGNORE:
+    // no pisa filas existentes; para la analítica de costos de las etiquetas v4.
+    "INSERT IGNORE INTO model_pricing (model, provider, input_per_1k, output_per_1k, display_name) VALUES ('deepseek-v4-flash','deepseek',0.000270,0.001100,'DeepSeek V4 Flash'),('deepseek-v4-pro','deepseek',0.000550,0.002190,'DeepSeek V4 Pro')",
   ]
   for (const sql of migrations) {
     try { await pool.query(sql) } catch (e) { /* column exists or unsupported */ }
