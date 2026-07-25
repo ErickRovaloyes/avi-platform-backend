@@ -115,6 +115,7 @@ async function saveIntegration(accId, { access_token, refresh_token, expires_in,
        refresh_token=COALESCE(VALUES(refresh_token), refresh_token), expiry=VALUES(expiry), scope=VALUES(scope)`,
     [id, accId, mail, access_token, refresh_token || null, expiry, scope || '', Date.now()]
   )
+  invalidateConnCache(accId)
   return { id, email: mail }
 }
 
@@ -124,10 +125,30 @@ async function listConnections(accId) {
   return rows.map(r => ({ id: r.id, email: r.email || '', connectedAt: r.connected_at || null }))
 }
 
+// ¿La cuenta tiene Google conectado? Cacheado (el motor de flujos lo consulta en cada
+// respuesta de IA para forzar un modelo GPT cuando hay Google — Sheets/Calendar no
+// funcionan con DeepSeek). Se invalida al conectar/desconectar.
+const _connCache = new Map() // accId → { at, connected }
+const CONN_TTL = 30 * 1000
+function invalidateConnCache(accId) { if (accId) _connCache.delete(accId) }
+async function isGoogleConnected(accId) {
+  if (!accId) return false
+  const hit = _connCache.get(accId)
+  if (hit && Date.now() - hit.at < CONN_TTL) return hit.connected
+  let connected = false
+  try {
+    const [[r]] = await pool.query('SELECT COUNT(*) AS n FROM google_connections WHERE account_id=?', [accId])
+    connected = (Number(r?.n) || 0) > 0
+  } catch { connected = false }
+  _connCache.set(accId, { at: Date.now(), connected })
+  return connected
+}
+
 // Desconecta UNA cuenta de Google (por id) o TODAS si no se pasa id.
 async function disconnectConnection(accId, connectionId) {
   if (connectionId) await pool.query('DELETE FROM google_connections WHERE account_id=? AND id=?', [accId, connectionId])
   else await pool.query('DELETE FROM google_connections WHERE account_id=?', [accId])
+  invalidateConnCache(accId)
 }
 
 // access_token válido de UNA conexión (por id). Sin id → la primera de la cuenta
@@ -437,7 +458,7 @@ async function listChanges(token, calendarId, syncToken) {
 
 module.exports = {
   isConfigured, getAuthUrl, exchangeCode, refreshAccessToken, getUserEmail, invalidateCredsCache,
-  saveIntegration, getValidAccessToken, listConnections, disconnectConnection,
+  saveIntegration, getValidAccessToken, listConnections, disconnectConnection, isGoogleConnected,
   readRows, appendRow, updateRange, clearRange, extractSpreadsheetId,
   rowsToRecords, filterSheetRows, runSheetsOperation,
   createCalendarEvent, updateCalendarEvent, deleteCalendarEvent, getCalendarEvent, updateCalendarEventQuiet, freeBusy,

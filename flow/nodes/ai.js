@@ -760,8 +760,24 @@ async function callAI(ctx, { systemPrompt, userPrompt, model, provider, maxToken
   const platModel = ctx?.account?.defaultPromptModel || ''
   const platProvider = ctx?.account?.defaultPromptProvider || ''
   const effModel = model || platModel
-  const prov = provider || platProvider || detectProvider(effModel || 'gpt-4o-mini')
-  const finalModel = effModel || DEFAULT_MODEL[prov] || 'gpt-4o-mini'
+  let prov = provider || platProvider || detectProvider(effModel || 'gpt-4o-mini')
+  let finalModel = effModel || DEFAULT_MODEL[prov] || 'gpt-4o-mini'
+  // Regla Google: si la cuenta tiene Google conectado, se FUERZA un modelo GPT (OpenAI)
+  // porque las herramientas de Google (Sheets/Calendar) no funcionan de forma fiable con
+  // DeepSeek. Solo si hay clave de OpenAI disponible; si no, se deja el modelo original y
+  // se avisa en el debug (el super admin debe cambiar el modelo o configurar OpenAI).
+  if (prov === 'deepseek') {
+    let gConn = false
+    try { gConn = await require('../../services/google').isGoogleConnected(ctx.accId) } catch {}
+    if (gConn) {
+      if (getApiKey(ctx.account, 'openai')) {
+        prov = 'openai'; finalModel = 'gpt-4o-mini'
+        logDebug(ctx, 'info', '🔀 Google conectado: se fuerza modelo GPT (gpt-4o-mini) para poder usar Sheets/Calendar', {})
+      } else {
+        logDebug(ctx, 'error', '⚠ Google está conectado y requiere un modelo GPT, pero no hay API Key de OpenAI. Configura OpenAI o cambia el prompt a un modelo GPT para usar Sheets/Calendar.', {})
+      }
+    }
+  }
   const apiKey = getApiKey(ctx.account, prov)
   if (typeof onResolved === 'function') {
     onResolved({ provider: prov, model: finalModel, keySource: apiKey ? 'account' : 'none' })
