@@ -188,6 +188,8 @@ async function loadPublicAccount(accId) {
     scheduling: schedulingCfg,
     pms: pmsSvc.publicConfig(parseJ(acc.pms, null)),
     orders: await ordersSvc.publicConfigAsync(accId).catch(() => ({ connected: false })),
+    // Google conectado (Sheets/Calendar): el frontend bloquea DeepSeek en el prompt.
+    google: { connected: await require('../services/google').isGoogleConnected(accId) },
     // Conciencia temporal de la IA (zona horaria + fecha/hora base opcional).
     aiTimezone: acc.ai_timezone || 'America/Lima',
     aiDatetimeEnabled: acc.ai_datetime_enabled == null ? true : !!acc.ai_datetime_enabled,
@@ -287,6 +289,7 @@ const getAccount = async (req, res) => {
       scheduling: schedulingCfg,
       pms: pmsSvc.publicConfig(parseJ(acc.pms, null)),
       orders: await ordersSvc.publicConfigAsync(accId).catch(() => ({ connected: false })),
+      google: { connected: await require('../services/google').isGoogleConnected(accId) },
       aiTimezone: acc.ai_timezone || 'America/Lima',
       aiDatetimeEnabled: acc.ai_datetime_enabled == null ? true : !!acc.ai_datetime_enabled,
       aiBaseDatetime: acc.ai_base_datetime || '',
