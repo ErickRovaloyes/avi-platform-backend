@@ -8,14 +8,30 @@ const pool = require('../db')
 const socket = require('../services/socket')
 const { uid, parseJ } = require('../utils')
 
-// El owner es el miembro cuyo rol se llama "Owner".
-async function isAccountOwner(accId, userId) {
-  if (!userId) return false
-  try {
-    const [[m]] = await pool.query('SELECT role_id FROM members WHERE id=? AND account_id=?', [userId, accId])
-    if (!m) return false
-    const [[r]] = await pool.query('SELECT name FROM roles WHERE id=? AND account_id=?', [m.role_id, accId])
+// ¿El usuario puede gestionar filtros GLOBALES de la cuenta?
+// - Un super admin (directo o impersonando) siempre puede.
+// - Un miembro con rol "Owner", ya sea que coincida por id de miembro o por email
+//   (p. ej. un super admin que se unió como owner tiene su membresía por email, pero
+//   su sesión trae el id de super admin, no el de la fila de miembro).
+async function isAccountOwner(accId, user) {
+  if (!user) return false
+  if (user.type === 'superadmin' || user.isImpersonating) return true
+  const hasOwnerRole = async roleId => {
+    if (!roleId) return false
+    const [[r]] = await pool.query('SELECT name FROM roles WHERE id=? AND account_id=?', [roleId, accId])
     return !!(r && String(r.name).trim().toLowerCase() === 'owner')
+  }
+  try {
+    if (user.id) {
+      const [[m]] = await pool.query('SELECT role_id FROM members WHERE id=? AND account_id=?', [user.id, accId])
+      if (m && await hasOwnerRole(m.role_id)) return true
+    }
+    const email = user.email || user.saEmail
+    if (email) {
+      const [[m]] = await pool.query('SELECT role_id FROM members WHERE email=? AND account_id=? LIMIT 1', [email, accId])
+      if (m && await hasOwnerRole(m.role_id)) return true
+    }
+    return false
   } catch { return false }
 }
 
@@ -27,7 +43,7 @@ const list = async (req, res) => {
       "SELECT * FROM saved_filters WHERE account_id=? AND (scope='global' OR owner_id=?) ORDER BY scope DESC, created_at ASC",
       [accId, userId || '']
     )
-    const canCreateGlobal = await isAccountOwner(accId, userId)
+    const canCreateGlobal = await isAccountOwner(accId, req.user)
     res.json({
       canCreateGlobal,
       filters: rows.map(r => ({
@@ -44,7 +60,7 @@ const create = async (req, res) => {
   const { name, scope = 'personal', payload = {} } = req.body || {}
   if (!name || !String(name).trim()) return res.status(400).json({ error: 'Nombre requerido' })
   const finalScope = scope === 'global' ? 'global' : 'personal'
-  if (finalScope === 'global' && !(await isAccountOwner(accId, userId))) {
+  if (finalScope === 'global' && !(await isAccountOwner(accId, req.user))) {
     return res.status(403).json({ error: 'Sólo el owner de la cuenta puede crear filtros globales' })
   }
   const id = 'flt_' + uid()
@@ -65,7 +81,7 @@ const remove = async (req, res) => {
     const [[f]] = await pool.query('SELECT scope, owner_id FROM saved_filters WHERE id=? AND account_id=?', [id, accId])
     if (!f) return res.json({ ok: true })
     if (f.scope === 'global') {
-      if (!(await isAccountOwner(accId, userId))) return res.status(403).json({ error: 'Sólo el owner puede borrar filtros globales' })
+      if (!(await isAccountOwner(accId, req.user))) return res.status(403).json({ error: 'Sólo el owner puede borrar filtros globales' })
     } else if (f.owner_id !== userId) {
       return res.status(403).json({ error: 'No puedes borrar el filtro de otro miembro' })
     }
