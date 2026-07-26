@@ -545,10 +545,44 @@ const updateMemory = async (req, res) => {
   try { require('../services/conversationMemory').updateMemory(accId, agId, convId).catch(() => {}) } catch {}
 }
 
+// ── Sugerencia de respuesta con IA (asistente al asesor en el inbox) ──────────
+// Redacta una respuesta borrador al ÚLTIMO mensaje del cliente usando el modelo/clave
+// de la cuenta. Es ayuda para el asesor: devuelve solo texto, NO envía nada.
+const suggestReply = async (req, res) => {
+  const { accId, agId, convId } = req.params
+  try {
+    const [[conv]] = await pool.query('SELECT id FROM conversations WHERE id=? AND account_id=?', [convId, accId])
+    if (!conv) return res.status(404).json({ error: 'Conversación no encontrada' })
+    const [rows] = await pool.query('SELECT sender, content, metadata FROM messages WHERE conversation_id=? ORDER BY ts DESC LIMIT 15', [convId])
+    const history = rows.reverse().map(m => {
+      const meta = parseJ(m.metadata, {})
+      const content = m.content || (meta.kind ? `[${meta.kind}]` : '')
+      return { role: m.sender === 'user' ? 'user' : 'assistant', content: String(content || '').trim() }
+    }).filter(m => m.content)
+    if (!history.length) return res.status(400).json({ error: 'No hay mensajes para sugerir una respuesta.' })
+
+    const account = await require('../flow/store').loadAccount(accId)
+    const ai = require('../services/aiClient')
+    let provider = account?.defaultPromptProvider || ai.detectProvider(account?.defaultPromptModel || 'gpt-4o-mini')
+    let model    = account?.defaultPromptModel || 'gpt-4o-mini'
+    let apiKey   = ai.getApiKey(account, provider)
+    // Sin clave del proveedor por defecto → intenta OpenAI (el más común para esto).
+    if (!apiKey && ai.getApiKey(account, 'openai')) { provider = 'openai'; model = 'gpt-4o-mini'; apiKey = ai.getApiKey(account, 'openai') }
+    if (!apiKey) return res.status(400).json({ error: 'La cuenta no tiene una API Key de IA configurada.' })
+
+    const sys = 'Eres un asesor humano de atención al cliente de este negocio. A partir del historial de la conversación, redacta UNA sola respuesta breve, cordial y profesional al ÚLTIMO mensaje del cliente, en su MISMO idioma. Devuelve SOLO el texto de la respuesta, sin comillas ni explicaciones.'
+    const suggestion = await ai.chat({ provider, model, apiKey, messages: [{ role: 'system', content: sys }, ...history], maxTokens: 300, temperature: 0.6 })
+    res.json({ suggestion: String(suggestion || '').trim() })
+  } catch (e) {
+    console.error('[suggestReply]', e.message)
+    res.status(500).json({ error: e.message || 'No se pudo generar la sugerencia' })
+  }
+}
+
 module.exports = {
   listConvos, getConvo, createConvo, updateConvo, deleteConvo, markRead,
   appendMessage, sendManual, appendDebug, patchVars, getGuest, updateMemory,
-  createWhatsApp, createMessenger, createInstagram, createSocial,
+  createWhatsApp, createMessenger, createInstagram, createSocial, suggestReply,
   // Reusable cores for the server-side flow engine
   createOrGetSocialConvo,
 }

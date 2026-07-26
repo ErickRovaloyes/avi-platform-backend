@@ -46,6 +46,7 @@ async function executeFlow({ flowId, accId, agId, convId, triggerContext = {}, t
     logDebug(accId, agId, convId, 'error', `✗ Error en flujo: ${err.message}`, {})
     trace.status = 'error'
     trace.error = err.message
+    try { socket.emit(accId, 'flow:error', { accId, agId, convId, flowId, flowName: flow.name, error: err.message, ts: Date.now() }) } catch {}
   } finally {
     _running.delete(convId)
     socket.emit(accId, 'flow:typing', { accId, agId, convId, typing: false })
@@ -109,6 +110,7 @@ async function runNode(nodeId, ctx) {
     await executeNode(node, ctx)
   } catch (err) {
     logDebug(ctx.accId, ctx.agId, ctx.convId, 'error', `✗ Error en [${node.type}]: ${err.message}`, {})
+    try { socket.emit(ctx.accId, 'flow:error', { accId: ctx.accId, agId: ctx.agId, convId: ctx.convId, flowId: ctx.flowId, flowName: ctx.account?.flows?.find(f => f.id === ctx.flowId)?.name || '', node: node.type, error: err.message, ts: Date.now() }) } catch {}
     const errNext = node.connections?.error
     if (errNext) await runNode(errNext, ctx)
     return

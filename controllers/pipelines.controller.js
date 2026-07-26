@@ -16,9 +16,9 @@ const createPipeline = async (req, res) => {
 
 const updatePipeline = async (req, res) => {
   const { accId, pipeId } = req.params
-  const { name, stages, cards, addStage, deleteStage, addCard, updateCard, deleteCard, moveCard } = req.body
+  const { name, stages, cards, addStage, deleteStage, reorderStages, updateStage, addCard, updateCard, deleteCard, moveCard } = req.body
   try {
-    if (addStage || deleteStage || addCard || updateCard || deleteCard || moveCard) {
+    if (addStage || deleteStage || reorderStages || updateStage || addCard || updateCard || deleteCard || moveCard) {
       const [[pipe]] = await pool.query('SELECT * FROM pipelines WHERE id=? AND account_id=?', [pipeId, accId])
       if (!pipe) return res.status(404).json({ error: 'Pipeline no encontrado' })
       let pStages = parseJ(pipe.stages, [])
@@ -26,6 +26,15 @@ const updatePipeline = async (req, res) => {
       const hist = []   // movimientos de etapa a registrar
       if (addStage)    pStages.push(addStage)
       if (deleteStage) { pStages = pStages.filter(s => s.id !== deleteStage); pCards = pCards.map(c => c.stageId === deleteStage ? { ...c, stageId: null } : c) }
+      // Reordenar columnas: `reorderStages` es un array de ids en el nuevo orden → se
+      // reasigna `order` por índice. Las etapas no incluidas conservan su orden relativo al final.
+      if (Array.isArray(reorderStages)) {
+        const idx = {}; reorderStages.forEach((id, i) => { idx[id] = i })
+        pStages = pStages
+          .map(s => ({ ...s, order: idx[s.id] != null ? idx[s.id] : (reorderStages.length + (s.order || 0)) }))
+          .sort((a, b) => (a.order || 0) - (b.order || 0))
+      }
+      if (updateStage && updateStage.id) pStages = pStages.map(s => s.id === updateStage.id ? { ...s, ...updateStage } : s)
       if (addCard)     { const nc = { id: 'card_' + uid(), ...addCard }; pCards.push(nc); if (nc.stageId) hist.push([accId, pipeId, nc.id, null, nc.stageId, Date.now()]) }
       if (updateCard)  {
         const old = pCards.find(c => c.id === updateCard.id)

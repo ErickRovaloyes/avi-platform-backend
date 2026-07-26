@@ -11,6 +11,7 @@ router.put('/:accId/:agId/:convId',                     optionalAuth, ctrl.updat
 router.put('/:accId/:agId/:convId/read',                optionalAuth, ctrl.markRead)
 router.post('/:accId/:agId/:convId/messages',           optionalAuth, ctrl.appendMessage)
 router.post('/:accId/:agId/:convId/send-manual',        optionalAuth, ctrl.sendManual)
+router.post('/:accId/:agId/:convId/suggest-reply',      optionalAuth, ctrl.suggestReply)
 router.post('/:accId/:agId/:convId/debug',              optionalAuth, ctrl.appendDebug)
 router.patch('/:accId/:agId/:convId/vars',              optionalAuth, ctrl.patchVars)
 router.post('/:accId/:agId/:convId/memory',             optionalAuth, ctrl.updateMemory)
