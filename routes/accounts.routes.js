@@ -10,5 +10,8 @@ router.get('/:accId/change-agent-usage',                        authMiddleware, 
 router.post('/:accId/change-agent-usage',                       authMiddleware, ctrl.incrementChangeAgentUsage)
 router.post('/:accId/change-agent-usage/increment',             authMiddleware, ctrl.incrementChangeAgentUsage)
 router.get('/:accId/effective-keys',                            authMiddleware, ctrl.getEffectiveKeys)
+// Copiloto por WhatsApp: gestión de números (listar / desbloquear).
+router.get('/:accId/copilot-wa/auth',                           authMiddleware, ctrl.copilotWaList)
+router.post('/:accId/copilot-wa/unblock',                       authMiddleware, ctrl.copilotWaUnblock)
 
 module.exports = router

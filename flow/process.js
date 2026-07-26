@@ -141,6 +141,14 @@ async function processWhatsApp(accId, agentId, body) {
     // Auto opt-out: si el cliente pide la baja (BAJA/STOP/…), no recibe más masivos.
     try { require('../services/campaigns').maybeOptOut(accId, msg.from, msg.text || '') } catch {}
 
+    // Canal EXCLUSIVO del Copiloto de negocio (gate por contraseña + bloqueo a 3 fallos).
+    // No corre el flujo normal: responde el copiloto del CRM.
+    if (channel?.config?.copilot) {
+      try { await require('../services/copilotWhatsApp').handle(accId, agentId, channel, msg, convId) }
+      catch (e) { console.warn('[copilotWhatsApp]', e.message) }
+      continue
+    }
+
     if (!(await aiActive(accId, agentId, convId))) continue
 
     // Indicador "escribiendo…" mientras el flujo genera la respuesta (y marca leído).

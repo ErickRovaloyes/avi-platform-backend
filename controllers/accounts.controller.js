@@ -294,6 +294,7 @@ const getAccount = async (req, res) => {
       pms: pmsSvc.publicConfig(parseJ(acc.pms, null)),
       orders: await ordersSvc.publicConfigAsync(accId).catch(() => ({ connected: false })),
       google: { connected: await require('../services/google').isGoogleConnected(accId) },
+      copilotWa: (() => { const c = parseJ(acc.copilot_wa, {}) || {}; return { enabled: !!c.enabled, hasPassword: !!c.password } })(),
       aiTimezone: acc.ai_timezone || 'America/Lima',
       aiDatetimeEnabled: acc.ai_datetime_enabled == null ? true : !!acc.ai_datetime_enabled,
       aiBaseDatetime: acc.ai_base_datetime || '',
@@ -328,9 +329,19 @@ const getAccount = async (req, res) => {
   }
 }
 
+// Copiloto por WhatsApp: lista de números (autorizados / pendientes / bloqueados).
+const copilotWaList = async (req, res) => {
+  try { res.json({ numbers: await require('../services/copilotWhatsApp').listAuth(req.params.accId) }) }
+  catch { res.status(500).json({ error: 'Error interno' }) }
+}
+const copilotWaUnblock = async (req, res) => {
+  try { await require('../services/copilotWhatsApp').unblock(req.params.accId, req.body?.phone || ''); res.json({ ok: true }) }
+  catch { res.status(500).json({ error: 'Error interno' }) }
+}
+
 const updateAccount = async (req, res) => {
   const { accId } = req.params
-  const { openaiKey, deepseekKey, anthropicKey, name, email, plan, status, channelLimitsOverride, changeAgentLimitOverride, changeAgentTokenLimitsOverride, chatTheme, aiTimezone, aiDatetimeEnabled, aiBaseDatetime } = req.body
+  const { openaiKey, deepseekKey, anthropicKey, name, email, plan, status, channelLimitsOverride, changeAgentLimitOverride, changeAgentTokenLimitsOverride, chatTheme, aiTimezone, aiDatetimeEnabled, aiBaseDatetime, copilotWa } = req.body
   try {
     const sets = []; const vals = []
     if (chatTheme               !== undefined) { sets.push('chat_theme=?');                vals.push(chatTheme === null ? null : JSON.stringify(chatTheme)) }
@@ -349,6 +360,13 @@ const updateAccount = async (req, res) => {
     if (changeAgentTokenLimitsOverride !== undefined) {
       sets.push('change_agent_token_limits_override=?')
       vals.push(changeAgentTokenLimitsOverride === null ? null : JSON.stringify(changeAgentTokenLimitsOverride))
+    }
+    // Copiloto por WhatsApp: { enabled, password }. La contraseña vacía CONSERVA la actual.
+    if (copilotWa !== undefined) {
+      const [[curA]] = await pool.query('SELECT copilot_wa FROM accounts WHERE id=?', [accId])
+      const cur = parseJ(curA?.copilot_wa, {}) || {}
+      const pwd = (copilotWa?.password != null && String(copilotWa.password).length) ? String(copilotWa.password).slice(0, 120) : (cur.password || '')
+      sets.push('copilot_wa=?'); vals.push(JSON.stringify({ enabled: !!copilotWa?.enabled, password: pwd }))
     }
     // Cambio de nombre: registrar historial y, si el apodo está vacío, fijarlo al
     // primer nombre (el que tenía antes de este cambio) para que no cambie luego.
@@ -431,4 +449,4 @@ const getEffectiveKeys = async (req, res) => {
   }
 }
 
-module.exports = { getPublicAccount, loadPublicAccount, getAccount, updateAccount, getChangeAgentUsage, incrementChangeAgentUsage, getEffectiveKeys }
+module.exports = { getPublicAccount, loadPublicAccount, getAccount, updateAccount, getChangeAgentUsage, incrementChangeAgentUsage, getEffectiveKeys, copilotWaList, copilotWaUnblock }

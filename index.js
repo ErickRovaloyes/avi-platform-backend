@@ -643,6 +643,17 @@ app.use('/api',                recontactRoutes)
        updated_at  BIGINT,
        INDEX idx_ac_acc (account_id, recovered)
      )`,
+    // Copiloto por WhatsApp: config de la cuenta { enabled, password } + acceso por número.
+    "ALTER TABLE accounts ADD COLUMN copilot_wa JSON",
+    `CREATE TABLE IF NOT EXISTS copilot_wa_auth (
+       account_id VARCHAR(50) NOT NULL,
+       phone      VARCHAR(40) NOT NULL,
+       status     VARCHAR(12) DEFAULT 'pending',   -- pending | authed | blocked
+       attempts   INT DEFAULT 0,
+       created_at BIGINT,
+       updated_at BIGINT,
+       PRIMARY KEY (account_id, phone)
+     )`,
     // Último estado por el que ya se notificó (idempotencia del webhook order.updated).
     "ALTER TABLE woo_orders ADD COLUMN notified_status VARCHAR(30)",
     // Pasarela de pago general (Wompi …): config por cuenta.

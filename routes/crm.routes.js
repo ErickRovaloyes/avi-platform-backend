@@ -19,6 +19,7 @@ router.get('/accounts/:accId/crm/kpis',                 authMiddleware, ctrl.kpi
 router.get('/accounts/:accId/crm/pipeline-velocity',    authMiddleware, ctrl.pipelineVelocity)
 router.get('/accounts/:accId/crm/retention',            authMiddleware, ctrl.retention)
 router.post('/accounts/:accId/crm/copilot',             authMiddleware, ctrl.copilotAsk)
+router.post('/accounts/:accId/platform-assistant',      authMiddleware, ctrl.platformAsk)
 router.post('/accounts/:accId/crm/detect-opportunities', authMiddleware, ctrl.detectOpportunities)
 router.get('/accounts/:accId/crm/lead-scores',          authMiddleware, ctrl.leadScores)
 

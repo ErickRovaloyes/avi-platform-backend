@@ -115,6 +115,18 @@ const copilotAsk = async (req, res) => {
   } catch (err) { console.error('[copilot]', err); res.status(500).json({ error: 'Error interno' }) }
 }
 
+// ── Asistente de la plataforma: pregunta → respuesta sobre CÓMO usar AVI ───────
+const platformAsk = async (req, res) => {
+  const { accId } = req.params
+  const question = String(req.body?.question || '').trim()
+  if (!question) return res.status(400).json({ error: 'Escribe una pregunta.' })
+  try {
+    const r = await require('../services/platformAssistant').ask(accId, question)
+    if (!r.ok) return res.status(400).json({ error: r.error })
+    res.json(r)
+  } catch (err) { console.error('[platformAssistant]', err); res.status(500).json({ error: 'Error interno' }) }
+}
+
 // ── Resumen ejecutivo (preview + envío por email al dueño) ───────────────────
 const previewExecutiveSummary = async (req, res) => {
   const { accId } = req.params
@@ -490,4 +502,4 @@ const kpis = async (req, res) => {
   }
 }
 
-module.exports = { listNotes, createNote, deleteNote, listTasks, createTask, updateTask, deleteTask, listActivity, kpis, logActivity, classifyConversations, previewExecutiveSummary, sendExecutiveSummary, pipelineVelocity, retention, copilotAsk, detectOpportunities, leadScores, qaRun, qaReview }
+module.exports = { listNotes, createNote, deleteNote, listTasks, createTask, updateTask, deleteTask, listActivity, kpis, logActivity, classifyConversations, previewExecutiveSummary, sendExecutiveSummary, pipelineVelocity, retention, copilotAsk, platformAsk, detectOpportunities, leadScores, qaRun, qaReview }
