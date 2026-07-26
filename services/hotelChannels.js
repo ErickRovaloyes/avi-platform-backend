@@ -290,8 +290,77 @@ async function importRoomsById(accId, channelId) {
   return syncRoomTypes(accId, c)
 }
 
+// ── Quick-connect: "pegar el enlace y listo" ────────────────────────────────
+// Auto-provisiona todo lo que el motor iCal necesita (calendario hotel + tipo de
+// habitación) para que el usuario solo pegue el enlace iCal del anuncio. Cada
+// conexión = un calendario contenedor compartido "Alojamientos (OTAs)" + un tipo
+// de habitación propio (1 unidad) → los anuncios quedan aislados entre sí.
+async function getOrCreateOtaCalendar(accId) {
+  const [[ex]] = await pool.query("SELECT id FROM calendars WHERE account_id=? AND vertical='hotel' AND shared_group='ota_quick' LIMIT 1", [accId])
+  if (ex) return ex.id
+  const id = 'cal_' + uid(); const ts = Date.now()
+  await pool.query(
+    `INSERT INTO calendars (id, account_id, type, vertical, name, description, timezone, color, status, availability, exceptions, appointment, form_config, flow_id, shared_group, created_at, updated_at)
+     VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`,
+    [id, accId, 'booking', 'hotel', 'Alojamientos (OTAs)', 'Sincronización de Airbnb/Booking por iCal', 'America/Lima', '#e1306c', 'active',
+     JSON.stringify({}), JSON.stringify([]), JSON.stringify({}), JSON.stringify({}), null, 'ota_quick', ts, ts]
+  )
+  return id
+}
+
+function otaExportUrl(accId, calId, roomTypeId) { return `/api/public/hotel/${accId}/${calId}/ical/${roomTypeId}.ics` }
+
+async function quickConnect(accId, { provider, icalImportUrl, name } = {}) {
+  if (provider !== 'airbnb' && provider !== 'booking') throw new Error('Proveedor no soportado (usa airbnb o booking)')
+  const url = String(icalImportUrl || '').trim()
+  if (!/^https?:\/\//i.test(url)) throw new Error('Pega un enlace iCal válido (empieza por https://)')
+  const label = String(name || '').trim() || (provider === 'airbnb' ? 'Airbnb' : 'Booking.com')
+  const calId = await getOrCreateOtaCalendar(accId)
+  // Tipo de habitación propio para este anuncio (1 unidad).
+  const rt = await hotel.createRoomType(accId, calId, { name: label, totalRooms: 1, baseCapacity: 2, maxCapacity: 6 })
+  const channel = await createChannel(accId, calId, { provider, name: label, config: { icalImportUrl: url, roomTypeId: rt.id } })
+  let result
+  try { result = await syncChannel(accId, channel.id) } catch (e) { result = { ok: false, error: e.message } }
+  return { channelId: channel.id, calendarId: calId, roomTypeId: rt.id, exportUrl: otaExportUrl(accId, calId, rt.id), result }
+}
+
+// Lista simplificada de conexiones OTA (del calendario contenedor).
+async function listOtaConnections(accId) {
+  const [[cal]] = await pool.query("SELECT id FROM calendars WHERE account_id=? AND vertical='hotel' AND shared_group='ota_quick' LIMIT 1", [accId])
+  if (!cal) return []
+  const [rows] = await pool.query('SELECT * FROM hotel_channels WHERE account_id=? AND calendar_id=? ORDER BY created_at DESC', [accId, cal.id])
+  return rows.map(r => {
+    const cfg = parseJ(r.config, {})
+    const res = parseJ(r.last_result, null)
+    return {
+      id: r.id, provider: r.provider, name: r.name, enabled: !!r.enabled,
+      importUrl: cfg.icalImportUrl || '', roomTypeId: cfg.roomTypeId || '',
+      exportUrl: cfg.roomTypeId ? otaExportUrl(accId, cal.id, cfg.roomTypeId) : '',
+      lastSync: r.last_sync, imported: res?.ical?.imported ?? null, lastError: res && res.ok === false ? (res.ical?.error || 'Error') : null,
+    }
+  })
+}
+
+// Quita una conexión OTA y limpia lo que auto-provisionó (tipo + reservas externas).
+async function disconnectOta(accId, channelId) {
+  const c = await getChannel(accId, channelId)
+  if (!c) return { ok: true }
+  const rtId = c.config?.roomTypeId
+  await deleteChannel(accId, channelId)
+  if (rtId) {
+    const [bks] = await pool.query('SELECT id FROM calendar_bookings WHERE account_id=? AND calendar_id=? AND id IN (SELECT booking_id FROM booking_allocations WHERE account_id=? AND resource_id=?)', [accId, c.calendarId, accId, rtId])
+    for (const b of bks) {
+      await pool.query('DELETE FROM booking_allocations WHERE booking_id=? AND account_id=?', [b.id, accId]).catch(() => {})
+      await pool.query('DELETE FROM calendar_bookings WHERE id=? AND account_id=?', [b.id, accId]).catch(() => {})
+    }
+    await hotel.deleteRoomType(accId, rtId).catch(() => {})
+  }
+  return { ok: true }
+}
+
 module.exports = {
   PROVIDERS, listChannels, getChannel, createChannel, updateChannel, deleteChannel,
   buildIcal, parseIcal, importIcal, inboundReservation,
   providerSchemas, testConnection, syncRoomTypes, syncReservations, syncAvailability, syncChannel, syncAll, importRoomsById,
+  quickConnect, listOtaConnections, disconnectOta,
 }

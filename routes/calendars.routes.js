@@ -109,6 +109,10 @@ router.post('/accounts/:accId/channels/:chanId/sync',       authMiddleware, chan
 router.get('/accounts/:accId/channel-providers',            authMiddleware, chan.schemas)
 router.post('/accounts/:accId/channels/:chanId/test',       authMiddleware, chan.test)
 router.post('/accounts/:accId/channels/:chanId/import-rooms', authMiddleware, chan.importRooms)
+// Quick-connect OTA (pegar enlace iCal de Airbnb/Booking y auto-provisionar).
+router.post('/accounts/:accId/ota/quick-connect',           authMiddleware, chan.otaQuickConnect)
+router.get('/accounts/:accId/ota/connections',              authMiddleware, chan.otaConnections)
+router.delete('/accounts/:accId/ota/connections/:chanId',   authMiddleware, chan.otaDisconnect)
 // Público: iCal export (la OTA se suscribe) + webhook de reserva entrante.
 router.get('/public/hotel/:accId/:calId/ical/:roomTypeId.ics', chan.ical)
 router.post('/public/hotel/:accId/:calId/channels/:provider/reservation', chan.inbound)

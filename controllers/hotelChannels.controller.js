@@ -21,6 +21,11 @@ const schemas = W(() => ch.providerSchemas())
 const test = W(req => ch.testConnection(req.params.accId, req.params.chanId))
 const importRooms = W(async req => { const r = await ch.importRoomsById(req.params.accId, req.params.chanId); touch(req); return r })
 
+// ── Quick-connect OTA (pegar enlace iCal y listo) ────────────────────────────
+const otaQuickConnect = W(async req => { const r = await ch.quickConnect(req.params.accId, req.body || {}); touch(req); return r })
+const otaConnections = W(req => ch.listOtaConnections(req.params.accId))
+const otaDisconnect = W(async req => { const r = await ch.disconnectOta(req.params.accId, req.params.chanId); touch(req); return r })
+
 // ── Público: iCal export (la OTA se suscribe a esta URL) ─────────────────────
 const ical = async (req, res) => {
   try {
@@ -44,4 +49,4 @@ const inbound = W(async (req, res) => {
   return { ok: true, ...r }
 })
 
-module.exports = { list, create, update, remove, sync, schemas, test, importRooms, ical, inbound }
+module.exports = { list, create, update, remove, sync, schemas, test, importRooms, ical, inbound, otaQuickConnect, otaConnections, otaDisconnect }
