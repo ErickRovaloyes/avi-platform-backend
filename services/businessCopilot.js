@@ -34,6 +34,31 @@ async function buildContext(accId, days = 30) {
     atRisk = atRisk.sort((a, b) => b.spend - a.spend).slice(0, 5)
   } catch {}
 
+  // Citas / agenda: resumen del período + próximas (para que el copiloto tenga
+  // contexto de la agenda, no solo del CRM y los chats).
+  let citasLine = '', proximasLine = ''
+  try {
+    const today = new Date().toISOString().slice(0, 10)
+    const fromD = new Date(now - days * DAY).toISOString().slice(0, 10)
+    const st = s => String(s || '').toLowerCase()
+    const [rows] = await pool.query('SELECT date, status FROM calendar_bookings WHERE account_id=? AND date>=?', [accId, fromD])
+    let periodTotal = 0, todayN = 0, upcoming = 0, confirmed = 0, pending = 0, cancelled = 0
+    for (const r of rows) {
+      const d = r.date, s = st(r.status)
+      if (d >= fromD && d <= today) periodTotal++
+      if (d === today) todayN++
+      if (d > today) upcoming++
+      if (/confirm/.test(s)) confirmed++
+      else if (/cancel|no.?show|rechaz|reject/.test(s)) cancelled++
+      else pending++
+    }
+    if (rows.length) citasLine = `Citas/agenda: ${periodTotal} en el período, ${todayN} hoy, ${upcoming} próximas (futuras). Estado: ${confirmed} confirmadas, ${pending} pendientes, ${cancelled} canceladas/no-show.`
+    const [up] = await pool.query(
+      "SELECT date, time, client_name, status FROM calendar_bookings WHERE account_id=? AND date>=? AND (status IS NULL OR status NOT IN ('cancelled','canceled','no_show','rejected')) ORDER BY date ASC, time ASC LIMIT 6",
+      [accId, today])
+    if (up.length) proximasLine = `Próximas citas: ${up.map(r => `${r.date} ${r.time || ''} ${(r.client_name || 'cliente').trim()}`.trim()).join('; ')}.`
+  } catch {}
+
   const sentTot = (sm.sentiment.positivo + sm.sentiment.neutral + sm.sentiment.negativo) || 1
   const lines = [
     `Período: últimos ${days} días. Negocio: ${sm.account}.`,
@@ -41,6 +66,8 @@ async function buildContext(accId, days = 30) {
     `Conversaciones: ${sm.conversations}. Contactos nuevos: ${sm.contactsAdded}.`,
     `Atención: 1ª respuesta promedio ${fmtDur(sm.avgFrt)}; ${sm.attendedPct}% atendidas; ${sm.derivedPct}% derivadas a humano.`,
     `Pipeline: ${sm.dealsOpen} deals abiertos, valor ${money(sm.dealsValue, sm.currency)}, ${sm.dealsWon} ganados.`,
+    citasLine,
+    proximasLine,
     `Temas más frecuentes: ${sm.topics.length ? sm.topics.map(t => `${t.topic}(${t.count})`).join(', ') : 'sin datos'}.`,
     `Sentimiento: ${Math.round(sm.sentiment.positivo / sentTot * 100)}% positivo, ${Math.round(sm.sentiment.negativo / sentTot * 100)}% negativo.`,
     `Clientes: ${retention.active} activos, ${retention.atRisk} en riesgo, ${retention.inactive} inactivos, ${retention.churned} perdidos.`,

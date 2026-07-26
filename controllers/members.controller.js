@@ -165,6 +165,48 @@ const deleteRole = async (req, res) => {
   } catch (err) { res.status(500).json({ error: 'Error interno' }) }
 }
 
+// ── Teams (equipos / grupos de miembros) ───────────────────────────────────────
+
+const createTeam = async (req, res) => {
+  const { accId } = req.params
+  const { name, color = '#7c6fff', memberIds = [] } = req.body
+  if (!String(name || '').trim()) return res.status(400).json({ error: 'Nombre requerido' })
+  const id = 'team_' + uid()
+  try {
+    await pool.query('INSERT INTO teams (id,account_id,name,color,member_ids,created_at) VALUES (?,?,?,?,?,?)',
+      [id, accId, String(name).trim(), color, JSON.stringify(Array.isArray(memberIds) ? memberIds : []), Date.now()])
+    socket.emit(accId, 'account:updated', { accId })
+    res.json({ id })
+  } catch (err) { console.error('[POST TEAM]', err); res.status(500).json({ error: 'Error interno' }) }
+}
+
+const updateTeam = async (req, res) => {
+  const { accId, teamId } = req.params
+  const { name, color, memberIds } = req.body
+  try {
+    const sets = []; const vals = []
+    if (name      !== undefined) { sets.push('name=?');       vals.push(String(name).trim()) }
+    if (color     !== undefined) { sets.push('color=?');      vals.push(color) }
+    if (memberIds !== undefined) { sets.push('member_ids=?'); vals.push(JSON.stringify(Array.isArray(memberIds) ? memberIds : [])) }
+    if (!sets.length) return res.json({ ok: true })
+    vals.push(teamId, accId)
+    await pool.query(`UPDATE teams SET ${sets.join(',')} WHERE id=? AND account_id=?`, vals)
+    socket.emit(accId, 'account:updated', { accId })
+    res.json({ ok: true })
+  } catch (err) { res.status(500).json({ error: 'Error interno' }) }
+}
+
+const deleteTeam = async (req, res) => {
+  const { accId, teamId } = req.params
+  try {
+    await pool.query('DELETE FROM teams WHERE id=? AND account_id=?', [teamId, accId])
+    // Desasignar el equipo de las conversaciones que lo tuvieran.
+    try { await pool.query('UPDATE conversations SET team_id=NULL WHERE account_id=? AND team_id=?', [accId, teamId]) } catch {}
+    socket.emit(accId, 'account:updated', { accId })
+    res.json({ ok: true })
+  } catch (err) { res.status(500).json({ error: 'Error interno' }) }
+}
+
 // ── Labels ────────────────────────────────────────────────────────────────────
 
 const createLabel = async (req, res) => {
@@ -200,5 +242,6 @@ const deleteLabel = async (req, res) => {
 module.exports = {
   createMember, updateMember, deleteMember, deleteUserEverywhere, joinAsOwner,
   createRole, updateRole, deleteRole,
+  createTeam, updateTeam, deleteTeam,
   createLabel, updateLabel, deleteLabel,
 }

@@ -226,6 +226,8 @@ const getAccount = async (req, res) => {
     const [agents]    = await pool.query('SELECT * FROM agents WHERE account_id=?', [accId])
     const [members]   = await pool.query('SELECT * FROM members WHERE account_id=?', [accId])
     const [roles]     = await pool.query('SELECT * FROM roles WHERE account_id=?', [accId])
+    let teams = []
+    try { [teams] = await pool.query('SELECT * FROM teams WHERE account_id=? ORDER BY created_at', [accId]) } catch { teams = [] }
     const [labels]    = await pool.query('SELECT * FROM labels WHERE account_id=?', [accId])
     const [pipelines] = await pool.query('SELECT * FROM pipelines WHERE account_id=?', [accId])
     const [variables] = await pool.query('SELECT * FROM variables WHERE account_id=?', [accId])
@@ -282,6 +284,7 @@ const getAccount = async (req, res) => {
       members:   members.map(m => ({ id: m.id, name: m.name, email: m.email, avatar: m.avatar, roleId: m.role_id, agentAccess: parseJ(m.agent_access, []), status: m.status })),
       agents:    agents.map(a => ({ ...mapAgent(a), createdAt: a.created_at })),
       labels:    labels.map(l => ({ id: l.id, name: l.name, color: l.color })),
+      teams:     teams.map(t => ({ id: t.id, name: t.name, color: t.color || '#7c6fff', memberIds: parseJ(t.member_ids, []) })),
       pipelines: pipelines.map(p => ({ id: p.id, name: p.name, stages: parseJ(p.stages, []), cards: parseJ(p.cards, []) })),
       variables: variables.map(v => ({ id: v.id, name: v.name, type: v.type, defaultValue: v.default_value, description: v.description, isSystem: !!v.is_system })),
       aiTools:   [SPECIAL_CMS_TOOL, ...specialTools(), ...aiTools.map(t => ({ id: t.id, name: t.name, description: t.description, collectFields: parseJ(t.collect_fields, []), flowId: t.flow_id, actionType: t.action_type || 'variable', createdAt: t.created_at }))],

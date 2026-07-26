@@ -67,6 +67,7 @@ const mapConvo = (c, messages = []) => ({
   localVars:     parseJ(c.local_vars, {}),
   debugLog:      parseJ(c.debug_log, []),
   assignedTo:    parseJ(c.assigned_to, null),
+  teamId:        c.team_id || null,
   messages,
   createdAt: c.created_at, updatedAt: c.updated_at,
 })
@@ -170,6 +171,8 @@ const updateConvo = async (req, res) => {
         vals.push(typeof v === 'object' ? JSON.stringify(v) : v)
       }
     }
+    // Equipo asignado (columna simple, no JSON): '' o null → desasignar.
+    if (req.body.teamId !== undefined) { sets.push('team_id=?'); vals.push(req.body.teamId || null) }
     // La IA NO se puede reactivar en un chat que la Demo desactivó por el límite
     // de respuestas: solo se permite tras adquirir un plan de pago (la conversión
     // limpia el motivo). Mientras el motivo siga puesto, se ignora la reactivación.

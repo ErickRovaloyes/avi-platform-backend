@@ -24,6 +24,14 @@ router.post('/roles/:accId',                        authMiddleware, ctrl.createR
 router.put('/roles/:accId/:roleId',                 authMiddleware, ctrl.updateRole)
 router.delete('/roles/:accId/:roleId',              authMiddleware, ctrl.deleteRole)
 
+// ── Teams (equipos) ─────────────────────────────────────────────────────────────
+router.post('/accounts/:accId/teams',               authMiddleware, ctrl.createTeam)
+router.put('/accounts/:accId/teams/:teamId',        authMiddleware, ctrl.updateTeam)
+router.delete('/accounts/:accId/teams/:teamId',     authMiddleware, ctrl.deleteTeam)
+router.post('/teams/:accId',                        authMiddleware, ctrl.createTeam)
+router.put('/teams/:accId/:teamId',                 authMiddleware, ctrl.updateTeam)
+router.delete('/teams/:accId/:teamId',              authMiddleware, ctrl.deleteTeam)
+
 // ── Labels ────────────────────────────────────────────────────────────────────
 router.post('/accounts/:accId/labels',              authMiddleware, ctrl.createLabel)
 router.put('/accounts/:accId/labels/:lblId',        authMiddleware, ctrl.updateLabel)
