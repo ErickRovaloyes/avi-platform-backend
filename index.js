@@ -727,6 +727,11 @@ app.use('/api',                recontactRoutes)
     "ALTER TABLE platform_settings ADD COLUMN default_prompt_model VARCHAR(60) DEFAULT 'deepseek-v4-flash'",
     "ALTER TABLE agents ADD COLUMN fallback_flow_id VARCHAR(50)",
     "ALTER TABLE agents ADD COLUMN test_flow_id VARCHAR(50)",
+    // Reparto IA/Humano (round-robin) por agente: config { enabled, aiPercent } +
+    // contadores para respetar el % de forma determinista.
+    "ALTER TABLE agents ADD COLUMN routing JSON",
+    "ALTER TABLE agents ADD COLUMN rr_ai INT DEFAULT 0",
+    "ALTER TABLE agents ADD COLUMN rr_total INT DEFAULT 0",
     "ALTER TABLE team_chat ADD COLUMN media JSON",
     "ALTER TABLE support_messages ADD COLUMN media JSON",
     `CREATE TABLE IF NOT EXISTS team_channels (

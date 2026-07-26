@@ -241,22 +241,26 @@ function buildWooToolDefs(account) {
   const pedidoDesc = 'Crea un pedido en la tienda y envía al usuario el LINK DE PAGO. Úsalo SOLO cuando el usuario confirme que quiere comprar.'
     + (req.length ? ` ANTES debes tener estos datos del cliente (pídeselos si faltan): ${req.join(', ')}.` : '')
     + ' Tras el pago, se confirma automáticamente.'
-  return [
+  // Si la gestión de pedidos está desactivada, la IA solo consulta productos y
+  // estado de pedidos; NO puede crear pedidos (los gestiona un humano).
+  const ordersOff = account?.woocommerce?.ordersEnabled === false
+  const defs = [
     { type: 'function', function: { name: 'buscar_productos',
       description: 'Busca productos en la tienda para responder preguntas sobre disponibilidad, precios o características. Devuelve nombre, precio y descripción de los productos que coincidan.',
       parameters: { type: 'object', properties: { consulta: { type: 'string', description: 'Nombre, categoría o palabras clave del producto que busca el usuario' } }, required: ['consulta'] } } },
     { type: 'function', function: { name: 'enviar_producto',
       description: 'Envía al usuario un producto con sus FOTOS y una ficha (nombre, precio, link). Úsalo cuando el usuario quiera VER un producto o pida su foto/presentación/catálogo.',
       parameters: { type: 'object', properties: { producto: { type: 'string', description: 'Nombre o palabras clave del producto a enviar' } }, required: ['producto'] } } },
-    { type: 'function', function: { name: 'crear_pedido',
+    ...(ordersOff ? [] : [{ type: 'function', function: { name: 'crear_pedido',
       description: pedidoDesc,
-      parameters: { type: 'object', properties: pedidoProps, required: ['producto'] } } },
+      parameters: { type: 'object', properties: pedidoProps, required: ['producto'] } } }]),
     { type: 'function', function: { name: 'ver_pedido',
       description: 'Consulta el ESTADO actual de un pedido en la tienda (seguimiento). Úsalo cuando el cliente pregunte por su pedido, envío o estado. Si no da el número, se usa el último pedido de esta conversación.',
       parameters: { type: 'object', properties: {
         numero_pedido: { type: 'string', description: 'Número/ID del pedido (opcional; si no, se usa el último de la conversación)' },
       } } } },
   ]
+  return defs
 }
 async function wooExec(ctx, fnName, args) {
   const store = require('../../services/store')
@@ -286,6 +290,7 @@ async function wooExec(ctx, fnName, args) {
       return `Envié el producto "${p.name}" con ${imgs.length} foto(s) al usuario.`
     }
     if (fnName === 'crear_pedido') {
+      if (cfg?.ordersEnabled === false) return 'La creación de pedidos está desactivada: un asesor humano gestionará el pedido. Ayuda al cliente con información de productos y avísale que un asesor tomará su pedido.'
       // El índice solo RESUELVE el producto; el pedido se crea contra la API viva
       // (la tienda calcula el precio real al crear el pedido).
       const list = await store.searchProductsSmart(accId, args?.producto || '')

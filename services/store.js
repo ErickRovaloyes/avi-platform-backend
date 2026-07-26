@@ -73,6 +73,9 @@ function publicConfig(cfg) {
     ...base,
     platform,
     maxImagesPerProduct: maxImages(cfg),
+    // Gestión de pedidos por la IA: si se desactiva, el asistente solo consulta
+    // productos (y estado de pedidos) pero NO crea pedidos → los gestiona un humano.
+    ordersEnabled: cfg?.ordersEnabled !== false,
     gateway: cfg?.gateway || { mode: 'native' },
     abandonedCart: cfg?.abandonedCart || { enabled: false, hours: 20, maxReminders: 1, message: '' },
     orderForm: orderForm(cfg),

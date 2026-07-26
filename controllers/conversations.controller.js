@@ -110,6 +110,36 @@ const getConvo = async (req, res) => {
   }
 }
 
+// Etiqueta (por nombre) para el reparto IA/Humano: la busca o la crea. Devuelve su id.
+async function ensureLabel(accId, name, color) {
+  try {
+    const [[l]] = await pool.query('SELECT id FROM labels WHERE account_id=? AND name=? LIMIT 1', [accId, name])
+    if (l) return l.id
+    const id = 'lbl_' + uid()
+    await pool.query('INSERT INTO labels (id,account_id,name,color) VALUES (?,?,?,?)', [id, accId, name, color])
+    return id
+  } catch { return null }
+}
+
+// Decide si una conversación NUEVA arranca con la IA activa o en manos de un humano,
+// según el reparto por % configurado en el agente (round-robin determinista). Devuelve
+// { aiEnabled:0|1, labelIds:[] }. Sin reparto activo → IA activa, sin etiqueta.
+async function routeNewConversation(accId, agId) {
+  try {
+    const [[ag]] = await pool.query('SELECT routing, rr_ai, rr_total FROM agents WHERE id=? AND account_id=?', [agId, accId])
+    const r = parseJ(ag?.routing, null)
+    if (!ag || !r || !r.enabled) return { aiEnabled: 1, labelIds: [] }
+    const pct = Math.max(0, Math.min(100, parseInt(r.aiPercent) || 0))
+    const rrAi = Number(ag.rr_ai) || 0, rrTot = Number(ag.rr_total) || 0
+    // Apportionment por redondeo: mantiene aiCount ≈ round(total * pct/100) e interleava.
+    const assignAI = Math.round((rrTot + 1) * pct / 100) > rrAi
+    if (assignAI) await pool.query('UPDATE agents SET rr_ai=rr_ai+1, rr_total=rr_total+1 WHERE id=?', [agId])
+    else          await pool.query('UPDATE agents SET rr_total=rr_total+1 WHERE id=?', [agId])
+    const labelId = await ensureLabel(accId, assignAI ? '🤖 IA' : '👤 Humano', assignAI ? '#7c6fff' : '#f5a623')
+    return { aiEnabled: assignAI ? 1 : 0, labelIds: labelId ? [labelId] : [] }
+  } catch { return { aiEnabled: 1, labelIds: [] } }
+}
+
 const createConvo = async (req, res) => {
   const { accId, agId } = req.params
   const { guestName, guestId, channelId, channelType = 'webchat', waFrom, messengerFrom, igFrom, origin } = req.body
@@ -134,13 +164,15 @@ const createConvo = async (req, res) => {
     const originObj = (origin && typeof origin === 'object')
       ? origin
       : { type: channelId ? 'link' : 'direct', linkId: channelId || null }
+    // Reparto IA/Humano por % (si está activo en el agente): fija ai_enabled + etiqueta.
+    const route = await routeNewConversation(accId, agId)
     await pool.query(
       `INSERT INTO conversations
        (id,account_id,agent_id,channel_id,channel_type,guest_name,guest_id,wa_from,messenger_from,ig_from,initials,preview,unread,ai_enabled,labels,pipeline_cards,local_vars,debug_log,origin,created_at,updated_at)
        VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`,
       [id, accId, agId, channelId, channelType, guestName, guestId,
        waFrom || null, messengerFrom || null, igFrom || null,
-       initials, '', 0, 1, '[]', '[]', JSON.stringify(localVars), '[]', JSON.stringify(originObj), ts, ts]
+       initials, '', 0, route.aiEnabled, JSON.stringify(route.labelIds), '[]', JSON.stringify(localVars), '[]', JSON.stringify(originObj), ts, ts]
     )
     // Bandera de recurrente vía UPDATE aparte (defensivo: si la columna aún no
     // existe por migración, no rompe la creación de la conversación).
@@ -473,13 +505,15 @@ async function createOrGetSocialConvo(accId, agId, lookupCol, lookupVal, guestNa
   }
   if (returning) localVars._returning = true
 
+  // Reparto IA/Humano por % (round-robin del agente) para la conversación nueva.
+  const route = await routeNewConversation(accId, agId)
   const cols = {
     id, account_id: accId, agent_id: agId,
     channel_id: channelId || channelType, channel_type: channelType,
     guest_name: guestName, guest_id: String(n),
     initials: (guestName || '').slice(0, 2).toUpperCase(),
-    preview: '', unread: 1, ai_enabled: 1,
-    labels: '[]', pipeline_cards: '[]',
+    preview: '', unread: 1, ai_enabled: route.aiEnabled,
+    labels: JSON.stringify(route.labelIds), pipeline_cards: '[]',
     local_vars: JSON.stringify(localVars),
     debug_log: '[]',
     origin: JSON.stringify(origin || { type: channelId ? 'link' : 'direct', linkId: channelId || null }),
