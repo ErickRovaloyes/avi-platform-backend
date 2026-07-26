@@ -757,7 +757,7 @@ function parseTextArgs(raw) {
   return obj
 }
 
-async function callAI(ctx, { systemPrompt, userPrompt, model, provider, maxTokens = 800, temperature = 0.5, jsonMode = false, history = [], tools = [], onToolCall, onTools, onResolved }) {
+async function callAI(ctx, { systemPrompt, userPrompt, model, provider, maxTokens, temperature = 0.5, jsonMode = false, advanced = {}, history = [], tools = [], onToolCall, onTools, onResolved }) {
   // Fallback CENTRAL: cuando el nodo no fija modelo (Chat IA, Clasificador, Extractor,
   // Sentimiento, Router…), se usa el modelo/proveedor por defecto de la PLATAFORMA (lo
   // gobierna el super admin), NO 'gpt-4o-mini'. Así ningún nodo IA corre gpt-4o-mini por
@@ -772,6 +772,10 @@ async function callAI(ctx, { systemPrompt, userPrompt, model, provider, maxToken
     onResolved({ provider: prov, model: finalModel, keySource: apiKey ? 'account' : 'none' })
   }
   if (!apiKey) throw new Error(`Sin API Key para ${prov}`)
+
+  // Parámetros avanzados del prompt (max_tokens de salida, top_p, penalties, seed, stop,
+  // reasoning_effort, thinking…) → se pasan al body. jsonMode añade el response_format.
+  const advForBody = { ...advanced, ...(jsonMode ? { responseFormat: { type: 'json_object' } } : {}) }
 
   const onUsage = (u) => {
     try {
@@ -874,7 +878,7 @@ async function callAI(ctx, { systemPrompt, userPrompt, model, provider, maxToken
       // conversación, para que SIEMPRE responda en base a la info obtenida.
       if (!clean && executed.length && canThread) {
         try {
-          const synth = await chat({ provider: prov, model: finalModel, apiKey, messages: convo, maxTokens, temperature, onUsage, signal: ctx._signal })
+          const synth = await chat({ provider: prov, model: finalModel, apiKey, messages: convo, advanced: advForBody, maxTokens, temperature, onUsage, signal: ctx._signal })
           if (typeof synth === 'string' && synth.trim()) clean = synth.trim()
         } catch (e) { logDebug(ctx, 'error', `Síntesis post-herramienta falló: ${e.message}`, {}) }
       }
@@ -883,7 +887,7 @@ async function callAI(ctx, { systemPrompt, userPrompt, model, provider, maxToken
     }
 
     for (let round = 0; round < MAX_ROUNDS; round++) {
-      const result = await chat({ provider: prov, model: finalModel, apiKey, messages: convo, tools, maxTokens, temperature, onUsage, signal: ctx._signal })
+      const result = await chat({ provider: prov, model: finalModel, apiKey, messages: convo, tools, advanced: advForBody, maxTokens, temperature, onUsage, signal: ctx._signal })
       if (typeof result === 'string') {
         return await finishText(result)
       }
@@ -917,7 +921,7 @@ async function callAI(ctx, { systemPrompt, userPrompt, model, provider, maxToken
   const response = await chat({
     provider: prov, model: finalModel, apiKey, messages,
     maxTokens, temperature,
-    advanced: jsonMode ? { responseFormat: { type: 'json_object' } } : {},
+    advanced: advForBody,
     onUsage, signal: ctx._signal,
   })
   return response || ''
@@ -967,6 +971,7 @@ const aiNodes = [
       if (model === 'gpt-4o-mini' && platModel && platModel !== 'gpt-4o-mini') model = platModel
       let provider = (model === platModel && platProvider) ? platProvider : undefined
       let temperature = Number(node.data?.temperatura ?? 0.5)
+      let promptAdvanced = node.data?.advanced || {}   // parámetros avanzados (max_tokens, top_p, penalties…)
       let promptLabel = 'inline'
       let assignedTools = []
       let ragFileIds = null   // archivos de conocimiento asignados al prompt (null = sin asignación explícita)
@@ -988,6 +993,7 @@ const aiNodes = [
         model    = chosen.model || platModel || undefined
         const t = chosen.advanced?.temperature ?? chosen.temperature
         if (t != null) temperature = Number(t)
+        promptAdvanced = chosen.advanced || {}
         promptLabel = chosen.name || '(sin nombre)'
         const toolIds = chosen.toolIds || []
         assignedTools = (ctx.account?.aiTools || []).filter(t => toolIds.includes(t.id))
@@ -1101,13 +1107,13 @@ const aiNodes = [
         model, provider, history, tools: toolDefs,
         onToolCall: (name, args) => execToolCall(ctx, assignedTools, name, args),
         onTools: info => { toolsInvoked = info.invoked },
-        maxTokens: 800, temperature,
+        advanced: promptAdvanced, temperature,
         onResolved: r => { resolved = r },
       })
 
       logDebug(ctx, 'flow_run',
         `🤖 Agente IA · ${resolved?.provider || provider || '?'} · ${resolved?.model || model || '?'}`,
-        { promptMode: mode, prompt: promptLabel, temperature, turnosDeHistorial: history.length,
+        { promptMode: mode, prompt: promptLabel, temperature, maxTokens: promptAdvanced?.maxTokens ?? 'default', turnosDeHistorial: history.length,
           herramientas: assignedTools.map(t => t.name), herramientaActivada: toolsInvoked,
           mensajeUsuario: (userMsg || '').slice(0, 200) })
 
