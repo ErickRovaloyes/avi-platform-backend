@@ -198,7 +198,7 @@ async function processWhatsApp(accId, agentId, body) {
     // Aviso configurable para clientes recurrentes (override por canal). ai.js lo usa
     // solo si la conversación está marcada como recurrente.
     const _returningNotice = channel?.config?.returningNotice || ''
-    await runWithInterrupt(accId, agentId, convId, async (latest) => {
+    const doRun = async (latest) => {
       const m = latest || msg.text
       if (agent.fallbackFlowId) {
         await engine.executeFlow({
@@ -209,7 +209,11 @@ async function processWhatsApp(accId, agentId, body) {
       } else {
         await engine.runTrigger({ trigger: 'keyword', accId, agId: agentId, convId, context: { message: m, _returningNotice, ...quotedCtx }, outbound: waOutbound })
       }
-    })
+    }
+    // Interrupción activable por agente: si está desactivada, se ignora el mensaje
+    // nuevo mientras la IA genera (comportamiento anterior); si no, se interrumpe y rehace.
+    if (agent.interruptEnabled === false) { if (engine.isRunning(convId)) continue; await doRun(msg.text) }
+    else await runWithInterrupt(accId, agentId, convId, doRun)
   }
 }
 
@@ -279,7 +283,7 @@ async function processMessenger(accId, agentId, body) {
       if (body) return await sendMessengerText({ pageId: channel.config.pageId, pageAccessToken: channel.config.pageAccessToken, recipientId: msg.senderId, text: body })
     }
     const _returningNotice = channel?.config?.returningNotice || ''
-    await runWithInterrupt(accId, agentId, convId, async (latest) => {
+    const doRun = async (latest) => {
       const m = latest || msg.text
       if (agent.fallbackFlowId) {
         await engine.executeFlow({
@@ -290,7 +294,9 @@ async function processMessenger(accId, agentId, body) {
       } else {
         await engine.runTrigger({ trigger: 'keyword', accId, agId: agentId, convId, context: { message: m, _returningNotice }, outbound: fbOutbound })
       }
-    })
+    }
+    if (agent.interruptEnabled === false) { if (engine.isRunning(convId)) continue; await doRun(msg.text) }
+    else await runWithInterrupt(accId, agentId, convId, doRun)
   }
 }
 
@@ -350,7 +356,7 @@ async function processInstagram(accId, agentId, body) {
       if (body) return await sendInstagramText({ igAccountId: channel.config.igAccountId, pageAccessToken: channel.config.pageAccessToken, recipientId: msg.senderId, text: body })
     }
     const _returningNotice = channel?.config?.returningNotice || ''
-    await runWithInterrupt(accId, agentId, convId, async (latest) => {
+    const doRun = async (latest) => {
       const m = latest || msg.text
       if (agent.fallbackFlowId) {
         await engine.executeFlow({
@@ -361,7 +367,9 @@ async function processInstagram(accId, agentId, body) {
       } else {
         await engine.runTrigger({ trigger: 'keyword', accId, agId: agentId, convId, context: { message: m, _returningNotice }, outbound: igOutbound })
       }
-    })
+    }
+    if (agent.interruptEnabled === false) { if (engine.isRunning(convId)) continue; await doRun(msg.text) }
+    else await runWithInterrupt(accId, agentId, convId, doRun)
   }
 }
 

@@ -27,7 +27,7 @@ const createAgent = async (req, res) => {
 const updateAgent = async (req, res) => {
   const { accId, agId } = req.params
   const { addToolId, removeToolId, ...rest } = req.body
-  const map = { name:'name', status:'status', systemPrompt:'system_prompt', model:'model', welcomeMessage:'welcome_message', prompts:'prompts', channels:'channels', rag:'rag', aiToolIds:'ai_tool_ids', fallbackFlowId:'fallback_flow_id', testFlowId:'test_flow_id', routing:'routing' }
+  const map = { name:'name', status:'status', systemPrompt:'system_prompt', model:'model', welcomeMessage:'welcome_message', prompts:'prompts', channels:'channels', rag:'rag', aiToolIds:'ai_tool_ids', fallbackFlowId:'fallback_flow_id', testFlowId:'test_flow_id', routing:'routing', interruptEnabled:'interrupt_enabled' }
   try {
     if (addToolId || removeToolId) {
       const [[ag]] = await pool.query('SELECT ai_tool_ids FROM agents WHERE id=? AND account_id=?', [agId, accId])

@@ -26,6 +26,7 @@ const mapAgent = a => ({
   fallbackFlowId: a.fallback_flow_id || null,
   testFlowId: a.test_flow_id || null,
   routing: parseJ(a.routing, { enabled: false, aiPercent: 100 }),
+  interruptEnabled: a.interrupt_enabled == null ? true : !!a.interrupt_enabled,
   links: parseJ(a.channels, []).filter(c => c.type === 'webchat').map(c => ({ id: c.id, label: c.name, createdAt: c.createdAt })),
 })
 

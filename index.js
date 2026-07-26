@@ -762,6 +762,9 @@ app.use('/api',                recontactRoutes)
     "ALTER TABLE agents ADD COLUMN routing JSON",
     "ALTER TABLE agents ADD COLUMN rr_ai INT DEFAULT 0",
     "ALTER TABLE agents ADD COLUMN rr_total INT DEFAULT 0",
+    // Interrumpir la IA con un mensaje nuevo (y permitir mensajes seguidos en webchat).
+    // Por defecto activo (1). Se controla desde Zona IA → Configuración.
+    "ALTER TABLE agents ADD COLUMN interrupt_enabled TINYINT(1) DEFAULT 1",
     "ALTER TABLE team_chat ADD COLUMN media JSON",
     "ALTER TABLE support_messages ADD COLUMN media JSON",
     `CREATE TABLE IF NOT EXISTS team_channels (
