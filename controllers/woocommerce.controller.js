@@ -1,6 +1,6 @@
 'use strict'
 const pool = require('../db')
-const { parseJ } = require('../utils')
+const { parseJ, uid } = require('../utils')
 const woo = require('../services/woocommerce')
 const store = require('../services/store')
 const flowStore = require('../flow/store')
@@ -69,6 +69,11 @@ const saveConfig = async (req, res) => {
       // Mensajes de eventos del pedido: { created|paid|status: { mode, flowId } }.
       orderNotify: b.orderNotify && typeof b.orderNotify === 'object' ? b.orderNotify : (cur.orderNotify || undefined),
       webhook: cur.webhook || null,
+    }
+    // Recuperación de carrito WEB (Woo): asegura un secreto para el webhook del plugin.
+    if (cfg.abandonedCart && typeof cfg.abandonedCart === 'object') {
+      cfg.abandonedCart.web = cfg.abandonedCart.web || {}
+      if (!cfg.abandonedCart.web.webhookSecret) cfg.abandonedCart.web.webhookSecret = uid() + uid()
     }
     // Si cambia la tienda/llaves, invalida el webhook anterior (apunta a otra tienda)
     // y PURGA el índice vectorial (pertenece a la tienda anterior).
@@ -196,4 +201,37 @@ const webhook = async (req, res) => {
   } catch (e) { console.error('[woo webhook]', e.message) }
 }
 
-module.exports = { getConfig, saveConfig, testConnection, products, createOrder, orderStatus, webhook, sendConversationMessage, listProducts, updateProduct }
+// ── Webhook público: carrito abandonado de la WEB (plugin de WooCommerce) ────────
+// Un plugin de carritos abandonados (p. ej. "Abandoned Cart Lite") postea aquí cada
+// carrito. Se valida con el secreto de la config (Zona IA → Tienda). Body:
+//   { id, phone, email, recovery_url, total, currency, recovered? }
+const abandonedCartInbound = async (req, res) => {
+  const { accId } = req.params
+  try {
+    const cfg = await store.loadConfig(accId)
+    const secret = cfg?.abandonedCart?.web?.webhookSecret || ''
+    const given = req.query.secret || req.headers['x-cart-secret'] || ''
+    if (!secret || given !== secret) return res.status(401).json({ error: 'Secreto inválido' })
+    const b = req.body || {}
+    const extId = String(b.id || b.cart_id || b.session_id || b.email || b.phone || Date.now())
+    const phone = String(b.phone || b.billing_phone || '').replace(/[^\d]/g, '')
+    const email = String(b.email || b.billing_email || '').trim()
+    const recoveryUrl = b.recovery_url || b.recoveryUrl || b.checkout_url || ''
+    if (!phone && !email) return res.status(400).json({ error: 'Falta teléfono o email del carrito' })
+    const id = `${accId}:woocommerce:${extId}`
+    const now = Date.now()
+    if (b.recovered === true || b.recovered === 1 || b.status === 'recovered') {
+      await pool.query('UPDATE abandoned_carts SET recovered=1, updated_at=? WHERE id=?', [now, id])
+      return res.json({ ok: true, recovered: true })
+    }
+    await pool.query(
+      `INSERT INTO abandoned_carts (id, account_id, platform, external_id, phone, email, recovery_url, total, currency, created_at, updated_at)
+       VALUES (?,?,?,?,?,?,?,?,?,?,?)
+       ON DUPLICATE KEY UPDATE phone=VALUES(phone), email=VALUES(email), recovery_url=VALUES(recovery_url), total=VALUES(total), currency=VALUES(currency), updated_at=VALUES(updated_at)`,
+      [id, accId, 'woocommerce', extId, phone || null, email || null, recoveryUrl, String(b.total || ''), String(b.currency || ''), now, now]
+    )
+    res.json({ ok: true })
+  } catch (e) { console.error('[abandonedCartInbound]', e.message); res.status(500).json({ error: 'Error interno' }) }
+}
+
+module.exports = { getConfig, saveConfig, testConnection, products, createOrder, orderStatus, webhook, sendConversationMessage, listProducts, updateProduct, abandonedCartInbound }

@@ -624,6 +624,25 @@ app.use('/api',                recontactRoutes)
     "ALTER TABLE woo_orders ADD COLUMN platform VARCHAR(20) DEFAULT 'woocommerce'",
     "ALTER TABLE woo_orders ADD COLUMN reminders_sent TINYINT(1) DEFAULT 0",
     "ALTER TABLE woo_orders ADD COLUMN last_reminder_at BIGINT",
+    // Carritos abandonados de la WEB (Shopify pull nativo + Woo push por webhook).
+    `CREATE TABLE IF NOT EXISTS abandoned_carts (
+       id          VARCHAR(120) PRIMARY KEY,   -- accId:platform:externalId
+       account_id  VARCHAR(50)  NOT NULL,
+       platform    VARCHAR(20)  DEFAULT 'woocommerce',
+       external_id VARCHAR(80),
+       phone       VARCHAR(40),
+       email       VARCHAR(160),
+       recovery_url TEXT,
+       total       VARCHAR(30),
+       currency    VARCHAR(10),
+       conv_id     VARCHAR(80),
+       reminders_sent TINYINT(1) DEFAULT 0,
+       last_reminder_at BIGINT,
+       recovered   TINYINT(1) DEFAULT 0,
+       created_at  BIGINT,
+       updated_at  BIGINT,
+       INDEX idx_ac_acc (account_id, recovered)
+     )`,
     // Último estado por el que ya se notificó (idempotencia del webhook order.updated).
     "ALTER TABLE woo_orders ADD COLUMN notified_status VARCHAR(30)",
     // Pasarela de pago general (Wompi …): config por cuenta.
@@ -1368,6 +1387,8 @@ app.use('/api',                recontactRoutes)
   try { require('./services/bookings').startPaymentSweeper() } catch (e) { console.warn('[booking pay sweeper] no iniciado:', e.message) }
   // Recuperación de carritos / confirmación de pago de la tienda (Woo + Shopify)
   try { require('./services/storeRecovery').start() } catch (e) { console.warn('[store recovery] no iniciado:', e.message) }
+  // Recuperación de carritos ABANDONADOS de la WEB (Shopify nativo + Woo por webhook)
+  try { require('./services/webCartRecovery').start() } catch (e) { console.warn('[web cart recovery] no iniciado:', e.message) }
   // Índice vectorial de productos: re-sync programado + seguridad diaria del modo realtime.
   try { require('./services/productIndex').startWorker() } catch (e) { console.warn('[product index] worker no iniciado:', e.message) }
   // Worker de mensajes masivos: procesa campañas programadas vencidas.

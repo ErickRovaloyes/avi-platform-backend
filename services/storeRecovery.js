@@ -23,6 +23,19 @@ function sender() {
   return _sendMsg
 }
 
+// Ejecuta un flujo de recuperación en la conversación (resuelve el outbound del canal).
+async function runRecoveryFlow(accId, agId, convId, flowId, triggerContext) {
+  try {
+    const [[c]] = await pool.query('SELECT channel_type, channel_id, wa_from, messenger_from, ig_from FROM conversations WHERE id=? AND account_id=?', [convId, accId])
+    const account = await require('../flow/store').loadAccount(accId).catch(() => null)
+    const agent = account?.agents?.find(a => a.id === agId) || account?.agents?.[0]
+    const to = c && (c.wa_from || c.messenger_from || c.ig_from)
+    const EXTERNAL = new Set(['whatsapp', 'messenger', 'instagram'])
+    const outbound = (c && EXTERNAL.has(c.channel_type) && agent) ? require('./calendarNotify').buildOutbound(agent, c.channel_type, c.channel_id, to) : null
+    await require('../flow/engine').executeFlow({ flowId, accId, agId: agent?.id || agId, convId, triggerContext, triggeredBy: { type: 'abandoned_cart' }, outbound })
+  } catch (e) { console.warn('[cart recovery flow]', e.message) }
+}
+
 async function tick() {
   let rows = []
   try {
@@ -49,16 +62,22 @@ async function tick() {
         continue
       }
 
-      // 2) Recuperación de carrito (pedido sin pagar tras N horas)
-      const ac = cfg.abandonedCart || {}
+      // 2) Recuperación de carrito de CHAT (pedido sin pagar tras N horas)
+      const ac = store.abandonedCartCfg(cfg)
       if (!ac.enabled || !rec.conv_id || !rec.pay_url) continue
-      const hours = Math.max(1, parseInt(ac.hours) || 20)
-      const maxR = Math.max(1, parseInt(ac.maxReminders) || 1)
       const age = now - (rec.created_at || now)
       const sinceLast = now - (rec.last_reminder_at || 0)
-      if (age >= hours * HOUR && (rec.reminders_sent || 0) < maxR && sinceLast >= hours * HOUR) {
-        const base = (ac.message && ac.message.trim()) || '👋 ¿Terminamos tu compra? Dejaste un pedido sin completar. Puedes pagarlo aquí cuando quieras:'
-        await send(accId, rec.agent_id, rec.conv_id, `${base}\n${rec.pay_url}`)
+      if (age >= ac.hours * HOUR && (rec.reminders_sent || 0) < ac.maxReminders && sinceLast >= ac.hours * HOUR) {
+        if (ac.mode === 'flow' && ac.flowId) {
+          await runRecoveryFlow(accId, rec.agent_id, rec.conv_id, ac.flowId, {
+            source: 'abandoned_cart', tipo_carrito: 'chat', pay_url: rec.pay_url,
+            total: rec.total, currency: rec.currency, pedido_id: rec.order_id,
+            message: 'Recuperación de carrito abandonado',
+          })
+        } else {
+          const base = (ac.message && ac.message.trim()) || '👋 ¿Terminamos tu compra? Dejaste un pedido sin completar. Puedes pagarlo aquí cuando quieras:'
+          await send(accId, rec.agent_id, rec.conv_id, `${base}\n${rec.pay_url}`)
+        }
         await pool.query('UPDATE woo_orders SET reminders_sent=reminders_sent+1, last_reminder_at=? WHERE id=?', [now, rec.id])
       }
     } catch (e) { /* un pedido que falla no detiene el resto */ }
@@ -70,4 +89,4 @@ function start() {
   setInterval(() => { tick().catch(() => {}) }, TICK_MS).unref?.()
 }
 
-module.exports = { start, tick }
+module.exports = { start, tick, runRecoveryFlow }

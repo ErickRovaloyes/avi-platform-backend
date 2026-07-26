@@ -20,6 +20,9 @@ router.put('/woocommerce/:accId/products/:productId',   authMiddleware, ctrl.upd
 // Webhook de WooCommerce (order.updated) → confirma el pago en el chat.
 router.post('/woocommerce/webhook/:accId',  ctrl.webhook)
 
+// Webhook público de carrito abandonado de la WEB (plugin de Woo empuja los carritos).
+router.post('/woocommerce/:accId/abandoned-cart', ctrl.abandonedCartInbound)
+
 // ── Índice vectorial de productos (búsqueda inteligente de la IA) ──────────────
 const pix = require('../controllers/productIndex.controller')
 router.get('/woocommerce/:accId/vector-index',          authMiddleware, pix.vectorStatus)

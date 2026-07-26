@@ -60,6 +60,37 @@ function orderNotify(cfg) {
   return out
 }
 
+// ── Recuperación de carrito abandonado (chat + web) ─────────────────────────────
+// CHAT: pedidos creados por el asistente sin pagar (tabla woo_orders).
+// WEB:  checkouts abandonados de la tienda (Shopify nativo / Woo por webhook plugin).
+// Cada tipo puede enviar un MENSAJE fijo o EJECUTAR UN FLUJO. En WEB, si el cliente
+// no tiene una conversación abierta (ventana 24h de WhatsApp), se contacta EN FRÍO
+// con una plantilla de WhatsApp aprobada.
+function abandonedCartCfg(cfg) {
+  const a = cfg?.abandonedCart || {}
+  const w = a.web || {}
+  return {
+    // Chat
+    enabled: !!a.enabled,
+    hours: Math.max(1, parseInt(a.hours) || 20),
+    maxReminders: Math.max(1, parseInt(a.maxReminders) || 1),
+    message: a.message || '',
+    mode: a.mode === 'flow' ? 'flow' : 'message',
+    flowId: a.flowId || null,
+    // Web
+    web: {
+      enabled: !!w.enabled,
+      hours: Math.max(1, parseInt(w.hours) || 4),
+      maxReminders: Math.max(1, parseInt(w.maxReminders) || 1),
+      mode: w.mode === 'flow' ? 'flow' : 'message',
+      message: w.message || '',
+      flowId: w.flowId || null,
+      template: { name: w.template?.name || '', language: w.template?.language || 'es' },
+      webhookSecret: w.webhookSecret || '',
+    },
+  }
+}
+
 function isEnabled(cfg) { return impl(cfg).isEnabled(cfg) }
 const DEFAULT_MAX_IMAGES = 4
 function maxImages(cfg) { const n = parseInt(cfg?.maxImagesPerProduct); return n > 0 ? Math.min(n, 10) : DEFAULT_MAX_IMAGES }
@@ -77,7 +108,7 @@ function publicConfig(cfg) {
     // productos (y estado de pedidos) pero NO crea pedidos → los gestiona un humano.
     ordersEnabled: cfg?.ordersEnabled !== false,
     gateway: cfg?.gateway || { mode: 'native' },
-    abandonedCart: cfg?.abandonedCart || { enabled: false, hours: 20, maxReminders: 1, message: '' },
+    abandonedCart: abandonedCartCfg(cfg),
     orderForm: orderForm(cfg),
     orderNotify: orderNotify(cfg),
     vectorIndex: {   // sin webhookSecret (no sale del servidor)
@@ -103,12 +134,19 @@ async function searchProductsSmart(accId, query, opts) {
 }
 async function createOrder(accId, payload) { const cfg = await loadConfig(accId); return impl(cfg).createOrder(accId, payload) }
 async function getOrderStatus(accId, rec) { const cfg = await loadConfig(accId); return impl(cfg).getOrderStatus(accId, rec) }
+// Checkouts abandonados de la WEB (Shopify nativo; Woo no expone → []).
+async function fetchAbandonedCheckouts(accId, sinceMs) {
+  const cfg = await loadConfig(accId)
+  const im = impl(cfg)
+  if (typeof im.fetchAbandonedCheckouts !== 'function') return []
+  try { return await im.fetchAbandonedCheckouts(cfg, sinceMs) } catch { return [] }
+}
 async function testConnection(cfg) { return impl(cfg).testConnection(cfg) }
 async function fetchStoreCurrency(cfg) { return impl(cfg).fetchStoreCurrency(cfg) }
 
 module.exports = {
   loadConfig, saveConfig, platformOf, isEnabled, maxImages, publicConfig,
   searchProducts, searchProductsSmart, fetchProductsPage, updateProduct, getOrder,
-  createOrder, getOrderStatus, testConnection, fetchStoreCurrency, woo, shopify,
-  ORDER_FIELD_CATALOG, ORDER_FIELD_LABELS, orderForm, ORDER_EVENTS, orderNotify,
+  createOrder, getOrderStatus, fetchAbandonedCheckouts, testConnection, fetchStoreCurrency, woo, shopify,
+  ORDER_FIELD_CATALOG, ORDER_FIELD_LABELS, orderForm, ORDER_EVENTS, orderNotify, abandonedCartCfg,
 }
