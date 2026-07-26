@@ -271,9 +271,21 @@ async function getMediaBytes(accId, mediaId) {
   return { buffer: Buffer.from(m.data_base64, 'base64'), mime: m.mime_type || 'application/octet-stream', filename: m.filename || 'file' }
 }
 
+// Último mensaje del usuario en la conversación (se actualiza en cada appendMsg de
+// tipo 'user'). Se usa al REHACER una respuesta tras interrumpirla, para tomar el
+// mensaje más reciente.
+async function lastUserText(accId, convId) {
+  try {
+    const [[c]] = await pool.query('SELECT local_vars FROM conversations WHERE id=? AND account_id=?', [convId, accId])
+    const lv = parseJ(c?.local_vars, {})
+    if (lv._lastUserMessage) return String(lv._lastUserMessage)
+  } catch {}
+  return ''
+}
+
 module.exports = {
   loadAccount, readConvos, appendMsg, updateConvo, setLocalVar, appendDebugEntry,
   createOrGetWhatsAppConvo, createOrGetMessengerConvo, createOrGetInstagramConvo,
   recordTokenUsage, messageExistsByProviderId, updateMessageStatus,
-  saveExecution, getMediaBytes, getMessageByProviderId, recountCampaignStats,
+  saveExecution, getMediaBytes, getMessageByProviderId, recountCampaignStats, lastUserText,
 }

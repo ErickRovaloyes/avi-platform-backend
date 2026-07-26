@@ -56,13 +56,30 @@ async function getAgent(accId, agentId) {
   return { account, agent }
 }
 
-// Decide si el flujo debe correr: IA activa y sin ejecución en curso.
-async function shouldRun(accId, agentId, convId) {
-  if (engine.isRunning(convId)) return false
+// ¿La IA está activa para esta conversación? (un asesor humano puede haberla apagado)
+async function aiActive(accId, agentId, convId) {
   const convos = await store.readConvos(accId, agentId)
   const conv = (convos || []).find(c => c.id === convId)
-  if (conv?.aiEnabled === false) return false
-  return true
+  return conv?.aiEnabled !== false
+}
+
+// Coordinador con INTERRUPCIÓN: si llega un mensaje nuevo mientras se genera una
+// respuesta, se cancela la generación en curso y se REHACE tomando el mensaje más
+// reciente (el nodo IA relee todo el historial de la BD → incluye el mensaje nuevo).
+// Un solo ciclo por conversación; los mensajes que llegan durante el ciclo marcan
+// "rehacer" y abortan la generación actual. Evita respuestas duplicadas.
+const _busy = new Set()
+const _redo = new Set()
+async function runWithInterrupt(accId, agentId, convId, makeRun) {
+  if (_busy.has(convId)) { _redo.add(convId); engine.cancel(convId); return }
+  _busy.add(convId)
+  try {
+    do {
+      _redo.delete(convId)
+      const text = await store.lastUserText(accId, convId)
+      await makeRun(text)
+    } while (_redo.has(convId))
+  } finally { _busy.delete(convId); _redo.delete(convId) }
 }
 
 // ─── WhatsApp ──────────────────────────────────────────────────────────────────
@@ -124,7 +141,7 @@ async function processWhatsApp(accId, agentId, body) {
     // Auto opt-out: si el cliente pide la baja (BAJA/STOP/…), no recibe más masivos.
     try { require('../services/campaigns').maybeOptOut(accId, msg.from, msg.text || '') } catch {}
 
-    if (!(await shouldRun(accId, agentId, convId))) continue
+    if (!(await aiActive(accId, agentId, convId))) continue
 
     // Indicador "escribiendo…" mientras el flujo genera la respuesta (y marca leído).
     if (channel?.config?.phoneNumberId && channel?.config?.accessToken && msg.messageId) {
@@ -173,15 +190,18 @@ async function processWhatsApp(accId, agentId, body) {
     // Aviso configurable para clientes recurrentes (override por canal). ai.js lo usa
     // solo si la conversación está marcada como recurrente.
     const _returningNotice = channel?.config?.returningNotice || ''
-    if (agent.fallbackFlowId) {
-      await engine.executeFlow({
-        flowId: agent.fallbackFlowId, accId, agId: agentId, convId,
-        triggerContext: { message: msg.text, _lastUserMessage: msg.text, _returningNotice, ...quotedCtx },
-        outbound: waOutbound,
-      })
-    } else {
-      await engine.runTrigger({ trigger: 'keyword', accId, agId: agentId, convId, context: { message: msg.text, _returningNotice, ...quotedCtx }, outbound: waOutbound })
-    }
+    await runWithInterrupt(accId, agentId, convId, async (latest) => {
+      const m = latest || msg.text
+      if (agent.fallbackFlowId) {
+        await engine.executeFlow({
+          flowId: agent.fallbackFlowId, accId, agId: agentId, convId,
+          triggerContext: { message: m, _lastUserMessage: m, _returningNotice, ...quotedCtx },
+          outbound: waOutbound,
+        })
+      } else {
+        await engine.runTrigger({ trigger: 'keyword', accId, agId: agentId, convId, context: { message: m, _returningNotice, ...quotedCtx }, outbound: waOutbound })
+      }
+    })
   }
 }
 
@@ -234,7 +254,7 @@ async function processMessenger(accId, agentId, body) {
       } : {}),
     })
 
-    if (!(await shouldRun(accId, agentId, convId))) continue
+    if (!(await aiActive(accId, agentId, convId))) continue
 
     const fbOutbound = async (text, meta) => {
       // Botón con enlace → template de botón nativo de Messenger.
@@ -251,15 +271,18 @@ async function processMessenger(accId, agentId, body) {
       if (body) return await sendMessengerText({ pageId: channel.config.pageId, pageAccessToken: channel.config.pageAccessToken, recipientId: msg.senderId, text: body })
     }
     const _returningNotice = channel?.config?.returningNotice || ''
-    if (agent.fallbackFlowId) {
-      await engine.executeFlow({
-        flowId: agent.fallbackFlowId, accId, agId: agentId, convId,
-        triggerContext: { message: msg.text, _lastUserMessage: msg.text, _returningNotice },
-        outbound: fbOutbound,
-      })
-    } else {
-      await engine.runTrigger({ trigger: 'keyword', accId, agId: agentId, convId, context: { message: msg.text, _returningNotice }, outbound: fbOutbound })
-    }
+    await runWithInterrupt(accId, agentId, convId, async (latest) => {
+      const m = latest || msg.text
+      if (agent.fallbackFlowId) {
+        await engine.executeFlow({
+          flowId: agent.fallbackFlowId, accId, agId: agentId, convId,
+          triggerContext: { message: m, _lastUserMessage: m, _returningNotice },
+          outbound: fbOutbound,
+        })
+      } else {
+        await engine.runTrigger({ trigger: 'keyword', accId, agId: agentId, convId, context: { message: m, _returningNotice }, outbound: fbOutbound })
+      }
+    })
   }
 }
 
@@ -312,22 +335,25 @@ async function processInstagram(accId, agentId, body) {
       } : {}),
     })
 
-    if (!(await shouldRun(accId, agentId, convId))) continue
+    if (!(await aiActive(accId, agentId, convId))) continue
 
     const igOutbound = async (text, meta) => {
       const body = meta?.media?.url ? `${text ? text + '\n' : ''}${meta.media.url}` : text
       if (body) return await sendInstagramText({ igAccountId: channel.config.igAccountId, pageAccessToken: channel.config.pageAccessToken, recipientId: msg.senderId, text: body })
     }
     const _returningNotice = channel?.config?.returningNotice || ''
-    if (agent.fallbackFlowId) {
-      await engine.executeFlow({
-        flowId: agent.fallbackFlowId, accId, agId: agentId, convId,
-        triggerContext: { message: msg.text, _lastUserMessage: msg.text, _returningNotice },
-        outbound: igOutbound,
-      })
-    } else {
-      await engine.runTrigger({ trigger: 'keyword', accId, agId: agentId, convId, context: { message: msg.text, _returningNotice }, outbound: igOutbound })
-    }
+    await runWithInterrupt(accId, agentId, convId, async (latest) => {
+      const m = latest || msg.text
+      if (agent.fallbackFlowId) {
+        await engine.executeFlow({
+          flowId: agent.fallbackFlowId, accId, agId: agentId, convId,
+          triggerContext: { message: m, _lastUserMessage: m, _returningNotice },
+          outbound: igOutbound,
+        })
+      } else {
+        await engine.runTrigger({ trigger: 'keyword', accId, agId: agentId, convId, context: { message: m, _returningNotice }, outbound: igOutbound })
+      }
+    })
   }
 }
 

@@ -132,7 +132,7 @@ function buildAnthropicBody({ model, systemPrompt, history, tools, advanced = {}
  * { message, finish_reason } when tools are involved (OpenAI shape).
  * No streaming server-side (the flow waits for the full response).
  */
-async function chat({ provider = 'openai', model, apiKey, messages, tools = [], advanced = {}, maxTokens, temperature, onUsage }) {
+async function chat({ provider = 'openai', model, apiKey, messages, tools = [], advanced = {}, maxTokens, temperature, onUsage, signal }) {
   const adv = { ...DEFAULT_ADVANCED, ...advanced }
   if (maxTokens   != null) adv.maxTokens   = maxTokens
   if (temperature != null) adv.temperature = temperature
@@ -158,6 +158,7 @@ async function chat({ provider = 'openai', model, apiKey, messages, tools = [], 
         'anthropic-version': '2023-06-01',
       },
       body: JSON.stringify(body),
+      signal,
     })
     if (!res.ok) {
       const errData = await res.json().catch(() => ({}))
@@ -184,6 +185,7 @@ async function chat({ provider = 'openai', model, apiKey, messages, tools = [], 
     method: 'POST',
     headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${apiKey}` },
     body: JSON.stringify(body),
+    signal,
   })
   if (!res.ok) {
     const errData = await res.json().catch(() => ({}))
