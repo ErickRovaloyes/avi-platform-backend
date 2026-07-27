@@ -79,16 +79,21 @@ const DEFAULT_ADVANCED = {
 
 function buildOpenAIBody({ model, messages, tools, modelConfig, advanced = {}, provider }) {
   const isReasoning = modelConfig.isReasoning
-  const tokenParam = isReasoning ? 'max_completion_tokens' : 'max_tokens'
+  const isOpenAI = provider === 'openai'
+  // OpenAI (gpt-5 y serie o) EXIGE `max_completion_tokens` y ya no acepta `max_tokens`.
+  // gpt-4o/4.1 también aceptan `max_completion_tokens`. DeepSeek (compat clásica) usa `max_tokens`.
+  const tokenParam = isOpenAI ? 'max_completion_tokens' : 'max_tokens'
+  // gpt-5 y serie o solo aceptan la temperatura por defecto (1) → no la enviamos.
+  const onlyDefaultTemp = isReasoning || (isOpenAI && /^gpt-5/i.test(String(model)))
   const body = {
     model,
-    messages: isReasoning && provider === 'openai'
+    messages: isReasoning && isOpenAI
       ? messages.map(m => m.role === 'system' ? { ...m, role: 'developer' } : m)
       : messages,
     [tokenParam]: advanced.maxTokens ?? DEFAULT_ADVANCED.maxTokens,
   }
   if (!isReasoning) {
-    body.temperature = advanced.temperature ?? DEFAULT_ADVANCED.temperature
+    if (!onlyDefaultTemp) body.temperature = advanced.temperature ?? DEFAULT_ADVANCED.temperature
     if (advanced.topP != null)             body.top_p             = advanced.topP
     if (advanced.presencePenalty != null)  body.presence_penalty  = advanced.presencePenalty
     if (advanced.frequencyPenalty != null) body.frequency_penalty = advanced.frequencyPenalty
