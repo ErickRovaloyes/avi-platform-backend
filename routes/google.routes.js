@@ -11,6 +11,7 @@ router.post('/google/calendar/webhook', ctrl.calendarWebhook)
 // Resto: requieren sesión
 router.get('/accounts/:accId/google/status',        authMiddleware, ctrl.status)
 router.get('/accounts/:accId/google/auth-url',      authMiddleware, ctrl.authUrl)
+router.get('/accounts/:accId/google/picker-config', authMiddleware, ctrl.pickerConfig)
 router.delete('/accounts/:accId/google',            authMiddleware, ctrl.disconnect)
 router.get('/accounts/:accId/google/sheets',        authMiddleware, ctrl.listSheets)
 router.post('/accounts/:accId/google/sheets',       authMiddleware, ctrl.addSheet)

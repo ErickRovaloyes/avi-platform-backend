@@ -19,7 +19,10 @@ const DEFAULT_REDIRECT = 'https://platform.aviasistente.com/api/google/callback'
 // Una sola app OAuth cubre Sheets Y Calendar (basta con habilitar ambas APIs en el
 // proyecto de Google Cloud y pedir estos scopes).
 const SCOPES = [
-  'https://www.googleapis.com/auth/spreadsheets',
+  // drive.file: acceso SOLO a los archivos que el usuario elige con la app (Google Picker)
+  // o que la app crea. Scope NO sensible (más fácil de verificar) — reemplaza a
+  // 'auth/spreadsheets'. La Sheets API sigue funcionando sobre esas hojas elegidas.
+  'https://www.googleapis.com/auth/drive.file',
   'https://www.googleapis.com/auth/calendar',     // eventos + freeBusy (sync de calendarios)
   'https://www.googleapis.com/auth/userinfo.email',
 ]
@@ -33,14 +36,27 @@ async function getCreds() {
   let id = process.env.GOOGLE_CLIENT_ID || ''
   let secret = process.env.GOOGLE_CLIENT_SECRET || ''
   let redirect = process.env.GOOGLE_REDIRECT_URI || DEFAULT_REDIRECT
+  let apiKey = process.env.GOOGLE_API_KEY || ''   // developerKey del Google Picker
   try {
-    const [[r]] = await pool.query('SELECT google_client_id, google_client_secret, google_redirect_uri FROM platform_settings WHERE id=1')
+    const [[r]] = await pool.query('SELECT google_client_id, google_client_secret, google_redirect_uri, google_api_key FROM platform_settings WHERE id=1')
     if (r?.google_client_id && String(r.google_client_id).trim())         id = String(r.google_client_id).trim()
     if (r?.google_client_secret && String(r.google_client_secret).trim()) secret = String(r.google_client_secret).trim()
     if (r?.google_redirect_uri && String(r.google_redirect_uri).trim())   redirect = String(r.google_redirect_uri).trim()
+    if (r?.google_api_key && String(r.google_api_key).trim())             apiKey = String(r.google_api_key).trim()
   } catch { /* usa env */ }
-  _credCache = { id, secret, redirect }; _credAt = Date.now()
+  _credCache = { id, secret, redirect, apiKey }; _credAt = Date.now()
   return _credCache
+}
+
+// Config para el Google Picker del navegador: developerKey (API key), appId (número de
+// proyecto, derivado del client id) y un access_token válido (drive.file) de la cuenta.
+async function pickerConfig(accId) {
+  const c = await getCreds()
+  if (!c.id) throw new Error('Google OAuth no está configurado.')
+  if (!c.apiKey) throw new Error('Falta la Google API Key del Picker (el super admin la configura en el Super Panel).')
+  const appId = String(c.id).split('-')[0] || ''   // client_id = "<projectNumber>-<hash>.apps..."
+  const oauthToken = await getValidAccessToken(accId)
+  return { apiKey: c.apiKey, appId, oauthToken }
 }
 // Invalida la caché cuando el super admin cambia las credenciales.
 function invalidateCredsCache() { _credCache = null; _credAt = 0 }
@@ -458,6 +474,7 @@ async function listChanges(token, calendarId, syncToken) {
 
 module.exports = {
   isConfigured, getAuthUrl, exchangeCode, refreshAccessToken, getUserEmail, invalidateCredsCache,
+  pickerConfig,
   saveIntegration, getValidAccessToken, listConnections, disconnectConnection, isGoogleConnected,
   readRows, appendRow, updateRange, clearRange, extractSpreadsheetId,
   rowsToRecords, filterSheetRows, runSheetsOperation,

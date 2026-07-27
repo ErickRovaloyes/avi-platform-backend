@@ -52,7 +52,18 @@ const disconnect = async (req, res) => {
   } catch (err) { res.status(500).json({ error: 'Error interno' }) }
 }
 
-// ── Sheets vinculados (por link) ─────────────────────────────────────────────
+// GET /api/accounts/:accId/google/picker-config → { apiKey, appId, oauthToken }
+// Config para abrir el Google Picker en el navegador (elegir hojas bajo scope drive.file).
+const pickerConfig = async (req, res) => {
+  const { accId } = req.params
+  try {
+    res.json(await g.pickerConfig(accId))
+  } catch (e) {
+    res.status(400).json({ error: e.message || 'No se pudo preparar el selector de Google' })
+  }
+}
+
+// ── Sheets vinculados (elegidos con el Google Picker) ────────────────────────
 const listSheets = async (req, res) => {
   const { accId } = req.params
   try {
@@ -63,9 +74,10 @@ const listSheets = async (req, res) => {
 
 const addSheet = async (req, res) => {
   const { accId } = req.params
-  const { name = '', url = '' } = req.body || {}
-  const spreadsheetId = g.extractSpreadsheetId(url)
-  if (!spreadsheetId) return res.status(400).json({ error: 'Link de Google Sheet inválido' })
+  const { name = '', url = '', spreadsheetId: pickedId = '' } = req.body || {}
+  // El Google Picker entrega el id (y una URL); pegar link también sigue soportado.
+  const spreadsheetId = (pickedId && String(pickedId).trim()) || g.extractSpreadsheetId(url)
+  if (!spreadsheetId) return res.status(400).json({ error: 'Hoja de Google inválida' })
   const id = 'gs_' + uid()
   try {
     await pool.query(
@@ -122,4 +134,4 @@ const calendarWebhook = (req, res) => {
   } catch { /* ignorar */ }
 }
 
-module.exports = { status, authUrl, callback, disconnect, listSheets, addSheet, removeSheet, sheetsOp, calendarWebhook }
+module.exports = { status, authUrl, callback, disconnect, pickerConfig, listSheets, addSheet, removeSheet, sheetsOp, calendarWebhook }

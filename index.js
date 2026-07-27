@@ -895,6 +895,7 @@ app.use('/api',                recontactRoutes)
     "ALTER TABLE platform_settings ADD COLUMN google_client_id VARCHAR(200)",
     "ALTER TABLE platform_settings ADD COLUMN google_client_secret VARCHAR(255)",
     "ALTER TABLE platform_settings ADD COLUMN google_redirect_uri VARCHAR(300)",
+    "ALTER TABLE platform_settings ADD COLUMN google_api_key VARCHAR(255)",   // developerKey del Google Picker
     // Conexiones de Google MULTI-cuenta: una fila por cada cuenta de Google que la
     // cuenta conecte (antes era una sola por account_id). Cada calendario elige con
     // qué conexión sincroniza (integrations.google.connectionId).

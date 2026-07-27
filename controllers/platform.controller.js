@@ -67,6 +67,7 @@ const getSettings = async (req, res) => {
           googleClientSecret: isSA ? (r.google_client_secret || '') : '',
           hasGoogleClientSecret: !!r.google_client_secret,
           googleRedirectUri: r.google_redirect_uri || '',
+          googleApiKey: r.google_api_key || '',   // developerKey del Google Picker
           promptGeneratorModel: r.prompt_generator_model || 'gpt-4o',
           promptGeneratorStructure: r.prompt_generator_structure || DEFAULT_STRUCTURE,
           promptGeneratorConditions: r.prompt_generator_conditions || DEFAULT_CONDITIONS,
@@ -158,7 +159,7 @@ const updateSettings = async (req, res) => {
   const {
     changeAgentModel, changeAgentDefaultLimit, changeAgentTokenLimits, changeAgentTokenLimit, changeAgentCaps,
     channelLimits, metaAppId, metaConfigId, metaPagesConfigId, metaAppSecret,
-    googleClientId, googleClientSecret, googleRedirectUri,
+    googleClientId, googleClientSecret, googleRedirectUri, googleApiKey,
     promptGeneratorModel, promptGeneratorStructure, promptGeneratorConditions,
     promptGeneratorMaxTokens, promptGeneratorTemperature, promptGeneratorMaxDocChars,
     promptGeneratorAllowFlows,
@@ -193,6 +194,7 @@ const updateSettings = async (req, res) => {
     if (googleClientId            !== undefined) { sets.push('google_client_id=?');            vals.push(String(googleClientId || '').trim()) }
     if (googleRedirectUri         !== undefined) { sets.push('google_redirect_uri=?');         vals.push(String(googleRedirectUri || '').trim()) }
     if (googleClientSecret        !== undefined && googleClientSecret !== '') { sets.push('google_client_secret=?'); vals.push(String(googleClientSecret).trim()) }
+    if (googleApiKey              !== undefined) { sets.push('google_api_key=?');              vals.push(String(googleApiKey || '').trim()) }
     if (promptGeneratorModel      !== undefined) { sets.push('prompt_generator_model=?');       vals.push(promptGeneratorModel) }
     if (promptGeneratorStructure  !== undefined) { sets.push('prompt_generator_structure=?');   vals.push(promptGeneratorStructure) }
     if (promptGeneratorConditions !== undefined) { sets.push('prompt_generator_conditions=?');  vals.push(promptGeneratorConditions) }
@@ -239,7 +241,7 @@ const updateSettings = async (req, res) => {
     if (sets.length) { vals.push(1); await pool.query(`UPDATE platform_settings SET ${sets.join(',')} WHERE id=?`, vals) }
     // Si cambiaron las credenciales de Google, invalida su caché para que el nuevo
     // client_id/secret se use de inmediato (sin esperar a que expire la caché).
-    if (googleClientId !== undefined || googleClientSecret !== undefined || googleRedirectUri !== undefined) {
+    if (googleClientId !== undefined || googleClientSecret !== undefined || googleRedirectUri !== undefined || googleApiKey !== undefined) {
       try { require('../services/google').invalidateCredsCache() } catch {}
     }
     res.json({ ok: true })
