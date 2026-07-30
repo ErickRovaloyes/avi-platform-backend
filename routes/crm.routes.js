@@ -27,6 +27,7 @@ router.delete('/accounts/:accId/crm/card-links/:id',    authMiddleware, ctrl.del
 
 router.get('/accounts/:accId/crm/activity',             authMiddleware, ctrl.listActivity)
 router.get('/accounts/:accId/crm/kpis',                 authMiddleware, ctrl.kpis)
+router.get('/accounts/:accId/crm/advisor-metrics',      authMiddleware, ctrl.advisorMetrics)
 router.get('/accounts/:accId/crm/pipeline-velocity',    authMiddleware, ctrl.pipelineVelocity)
 router.get('/accounts/:accId/crm/retention',            authMiddleware, ctrl.retention)
 router.post('/accounts/:accId/crm/copilot',             authMiddleware, ctrl.copilotAsk)

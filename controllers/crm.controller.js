@@ -507,6 +507,54 @@ const kpis = async (req, res) => {
   }
 }
 
+// ── Métricas de asesores humanos ──────────────────────────────────────────────
+// Agrupa las conversaciones por su asesor asignado (assigned_to.id) y calcula, por
+// asesor y en un bucket "Sin asignar", las métricas clave de atención humana.
+const advisorMetrics = async (req, res) => {
+  const { accId } = req.params
+  const from = Number(req.query.from) || 0
+  const to   = Number(req.query.to) || Date.now()
+  try {
+    const [convos] = await pool.query(
+      'SELECT id, assigned_to, ai_enabled, first_response_ms, archived, local_vars FROM conversations WHERE account_id=? AND created_at BETWEEN ? AND ?',
+      [accId, from, to])
+    const convIds = convos.map(c => c.id)
+    // Mensajes enviados por asesores humanos, por conversación.
+    const humanByConv = {}
+    if (convIds.length) {
+      const [rows] = await pool.query("SELECT conversation_id, COUNT(*) AS n FROM messages WHERE conversation_id IN (?) AND sender='human' GROUP BY conversation_id", [convIds])
+      for (const r of rows) humanByConv[r.conversation_id] = Number(r.n) || 0
+    }
+    const [members] = await pool.query('SELECT id, name, email FROM members WHERE account_id=?', [accId])
+    const nameById = {}; for (const m of members) nameById[m.id] = m.name || m.email
+
+    const acc = {}   // por advisorId (o '_unassigned')
+    const bucket = (id, name) => (acc[id] ||= { advisorId: id === '_unassigned' ? null : id, name, assigned: 0, active: 0, resolved: 0, handoffs: 0, humanMsgs: 0, frSum: 0, frCount: 0 })
+    for (const c of convos) {
+      const at = parseJ(c.assigned_to, null)
+      const id = at?.id || '_unassigned'
+      const name = at?.name || nameById[at?.id] || 'Sin asignar'
+      const b = bucket(id, name)
+      const lv = parseJ(c.local_vars, {})
+      const closed = lv._case_status === 'closed'
+      b.assigned++
+      if (!closed && !c.archived) b.active++
+      if (closed) b.resolved++
+      if (!c.ai_enabled) b.handoffs++
+      b.humanMsgs += humanByConv[c.id] || 0
+      if (c.first_response_ms != null) { b.frSum += Number(c.first_response_ms) || 0; b.frCount++ }
+    }
+    const advisors = Object.values(acc).map(b => ({
+      advisorId: b.advisorId, name: b.name,
+      assigned: b.assigned, active: b.active, resolved: b.resolved,
+      resolutionRate: b.assigned ? Math.round((b.resolved / b.assigned) * 100) : 0,
+      handoffs: b.handoffs, humanMsgs: b.humanMsgs,
+      avgFirstResponseMs: b.frCount ? Math.round(b.frSum / b.frCount) : null,
+    })).sort((a, b) => b.assigned - a.assigned)
+    res.json({ advisors, range: { from, to } })
+  } catch (err) { console.error('[advisorMetrics]', err); res.status(500).json({ error: 'Error interno' }) }
+}
+
 // ── Tareas periódicas (programaciones recurrentes) ────────────────────────────
 const schedMap = r => ({
   id: r.id, title: r.title, description: r.description, type: r.type || 'general',
@@ -607,4 +655,4 @@ const deleteCardLink = async (req, res) => {
 }
 
 module.exports = { listNotes, createNote, deleteNote, listTasks, createTask, updateTask, deleteTask, listActivity, kpis, logActivity, classifyConversations, previewExecutiveSummary, sendExecutiveSummary, pipelineVelocity, retention, copilotAsk, platformAsk, detectOpportunities, leadScores, qaRun, qaReview,
-  listTaskSchedules, createTaskSchedule, updateTaskSchedule, deleteTaskSchedule, listCardLinks, createCardLink, deleteCardLink }
+  listTaskSchedules, createTaskSchedule, updateTaskSchedule, deleteTaskSchedule, listCardLinks, createCardLink, deleteCardLink, advisorMetrics }

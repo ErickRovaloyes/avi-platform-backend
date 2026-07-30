@@ -81,8 +81,16 @@ const humanNodes = [
     async exec(node, ctx) {
       const msg = interpolate(node.data?.mensaje || '', ctx.variables)
       if (msg.trim()) await sendBotMsg(ctx, msg)
-      await store.updateConvo(ctx.accId, ctx.agId, ctx.convId, { localVars: { ...ctx.variables, _case_status: 'closed', _closed_at: Date.now() } })
+      // Marca resuelto y detiene recontactos (no recontactar un caso ya cerrado).
+      await store.updateConvo(ctx.accId, ctx.agId, ctx.convId, { localVars: { ...ctx.variables, _case_status: 'closed', _closed_at: Date.now(), _recontact_stopped: '1' } })
       logDebug(ctx, 'flow_run', '✅ Caso cerrado', {})
+    },
+  },
+  {
+    type: 'recontact_stop', category: 'human', label: 'Detener recontactos',
+    async exec(node, ctx) {
+      await store.updateConvo(ctx.accId, ctx.agId, ctx.convId, { localVars: { ...ctx.variables, _recontact_stopped: '1' } })
+      logDebug(ctx, 'flow_run', '🛑 Recontactos detenidos en este chat', {})
     },
   },
 ]

@@ -176,7 +176,7 @@ async function diagnose(accId) {
   out.minDelayMin = minDelay
   // Conversaciones de los canales soportados, recientes, para explicar su estado.
   const [convos] = await pool.query(
-    `SELECT id, agent_id, channel_type, channel_id, wa_from, messenger_from, ig_from, guest_name, ai_enabled, updated_at, recontact_at, recontact_count FROM conversations WHERE account_id=? AND channel_type IN (${CH_IN}) ORDER BY updated_at DESC LIMIT 15`,
+    `SELECT id, agent_id, channel_type, channel_id, wa_from, messenger_from, ig_from, guest_name, ai_enabled, archived, local_vars, updated_at, recontact_at, recontact_count FROM conversations WHERE account_id=? AND channel_type IN (${CH_IN}) ORDER BY updated_at DESC LIMIT 15`,
     [accId, ...RECONTACT_CHANNELS]
   )
   if (!convos.length) { out.note = 'No hay conversaciones recontactables (WhatsApp, Messenger, Instagram, webchat o pruebas) en esta cuenta.'; return out }
@@ -185,6 +185,9 @@ async function diagnose(accId) {
     const label = `${conv.guest_name || conv.id} · ${conv.channel_type}`
     const reasons = []
     if (!conv.ai_enabled) reasons.push('IA del chat APAGADA (ai_enabled=0)')
+    if (conv.archived) reasons.push('conversación archivada')
+    const dlv = parseJ(conv.local_vars, {})
+    if (dlv._recontact_stopped || dlv._case_status === 'closed') reasons.push('recontactos detenidos (caso cerrado o nodo "Detener recontactos")')
     const [[last]] = await pool.query('SELECT sender FROM messages WHERE conversation_id=? ORDER BY ts DESC LIMIT 1', [conv.id])
     if (!last) reasons.push('sin mensajes')
     else if (last.sender === 'user') reasons.push('el ÚLTIMO mensaje es del cliente (solo se recontacta cuando el último fue del agente/IA)')
@@ -268,8 +271,8 @@ async function tick() {
       // Prefiltro: inactivas más que el paso más corto, y que aún no llegaron al tope
       // O donde el cliente respondió tras el último recontacto (recontact_at < updated_at → reinicio).
       const [convos] = await pool.query(
-        `SELECT id, agent_id, channel_type, channel_id, wa_from, messenger_from, ig_from, updated_at, recontact_at, recontact_count FROM conversations
-         WHERE account_id=? AND ai_enabled=1 AND channel_type IN (${CH_IN})
+        `SELECT id, agent_id, channel_type, channel_id, wa_from, messenger_from, ig_from, updated_at, recontact_at, recontact_count, local_vars FROM conversations
+         WHERE account_id=? AND ai_enabled=1 AND archived=0 AND channel_type IN (${CH_IN})
            AND updated_at <= ? AND (recontact_count < ? OR recontact_at IS NULL OR recontact_at < updated_at)
          ORDER BY updated_at ASC LIMIT ?`,
         [a.id, ...RECONTACT_CHANNELS, cutoff, cfg.maxPerConversation, SCAN_LIMIT]
@@ -278,6 +281,10 @@ async function tick() {
       const account = await store.loadAccount(a.id)
       if (!account) continue
       for (const conv of convos) {
+        // La conversación se cerró o se pidió detener los recontactos (nodo "Cerrar caso" /
+        // "Detener recontactos", o la IA la dio por resuelta) → no recontactar fuera de contexto.
+        const lv = parseJ(conv.local_vars, {})
+        if (lv._recontact_stopped || lv._case_status === 'closed') continue
         // Solo si el cliente fue quien dejó de responder (último mensaje del agente/IA).
         const [[last]] = await pool.query('SELECT sender FROM messages WHERE conversation_id=? ORDER BY ts DESC LIMIT 1', [conv.id])
         if (!last || last.sender === 'user') continue

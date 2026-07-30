@@ -287,6 +287,9 @@ async function appendMessageCore(accId, agId, convId, body) {
       const [[c]] = await pool.query('SELECT local_vars FROM conversations WHERE id=? AND account_id=?', [convId, accId])
       const lv = parseJ(c?.local_vars, {})
       lv._lastUserMessage = content
+      // El cliente volvió a escribir → se reabre la conversación: se reanudan los recontactos.
+      delete lv._recontact_stopped
+      if (lv._case_status === 'closed') delete lv._case_status
       await pool.query('UPDATE conversations SET local_vars=? WHERE id=? AND account_id=?', [JSON.stringify(lv), convId, accId])
     } catch { /* non-critical */ }
   }
