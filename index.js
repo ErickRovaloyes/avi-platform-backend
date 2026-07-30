@@ -105,6 +105,7 @@ const promptHistoryRoutes = require('./routes/promptHistory.routes')
 const mediaRoutes         = require('./routes/media.routes')
 const quickRepliesRoutes  = require('./routes/quickReplies.routes')
 const crmRoutes           = require('./routes/crm.routes')
+const dataTablesRoutes    = require('./routes/dataTables.routes')
 const contactsRoutes      = require('./routes/contacts.routes')
 const savedFiltersRoutes  = require('./routes/savedFilters.routes')
 const campaignsRoutes     = require('./routes/campaigns.routes')
@@ -152,6 +153,7 @@ app.use('/api',                promptHistoryRoutes)
 app.use('/api',                mediaRoutes)
 app.use('/api',                quickRepliesRoutes)
 app.use('/api',                crmRoutes)
+app.use('/api',                dataTablesRoutes)
 app.use('/api',                contactsRoutes)
 app.use('/api',                subscriptionsRoutes)
 app.use('/api',                demoRoutes)
@@ -284,6 +286,19 @@ app.use('/api',                recontactRoutes)
        a_pipeline VARCHAR(50), a_card VARCHAR(80), b_pipeline VARCHAR(50), b_card VARCHAR(80),
        relation VARCHAR(30) DEFAULT 'relacionado', created_at BIGINT,
        INDEX idx_cl_a (account_id, a_card), INDEX idx_cl_b (account_id, b_card)
+     )`,
+    // Tablas internas tipo Excel (bases de datos del cliente). La IA puede consultarlas
+    // y modificarlas si ai_enabled=1. columns = [{key,label,type:'text'|'number'}].
+    `CREATE TABLE IF NOT EXISTS data_tables (
+       id VARCHAR(50) PRIMARY KEY, account_id VARCHAR(50) NOT NULL,
+       name VARCHAR(160), description TEXT, columns JSON,
+       ai_enabled TINYINT(1) DEFAULT 1, created_at BIGINT, updated_at BIGINT,
+       INDEX idx_dt (account_id)
+     )`,
+    `CREATE TABLE IF NOT EXISTS data_table_rows (
+       id VARCHAR(50) PRIMARY KEY, table_id VARCHAR(50) NOT NULL, account_id VARCHAR(50) NOT NULL,
+       values_json JSON, created_at BIGINT, updated_at BIGINT,
+       INDEX idx_dtr (table_id), INDEX idx_dtr_acc (account_id)
      )`,
     // Publicidad en cuentas Demo: código de anuncio (embed) gestionado por el super admin.
     "ALTER TABLE platform_settings ADD COLUMN demo_ads_enabled TINYINT(1) DEFAULT 0",

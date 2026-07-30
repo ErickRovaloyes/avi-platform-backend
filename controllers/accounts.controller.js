@@ -123,7 +123,19 @@ const SPECIAL_ORDERS_TOOL = {
   special: true,
 }
 const ordersSvc = require('../services/orders')
-const specialTools = () => [SPECIAL_WOO_TOOL, SPECIAL_AGENDA_TOOL, SPECIAL_PAYMENT_TOOL, SPECIAL_CATALOG_TOOL, SPECIAL_PMS_TOOL, SPECIAL_ORDERS_TOOL]
+// Herramienta IA Especial "tablas": las bases de datos internas del cliente. El
+// asistente puede consultar y modificar filas de las tablas que el cliente marcó
+// como disponibles para la IA (Zona CRM → Tablas).
+const SPECIAL_DATATABLES_TOOL = {
+  id: 'tablas',
+  name: 'tablas',
+  description: 'Tablas internas (bases de datos del cliente): el asistente consulta y modifica filas (consultar_tabla, agregar_fila, editar_fila, eliminar_fila) de las tablas habilitadas. Asígnala a un prompt para habilitarla.',
+  collectFields: [],
+  actionType: 'data_tables',
+  special: true,
+}
+const dataTablesSvc = require('../services/dataTables')
+const specialTools = () => [SPECIAL_WOO_TOOL, SPECIAL_AGENDA_TOOL, SPECIAL_PAYMENT_TOOL, SPECIAL_CATALOG_TOOL, SPECIAL_PMS_TOOL, SPECIAL_ORDERS_TOOL, SPECIAL_DATATABLES_TOOL]
 
 const mapCmsAsset = c => ({
   id: c.id, name: c.name, description: c.description || '', tags: parseJ(c.tags, []),
@@ -190,6 +202,8 @@ async function loadPublicAccount(accId) {
     scheduling: schedulingCfg,
     pms: pmsSvc.publicConfig(parseJ(acc.pms, null)),
     orders: await ordersSvc.publicConfigAsync(accId).catch(() => ({ connected: false })),
+    // Tablas internas del cliente que la IA puede consultar/modificar (ai_enabled).
+    dataTables: await dataTablesSvc.publicConfig(accId).catch(() => ({ connected: false, tables: [] })),
     // Google conectado (Sheets/Calendar): el frontend bloquea DeepSeek en el prompt.
     google: { connected: await require('../services/google').isGoogleConnected(accId) },
     // Conciencia temporal de la IA (zona horaria + fecha/hora base opcional).
