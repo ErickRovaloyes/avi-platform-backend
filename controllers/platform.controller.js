@@ -3,7 +3,7 @@ const pool = require('../db')
 const { uid, parseJ } = require('../utils')
 const { provisionDefaultAgent } = require('../services/accountProvision')
 const { extractFileText } = require('./promptGenerator.controller')
-const { sendEmail } = require('../services/email')
+const { sendEmail, renderCodeEmail, DEFAULT_EMAIL_TEMPLATES } = require('../services/email')
 
 // ── Platform settings ─────────────────────────────────────────────────────────
 
@@ -105,6 +105,8 @@ const getSettings = async (req, res) => {
           smtpSecure: !!r.smtp_secure,
           signupVerifyEnabled: !!r.signup_verify_enabled,
           login2faEnabled: !!r.login_2fa_enabled,
+          // Plantillas de correo (guardadas ∪ defaults) para el editor del Super Panel.
+          emailTemplates: { login: { ...DEFAULT_EMAIL_TEMPLATES.login, ...(parseJ(r.email_templates, {})?.login || {}) }, signup: { ...DEFAULT_EMAIL_TEMPLATES.signup, ...(parseJ(r.email_templates, {})?.signup || {}) } },
           brandLogo: r.brand_logo || '',
           brandFavicon: r.brand_favicon || '',
           brandName: r.brand_name || '',
@@ -149,6 +151,7 @@ const getSettings = async (req, res) => {
           smtpHost: '', smtpPort: 587, smtpUser: '', hasSmtpPass: false, smtpSecure: false,
           signupVerifyEnabled: false,
           login2faEnabled: false,
+          emailTemplates: { login: { ...DEFAULT_EMAIL_TEMPLATES.login }, signup: { ...DEFAULT_EMAIL_TEMPLATES.signup } },
           brandLogo: '', brandFavicon: '', brandName: '',
         })
   } catch (err) { res.status(500).json({ error: 'Error interno' }) }
@@ -169,12 +172,13 @@ const updateSettings = async (req, res) => {
     defaultPromptProvider, defaultPromptModel, optimizerModel, businessAiModel,
     returningNoticeDefault,
     demoAdsEnabled, demoAdsHtml,
-    emailProvider, emailApiKey, emailFrom, emailFromName, signupVerifyEnabled, login2faEnabled,
+    emailProvider, emailApiKey, emailFrom, emailFromName, signupVerifyEnabled, login2faEnabled, emailTemplates,
     smtpHost, smtpPort, smtpUser, smtpPass, smtpSecure,
     brandLogo, brandFavicon, brandName,
   } = req.body
   try {
     const sets = []; const vals = []
+    if (emailTemplates !== undefined) { sets.push('email_templates=?'); vals.push(JSON.stringify(emailTemplates || {})) }
     if (brandLogo    !== undefined) { sets.push('brand_logo=?');    vals.push(brandLogo || null) }
     if (brandFavicon !== undefined) { sets.push('brand_favicon=?'); vals.push(brandFavicon || null) }
     if (brandName    !== undefined) { sets.push('brand_name=?');    vals.push(String(brandName || '').slice(0, 120) || null) }
@@ -482,20 +486,41 @@ const getAccountNameHistory = async (req, res) => {
   } catch (err) { res.status(500).json({ error: 'Error interno' }) }
 }
 
-// Envía un correo de prueba con la configuración GUARDADA (solo super admin).
+async function _loadBrand() {
+  try { const [[s]] = await pool.query('SELECT brand_logo, brand_name FROM platform_settings WHERE id=1'); return { name: s?.brand_name || '', logo: s?.brand_logo || '' } } catch { return {} }
+}
+
+// Envía un correo de prueba (solo super admin). Con { purpose, template } envía una
+// prueba REAL de esa plantilla (con un código de ejemplo); si no, el correo genérico.
 const testEmail = async (req, res) => {
   if (req.user.type !== 'superadmin') return res.status(403).json({ error: 'Solo super admin' })
   const to = String(req.body?.to || '').trim()
   if (!to || !/.+@.+\..+/.test(to)) return res.status(400).json({ error: 'Correo destino inválido' })
+  const { purpose, template } = req.body || {}
   try {
-    const r = await sendEmail({
-      to,
-      subject: 'Correo de prueba — AVI Asistente',
-      html: '<div style="font-family:Segoe UI,Arial,sans-serif;padding:20px;"><h2 style="color:#0b8a4f;">✓ Configuración de correo correcta</h2><p>Si recibes este mensaje, el proveedor de correo de AVI está configurado y funcionando.</p></div>',
-      text: 'Configuración de correo correcta. El proveedor de correo de AVI funciona.',
-    })
+    let subject, html, text
+    if (purpose && template) {
+      const mail = renderCodeEmail(purpose === 'signup' ? 'signup' : 'login', { code: '123456', templates: { [purpose]: template }, brand: await _loadBrand() })
+      subject = mail.subject; html = mail.html; text = mail.text
+    } else {
+      subject = 'Correo de prueba — AVI Asistente'
+      html = '<div style="font-family:Segoe UI,Arial,sans-serif;padding:20px;"><h2 style="color:#0b8a4f;">✓ Configuración de correo correcta</h2><p>Si recibes este mensaje, el proveedor de correo de AVI está configurado y funcionando.</p></div>'
+      text = 'Configuración de correo correcta. El proveedor de correo de AVI funciona.'
+    }
+    const r = await sendEmail({ to, subject, html, text })
     if (!r.ok) return res.status(502).json({ error: r.error || 'No se pudo enviar' })
     res.json({ ok: true })
+  } catch (err) { res.status(500).json({ error: 'Error interno' }) }
+}
+
+// Renderiza una plantilla de correo (con código de ejemplo) para la vista previa
+// del Super Panel. No envía nada. Solo super admin.
+const emailPreview = async (req, res) => {
+  if (req.user.type !== 'superadmin') return res.status(403).json({ error: 'Solo super admin' })
+  const { purpose, template } = req.body || {}
+  try {
+    const mail = renderCodeEmail(purpose === 'signup' ? 'signup' : 'login', { code: '123456', templates: { [purpose === 'signup' ? 'signup' : 'login']: template || {} }, brand: await _loadBrand() })
+    res.json({ subject: mail.subject, html: mail.html })
   } catch (err) { res.status(500).json({ error: 'Error interno' }) }
 }
 
@@ -524,4 +549,4 @@ const getModuleUsage = async (req, res) => {
   } catch (err) { console.error('[module usage]', err); res.status(500).json({ error: 'Error interno' }) }
 }
 
-module.exports = { getSettings, updateSettings, getPublicIntegrations, listSuperAdmins, createSuperAdmin, updateSuperAdmin, deleteSuperAdmin, listAllUsers, listAccounts, createAccount, updateSAAccount, deleteAccount, getAccountNameHistory, testEmail, getModuleUsage }
+module.exports = { getSettings, updateSettings, getPublicIntegrations, listSuperAdmins, createSuperAdmin, updateSuperAdmin, deleteSuperAdmin, listAllUsers, listAccounts, createAccount, updateSAAccount, deleteAccount, getAccountNameHistory, testEmail, emailPreview, getModuleUsage }

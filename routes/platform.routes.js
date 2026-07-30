@@ -24,6 +24,7 @@ router.post('/whatsapp/coexistence/sync-history', authMiddleware, coex.syncHisto
 router.get('/platform/settings',        authMiddleware, ctrl.getSettings)
 router.put('/platform/settings',        authMiddleware, ctrl.updateSettings)
 router.post('/platform/test-email',     authMiddleware, ctrl.testEmail)
+router.post('/platform/email-preview',  authMiddleware, ctrl.emailPreview)
 
 // Superadmin aliases — /api/superadmin/settings (called by AccountContext)
 router.get('/superadmin/settings',                      authMiddleware, ctrl.getSettings)

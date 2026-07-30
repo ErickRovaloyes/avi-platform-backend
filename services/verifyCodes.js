@@ -2,8 +2,8 @@
 // Códigos de verificación de un solo uso (registro / 2FA de login). Se guardan en
 // email_codes y se envían por correo. Verificación con expiración + límite de intentos.
 const pool = require('../db')
-const { uid } = require('../utils')
-const { sendEmail, codeEmailHtml, loadEmailConfig, isConfigured } = require('./email')
+const { uid, parseJ } = require('../utils')
+const { sendEmail, renderCodeEmail, loadEmailConfig, isConfigured } = require('./email')
 
 const TTL_MS = 10 * 60 * 1000   // 10 minutos
 const MAX_ATTEMPTS = 6
@@ -11,7 +11,7 @@ const MAX_ATTEMPTS = 6
 function gen6() { return String(Math.floor(100000 + Math.random() * 900000)) }
 
 // Crea + envía un código. purpose: 'login' | 'signup'. Devuelve { ok, error }.
-async function issueCode(email, purpose, { title, intro } = {}) {
+async function issueCode(email, purpose) {
   const cfg = await loadEmailConfig()
   if (!isConfigured(cfg)) return { ok: false, error: 'Correo no configurado' }
   const code = gen6()
@@ -24,16 +24,15 @@ async function issueCode(email, purpose, { title, intro } = {}) {
       ['ec_' + uid(), email, code, purpose, now + TTL_MS, now]
     )
   } catch (err) { return { ok: false, error: 'No se pudo generar el código' } }
-  const r = await sendEmail({
-    to: email, cfg,
-    subject: purpose === 'login' ? 'Tu código de acceso' : 'Verifica tu correo',
-    html: codeEmailHtml({
-      code,
-      title: title || (purpose === 'login' ? 'Código de acceso' : 'Verifica tu correo'),
-      intro: intro || (purpose === 'login' ? 'Usa este código para completar tu inicio de sesión.' : 'Usa este código para confirmar tu registro.'),
-    }),
-    text: `Tu código es: ${code} (expira en 10 minutos).`,
-  })
+  // Plantilla editable (Super Panel) + marca de la plataforma.
+  let templates = {}, brand = {}
+  try {
+    const [[s]] = await pool.query('SELECT email_templates, brand_logo, brand_name FROM platform_settings WHERE id=1')
+    templates = parseJ(s?.email_templates, {}) || {}
+    brand = { name: s?.brand_name || '', logo: s?.brand_logo || '' }
+  } catch { /* usa defaults */ }
+  const mail = renderCodeEmail(purpose, { code, templates, brand, minutes: Math.round(TTL_MS / 60000) })
+  const r = await sendEmail({ to: email, cfg, subject: mail.subject, html: mail.html, text: mail.text })
   if (!r.ok) return { ok: false, error: r.error }
   return { ok: true }
 }

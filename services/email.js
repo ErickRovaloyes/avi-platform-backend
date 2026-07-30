@@ -87,18 +87,72 @@ async function sendEmail({ to, subject, html, text, cfg }) {
   }
 }
 
-// Plantilla HTML sencilla para códigos de verificación.
-function codeEmailHtml({ code, title, intro }) {
+// ── Plantillas editables de los correos de código ────────────────────────────
+// El super admin puede editarlas (texto + diseño) desde el Super Panel. Placeholders
+// soportados: {{code}} {{minutos}} {{marca}} {{logo}}.
+const DEFAULT_EMAIL_TEMPLATES = {
+  login: {
+    subject: 'Tu código de acceso',
+    title: 'Código de acceso',
+    intro: 'Usa este código para completar tu inicio de sesión.',
+    footer: 'Este código expira en {{minutos}} minutos. Si no fuiste tú, ignora este correo.',
+    accent: '#0b8a4f', logoUrl: '', html: '',
+  },
+  signup: {
+    subject: 'Verifica tu correo',
+    title: 'Verifica tu correo',
+    intro: 'Usa este código para confirmar tu registro.',
+    footer: 'Este código expira en {{minutos}} minutos. Si no fuiste tú, ignora este correo.',
+    accent: '#0b8a4f', logoUrl: '', html: '',
+  },
+}
+
+function _interp(str, vars) {
+  return String(str || '').replace(/\{\{\s*(\w+)\s*\}\}/g, (_, k) => (vars[k] != null ? String(vars[k]) : ''))
+}
+function _esc(s) { return String(s == null ? '' : s).replace(/[&<>"]/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' }[c])) }
+
+// Tarjeta HTML del correo de código (diseño por defecto, parametrizable).
+function codeEmailHtml({ code, title, intro, footer, accent = '#0b8a4f', logo = '', brandName = 'AVI Asistente' }) {
+  const isHex6 = /^#[0-9a-fA-F]{6}$/.test(String(accent))
+  const tint = isHex6 ? accent + '1a' : '#eef4f1'   // fondo ~10% del acento (hex8) o gris suave
+  const logoTag = logo ? `<img src="${_esc(logo)}" alt="" style="max-height:44px;margin:0 auto 14px;display:block;">` : ''
   return `<!doctype html><html><body style="margin:0;background:#f4f6f8;font-family:Segoe UI,Roboto,Helvetica,Arial,sans-serif;">
   <div style="max-width:460px;margin:0 auto;padding:32px 20px;">
     <div style="background:#fff;border-radius:14px;padding:28px 26px;box-shadow:0 2px 10px rgba(0,0,0,.06);">
-      <h1 style="margin:0 0 8px;font-size:19px;color:#111;">${title}</h1>
-      <p style="margin:0 0 18px;font-size:14px;color:#555;line-height:1.5;">${intro}</p>
-      <div style="font-size:34px;font-weight:800;letter-spacing:8px;color:#0b8a4f;text-align:center;padding:14px 0;background:#eafaf1;border-radius:10px;">${code}</div>
-      <p style="margin:18px 0 0;font-size:12px;color:#999;line-height:1.5;">Este código expira en 10 minutos. Si no fuiste tú, ignora este correo.</p>
+      ${logoTag}
+      <h1 style="margin:0 0 8px;font-size:19px;color:#111;">${_esc(title)}</h1>
+      <p style="margin:0 0 18px;font-size:14px;color:#555;line-height:1.5;">${_esc(intro)}</p>
+      <div style="font-size:34px;font-weight:800;letter-spacing:8px;color:${_esc(accent)};text-align:center;padding:14px 0;background:${_esc(tint)};border-radius:10px;">${_esc(code)}</div>
+      <p style="margin:18px 0 0;font-size:12px;color:#999;line-height:1.5;">${_esc(footer)}</p>
     </div>
-    <p style="text-align:center;font-size:11px;color:#aab;margin-top:16px;">AVI Asistente</p>
+    <p style="text-align:center;font-size:11px;color:#aab;margin-top:16px;">${_esc(brandName)}</p>
   </div></body></html>`
 }
 
-module.exports = { loadEmailConfig, isConfigured, sendEmail, codeEmailHtml }
+// Renderiza el correo de código para un propósito, aplicando la plantilla guardada
+// (o los defaults) + la marca. Devuelve { subject, html, text }.
+function renderCodeEmail(purpose, { code, templates = {}, brand = {}, minutes = 10 } = {}) {
+  const base = DEFAULT_EMAIL_TEMPLATES[purpose] || DEFAULT_EMAIL_TEMPLATES.login
+  const tpl = { ...base, ...((templates && templates[purpose]) || {}) }
+  const brandName = brand?.name || 'AVI Asistente'
+  const logo = tpl.logoUrl || brand?.logo || ''
+  const vars = { code, minutos: String(minutes), marca: brandName, logo }
+  const subject = _interp(tpl.subject || base.subject, vars)
+  let html
+  if (tpl.html && String(tpl.html).trim()) {
+    html = _interp(tpl.html, vars)   // HTML personalizado del super admin (control total)
+  } else {
+    html = codeEmailHtml({
+      code,
+      title: _interp(tpl.title, vars),
+      intro: _interp(tpl.intro, vars),
+      footer: _interp(tpl.footer, vars),
+      accent: tpl.accent || base.accent,
+      logo, brandName,
+    })
+  }
+  return { subject, html, text: `Tu código es: ${code} (expira en ${minutes} minutos).` }
+}
+
+module.exports = { loadEmailConfig, isConfigured, sendEmail, codeEmailHtml, renderCodeEmail, DEFAULT_EMAIL_TEMPLATES }
