@@ -10,5 +10,7 @@ router.post('/switch',          authMiddleware, ctrl.switchAccount)
 router.post('/impersonate',     authMiddleware, ctrl.impersonate)
 router.post('/refresh',         authMiddleware, ctrl.refreshSession)
 router.put('/me',               authMiddleware, ctrl.updateMyProfile)
+router.get('/me/notif-prefs',   authMiddleware, ctrl.getMyNotifPrefs)
+router.put('/me/notif-prefs',   authMiddleware, ctrl.saveMyNotifPrefs)
 
 module.exports = router

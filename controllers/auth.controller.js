@@ -257,4 +257,24 @@ const updateMyProfile = async (req, res) => {
   }
 }
 
-module.exports = { login, verify2fa, resend2fa, switchAccount, impersonate, refreshSession, updateMyProfile }
+// Preferencias de notificación del miembro (por cuenta activa). Los superadmin no
+// tienen fila en members → devuelven null (su UI no muestra esta sección).
+const getMyNotifPrefs = async (req, res) => {
+  if (!req.user || req.user.type === 'superadmin') return res.json({ prefs: null })
+  try {
+    const [[m]] = await pool.query('SELECT notif_prefs FROM members WHERE account_id=? AND email=? LIMIT 1', [req.user.accountId, req.user.email])
+    res.json({ prefs: parseJ(m?.notif_prefs, null) })
+  } catch { res.json({ prefs: null }) }
+}
+
+const saveMyNotifPrefs = async (req, res) => {
+  if (!req.user || req.user.type === 'superadmin') return res.status(403).json({ error: 'No aplica a super admin' })
+  const prefs = req.body?.prefs
+  if (!prefs || typeof prefs !== 'object' || Array.isArray(prefs)) return res.status(400).json({ error: 'prefs inválidas' })
+  try {
+    await pool.query('UPDATE members SET notif_prefs=? WHERE account_id=? AND email=?', [JSON.stringify(prefs), req.user.accountId, req.user.email])
+    res.json({ ok: true })
+  } catch (err) { res.status(500).json({ error: 'Error interno' }) }
+}
+
+module.exports = { login, verify2fa, resend2fa, switchAccount, impersonate, refreshSession, updateMyProfile, getMyNotifPrefs, saveMyNotifPrefs }

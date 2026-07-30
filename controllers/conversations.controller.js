@@ -238,6 +238,8 @@ const updateConvo = async (req, res) => {
         preview:    c?.preview || '',
         assignedBy: req.user?.name || 'Un compañero',
       })
+      // Aviso por correo al asignado (si activó "Transferencia a asesor → Correo").
+      try { require('../services/emailNotify').onAssigned(accId, { convId, assigneeId: assignee.id, guestName: c?.guest_name, assignedBy: req.user?.name }) } catch {}
     }
 
     res.json({ ok: true, aiLimitBlocked })
@@ -539,6 +541,8 @@ async function createOrGetSocialConvo(accId, agId, lookupCol, lookupVal, guestNa
   if (returning) { try { await pool.query('UPDATE conversations SET returning_contact=1 WHERE id=? AND account_id=?', [id, accId]) } catch {} }
   // Suma 1 al consumo de conversaciones de la suscripción (límites demo/mensuales).
   try { require('../services/subscriptions').incrementConversation(accId) } catch {}
+  // Aviso por correo de "chat nuevo" (1 vez) a quien lo activó en su perfil.
+  try { require('../services/emailNotify').onNewChat(accId, { convId: id, guestName, channelType }) } catch {}
   return id
 }
 

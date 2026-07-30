@@ -63,6 +63,7 @@ async function executeFlow({ flowId, accId, agId, convId, triggerContext = {}, t
       trace.status = 'error'
       trace.error = err.message
       try { socket.emit(accId, 'flow:error', { accId, agId, convId, flowId, flowName: flow.name, error: err.message, ts: Date.now() }) } catch {}
+      try { require('../services/emailNotify').onFlowError(accId, { flowName: flow.name, error: err.message }) } catch {}
     }
   } finally {
     _running.delete(convId)
@@ -131,7 +132,9 @@ async function runNode(nodeId, ctx) {
     // Interrupción por mensaje nuevo (fetch abortado) → detener sin marcar error.
     if (isAborted(ctx) || err?.name === 'AbortError') return
     logDebug(ctx.accId, ctx.agId, ctx.convId, 'error', `✗ Error en [${node.type}]: ${err.message}`, {})
-    try { socket.emit(ctx.accId, 'flow:error', { accId: ctx.accId, agId: ctx.agId, convId: ctx.convId, flowId: ctx.flowId, flowName: ctx.account?.flows?.find(f => f.id === ctx.flowId)?.name || '', node: node.type, error: err.message, ts: Date.now() }) } catch {}
+    const _flowName = ctx.account?.flows?.find(f => f.id === ctx.flowId)?.name || ''
+    try { socket.emit(ctx.accId, 'flow:error', { accId: ctx.accId, agId: ctx.agId, convId: ctx.convId, flowId: ctx.flowId, flowName: _flowName, node: node.type, error: err.message, ts: Date.now() }) } catch {}
+    try { require('../services/emailNotify').onFlowError(ctx.accId, { flowName: _flowName, node: node.type, error: err.message }) } catch {}
     const errNext = node.connections?.error
     if (errNext) await runNode(errNext, ctx)
     return

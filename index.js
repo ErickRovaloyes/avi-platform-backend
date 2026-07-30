@@ -1387,6 +1387,10 @@ app.use('/api',                recontactRoutes)
      )`,
     // Asignación de una conversación a un equipo (además del asesor individual).
     "ALTER TABLE conversations ADD COLUMN team_id VARCHAR(50)",
+    // Preferencias de notificación por usuario (qué tipos y por qué canales, incl. Correo).
+    "ALTER TABLE members ADD COLUMN notif_prefs JSON",
+    // Marca de "recordatorio de tarea por vencer ya enviado" (idempotencia del worker).
+    "ALTER TABLE crm_tasks ADD COLUMN due_reminded_at BIGINT",
   ]
   for (const sql of migrations) {
     try { await pool.query(sql) } catch (e) { /* column exists or unsupported */ }
@@ -1447,6 +1451,8 @@ app.use('/api',                recontactRoutes)
   try { require('./services/crmRules').startWorker() } catch (e) { console.warn('[crm rules] worker no iniciado:', e.message) }
   // Tareas periódicas del CRM: genera tareas recurrentes cuando llega su próxima fecha.
   try { require('./services/crmTaskSchedules').startWorker() } catch (e) { console.warn('[task schedules] worker no iniciado:', e.message) }
+
+  try { require('./services/emailNotify').startWorker() } catch (e) { console.warn('[email notify] worker no iniciado:', e.message) }
   // Procesador del outbox de eventos de dominio (Core Booking Engine, Fase 0)
   try { require('./core/events').startProcessor() } catch (e) { console.warn('[events] no iniciado:', e.message) }
   // Worker que libera los holds (bloqueos de asiento) vencidos — Cine (Fase 3)

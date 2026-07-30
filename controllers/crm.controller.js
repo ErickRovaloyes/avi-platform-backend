@@ -324,6 +324,10 @@ const createTask = async (req, res) => {
     if (targetType && targetId) {
       await logActivity({ accId, targetType, targetId, kind: 'task', title: 'Nueva tarea: ' + title, detail: assigneeName ? `Asignada a ${assigneeName}` : '', authorId: req.user?.id, authorName: req.user?.name })
     }
+    // Aviso por correo al asignado (si activó "Tareas → Correo").
+    if (assigneeId && assigneeId !== req.user?.id) {
+      try { require('../services/emailNotify').onTaskAssigned(accId, { taskId: id, title: title.trim(), assigneeId, dueAt }) } catch {}
+    }
     res.json({ id })
   } catch (err) { res.status(500).json({ error: 'Error interno' }) }
 }
@@ -336,7 +340,7 @@ const updateTask = async (req, res) => {
     if (title       !== undefined) { sets.push('title=?');         vals.push(title) }
     if (description !== undefined) { sets.push('description=?');   vals.push(description) }
     if (type        !== undefined) { sets.push('type=?');          vals.push(type) }
-    if (dueAt       !== undefined) { sets.push('due_at=?');        vals.push(dueAt) }
+    if (dueAt       !== undefined) { sets.push('due_at=?');        vals.push(dueAt); sets.push('due_reminded_at=NULL') }
     if (assigneeId  !== undefined) { sets.push('assignee_id=?');   vals.push(assigneeId) }
     if (assigneeName!== undefined) { sets.push('assignee_name=?'); vals.push(assigneeName) }
     if (refs        !== undefined) { sets.push('refs=?');          vals.push(JSON.stringify(Array.isArray(refs) ? refs : [])) }

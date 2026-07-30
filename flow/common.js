@@ -124,6 +124,8 @@ function fmtDate(value, preset = 'long') {
 // Actualiza el assignedTo de la conversación activa
 async function setAssignedTo(ctx, assignee) {
   await store.updateConvo(ctx.accId, ctx.agId, ctx.convId, { assignedTo: assignee })
+  // Aviso por correo al asesor asignado por el flujo (si lo activó en su perfil).
+  try { if (assignee?.id) require('../services/emailNotify').onAssigned(ctx.accId, { convId: ctx.convId, assigneeId: assignee.id, guestName: assignee.guestName, assignedBy: 'El flujo' }) } catch {}
 }
 
 module.exports = { interpolate, logDebug, sendBotMsg, getVars, setVarBoth, resolveVar, safeJson, fmtDate, setAssignedTo }

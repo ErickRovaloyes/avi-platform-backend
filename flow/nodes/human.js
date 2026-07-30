@@ -50,13 +50,16 @@ const humanNodes = [
         const m = (ctx.account?.members || []).find(x => x.id === memberId)
         if (m) assignee = m
       }
+      const taskId = 'task_' + uid()
       try {
         await pool.query(
           `INSERT INTO crm_tasks (id,account_id,target_type,target_id,title,description,assignee_id,assignee_name,status,priority,created_by,created_at)
            VALUES (?,?,?,?,?,?,?,?,?,?,?,?)`,
-          ['task_' + uid(), ctx.accId, 'conversation', ctx.convId, title, description,
+          [taskId, ctx.accId, 'conversation', ctx.convId, title, description,
            assignee?.id || null, assignee?.name || '', 'open', node.data?.prioridad || 'normal', 'bot', Date.now()]
         )
+        // Aviso por correo al asignado (si activó "Tareas → Correo").
+        if (assignee?.id) { try { require('../../services/emailNotify').onTaskAssigned(ctx.accId, { taskId, title, assigneeId: assignee.id }) } catch {} }
       } catch (e) { logDebug(ctx, 'error', `✗ Ticket no creado: ${e.message}`, {}) }
       logDebug(ctx, 'flow_run', `🎫 Ticket creado: ${title}`, {})
     },
