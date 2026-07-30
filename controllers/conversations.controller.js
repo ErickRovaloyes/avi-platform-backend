@@ -64,6 +64,8 @@ const mapConvo = (c, messages = []) => ({
   aiDisabledReason: c.ai_disabled_reason || null,
   archived: !!c.archived, blocked: !!c.blocked, followup: !!c.followup,
   returning: !!c.returning_contact,
+  topic: c.topic || null, sentiment: c.sentiment || null,
+  buyingIntent: c.buying_intent || null, outcome: c.outcome || null,
   origin:        parseJ(c.origin, null),
   labels:        parseJ(c.labels, []),
   pipelineCards: parseJ(c.pipeline_cards, []),
