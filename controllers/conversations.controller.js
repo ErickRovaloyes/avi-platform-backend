@@ -11,7 +11,7 @@ const {
 // (mismo teléfono/guestId) y `hasMemory`=tiene memoria de conversaciones pasadas.
 // Ambos sirven para marcar la conversación como de "cliente recurrente".
 // Non-critical: errors are swallowed so conversation creation is never blocked.
-async function findOrCreateContact(accId, { guestName, guestId, waFrom, messengerFrom, igFrom, channelType }) {
+async function findOrCreateContact(accId, { guestName, guestId, waFrom, messengerFrom, igFrom, channelType, origin }) {
   try {
     let existing = null
 
@@ -40,6 +40,9 @@ async function findOrCreateContact(accId, { guestName, guestId, waFrom, messenge
       channelType,
       ...(messengerFrom ? { messengerId: messengerFrom } : {}),
       ...(igFrom        ? { instagramId: igFrom }       : {}),
+      // Origen del lead al primer contacto (directo/anuncio/link/campaña) → para
+      // clasificar y filtrar contactos por dónde llegaron.
+      ...(origin?.type ? { originType: origin.type, origin } : {}),
     }
     await pool.query(
       'INSERT INTO contacts (id,account_id,name,email,phone,extra,created_at) VALUES (?,?,?,?,?,?,?)',
@@ -146,8 +149,13 @@ const createConvo = async (req, res) => {
   const id       = `conv_${Date.now()}_${guestId || uid()}`
   const initials = (guestName || '').slice(0, 2).toUpperCase()
   const ts       = Date.now()
+  // Origen del lead: el que envía el cliente (webchat ya clasificado) o derivado del
+  // link de entrada (channelId). El webchat sí usa `link` para su enlace de entrada.
+  const originObj = (origin && typeof origin === 'object')
+    ? origin
+    : { type: channelId ? 'link' : 'direct', linkId: channelId || null }
 
-  const { id: contactId, existed, hasMemory } = await findOrCreateContact(accId, { guestName, guestId, waFrom, messengerFrom, igFrom, channelType })
+  const { id: contactId, existed, hasMemory } = await findOrCreateContact(accId, { guestName, guestId, waFrom, messengerFrom, igFrom, channelType, origin: originObj })
   const returning = !!(existed || hasMemory)
   const localVars = { user_name: guestName || '' }   // variable canónica del nombre (antes var_nombre)
   if (contactId) {
@@ -159,11 +167,6 @@ const createConvo = async (req, res) => {
   if (returning) localVars._returning = true
 
   try {
-    // Origen del lead: usa el que envía el cliente (webchat ya clasificado) o lo
-    // deriva del link (channelId = id del Webchat Link) → tipo "link", si no "directo".
-    const originObj = (origin && typeof origin === 'object')
-      ? origin
-      : { type: channelId ? 'link' : 'direct', linkId: channelId || null }
     // Reparto IA/Humano por % (si está activo en el agente): fija ai_enabled + etiqueta.
     const route = await routeNewConversation(accId, agId)
     await pool.query(
@@ -492,7 +495,12 @@ async function createOrGetSocialConvo(accId, agId, lookupCol, lookupVal, guestNa
   const id = `conv_${channelType}_${Date.now()}_${n}`
   const ts = Date.now()
 
-  const contactArgs = { guestName, guestId: String(n), channelType }
+  // Origen del lead: el que llega (anuncio/referral de Meta) o, por defecto, un
+  // mensaje de entrada DIRECTO. En canales sociales `channelId` es el canal (no un
+  // punto de entrada), así que un mensaje sin referral es "directo", no "link".
+  const originObj = origin || { type: 'direct' }
+
+  const contactArgs = { guestName, guestId: String(n), channelType, origin: originObj }
   if (lookupCol === 'wa_from')        contactArgs.waFrom        = lookupVal
   else if (lookupCol === 'messenger_from') contactArgs.messengerFrom = lookupVal
   else if (lookupCol === 'ig_from')   contactArgs.igFrom        = lookupVal
@@ -516,7 +524,7 @@ async function createOrGetSocialConvo(accId, agId, lookupCol, lookupVal, guestNa
     labels: JSON.stringify(route.labelIds), pipeline_cards: '[]',
     local_vars: JSON.stringify(localVars),
     debug_log: '[]',
-    origin: JSON.stringify(origin || { type: channelId ? 'link' : 'direct', linkId: channelId || null }),
+    origin: JSON.stringify(originObj),
     created_at: ts, updated_at: ts,
   }
   cols[lookupCol] = lookupVal

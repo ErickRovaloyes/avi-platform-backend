@@ -217,6 +217,17 @@ async function processWhatsApp(accId, agentId, body) {
   }
 }
 
+// Origen del lead desde un `referral` de Meta (Messenger/Instagram): anuncio
+// Click-to-Messenger/Instagram, o un referral m.me?ref=<punto de entrada>.
+function metaOrigin(ref) {
+  if (!ref) return null
+  const adId = ref.ad_id || ref.ads_context_data?.ad_id || null
+  if (adId || ref.source === 'ADS' || ref.type === 'ad') {
+    return { type: 'ad', platform: 'meta', adId, campaign: ref.ads_context_data?.ad_title || ref.ad_title || null, source: ref.source || 'ADS', ref: ref.ref || null }
+  }
+  return { type: 'link', platform: 'meta', linkId: ref.ref || ref.source || null, source: ref.source || null }
+}
+
 // ─── Messenger ─────────────────────────────────────────────────────────────────
 async function processMessenger(accId, agentId, body) {
   const messages = parseMessengerWebhook(body)
@@ -232,7 +243,7 @@ async function processMessenger(accId, agentId, body) {
     )
     if (!channel) { console.warn('[flow/process] Canal Messenger no encontrado:', msg.pageId); continue }
 
-    const convId = await store.createOrGetMessengerConvo(accId, agentId, msg.senderId, msg.senderName, channel.id)
+    const convId = await store.createOrGetMessengerConvo(accId, agentId, msg.senderId, msg.senderName, channel.id, metaOrigin(msg.referral))
 
     if (await store.messageExistsByProviderId(convId, msg.messageId)) {
       console.log('[flow/process] FB ya procesado en DB:', msg.messageId); continue
@@ -315,7 +326,7 @@ async function processInstagram(accId, agentId, body) {
     )
     if (!channel) { console.warn('[flow/process] Canal Instagram no encontrado:', msg.igAccountId); continue }
 
-    const convId = await store.createOrGetInstagramConvo(accId, agentId, msg.senderId, msg.senderName, channel.id)
+    const convId = await store.createOrGetInstagramConvo(accId, agentId, msg.senderId, msg.senderName, channel.id, metaOrigin(msg.referral))
 
     if (await store.messageExistsByProviderId(convId, msg.messageId)) {
       console.log('[flow/process] IG ya procesado en DB:', msg.messageId); continue

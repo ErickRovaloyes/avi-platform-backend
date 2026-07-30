@@ -228,11 +228,11 @@ async function saveExecution({ accId, agId, convId, flowId, flowName, trigger, s
 async function createOrGetWhatsAppConvo(accId, agentId, from, name, channelId, origin) {
   return createOrGetSocialConvo(accId, agentId, 'wa_from', from, name || `WA #${(from || '').slice(-4)}`, 'whatsapp', channelId, origin)
 }
-async function createOrGetMessengerConvo(accId, agentId, from, name, channelId) {
-  return createOrGetSocialConvo(accId, agentId, 'messenger_from', from, name || `FB #${(from || '').slice(-4)}`, 'messenger', channelId)
+async function createOrGetMessengerConvo(accId, agentId, from, name, channelId, origin) {
+  return createOrGetSocialConvo(accId, agentId, 'messenger_from', from, name || `FB #${(from || '').slice(-4)}`, 'messenger', channelId, origin)
 }
-async function createOrGetInstagramConvo(accId, agentId, from, name, channelId) {
-  return createOrGetSocialConvo(accId, agentId, 'ig_from', from, name || `IG #${(from || '').slice(-4)}`, 'instagram', channelId)
+async function createOrGetInstagramConvo(accId, agentId, from, name, channelId, origin) {
+  return createOrGetSocialConvo(accId, agentId, 'ig_from', from, name || `IG #${(from || '').slice(-4)}`, 'instagram', channelId, origin)
 }
 
 // ── Token usage ─────────────────────────────────────────────────────────────

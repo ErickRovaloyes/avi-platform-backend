@@ -263,6 +263,8 @@ function parseMessengerWebhook(body) {
         timestamp: event.timestamp,
         internalMedia: enriched,
         outbound: isEcho,
+        // Origen: anuncio Click-to-Messenger o referral m.me?ref= (si el chat se inició así).
+        referral: event.referral || event.postback?.referral || event.message?.referral || null,
       })
     }
   }
@@ -316,6 +318,8 @@ function parseInstagramWebhook(body) {
         timestamp: event.timestamp,
         internalMedia: enriched,
         outbound: isEcho,
+        // Origen: anuncio Click-to-Instagram o referral (si el chat se inició así).
+        referral: event.referral || event.postback?.referral || event.message?.referral || null,
       })
     }
     for (const change of entry?.changes || []) {
