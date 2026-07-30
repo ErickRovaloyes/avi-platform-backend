@@ -78,7 +78,7 @@ const detectOpportunities = async (req, res) => {
     for (const p of pipes) for (const c of parseJ(p.cards, [])) if (c.convId) withDeal.add(c.convId)
 
     const [convos] = await pool.query(
-      "SELECT id, agent_id, guest_name, local_vars FROM conversations WHERE account_id=? AND buying_intent IN('media','alta') ORDER BY updated_at DESC LIMIT 150",
+      "SELECT id, agent_id, guest_name, local_vars, origin FROM conversations WHERE account_id=? AND buying_intent IN('media','alta') ORDER BY updated_at DESC LIMIT 150",
       [accId])
     let cards = parseJ(pipe.cards, [])
     const newCards = [], hist = []
@@ -88,7 +88,10 @@ const detectOpportunities = async (req, res) => {
       let contactName = cv.guest_name || ''
       if (lv.contact_id) { try { const [[ct]] = await pool.query('SELECT name FROM contacts WHERE id=? AND account_id=?', [lv.contact_id, accId]); if (ct?.name) contactName = ct.name } catch {} }
       const cardId = 'card_' + uid()
-      newCards.push({ id: cardId, stageId: firstStage.id, title: `Oportunidad — ${contactName || 'Cliente'}`, contact: contactName, convId: cv.id, agentId: cv.agent_id, source: 'ia', createdAt: Date.now() })
+      // Origen del lead heredado del chat (directo/anuncio/link) → se muestra y se
+      // puede filtrar en el pipeline. No toca `source:'ia'` (marca "Detectado por IA").
+      const origin = parseJ(cv.origin, null)
+      newCards.push({ id: cardId, stageId: firstStage.id, title: `Oportunidad — ${contactName || 'Cliente'}`, contact: contactName, convId: cv.id, agentId: cv.agent_id, source: 'ia', ...(origin?.type ? { origin, originType: origin.type } : {}), createdAt: Date.now() })
       hist.push([accId, pipe.id, cardId, null, firstStage.id, Date.now()])
       withDeal.add(cv.id)
     }
@@ -282,13 +285,14 @@ const deleteNote = async (req, res) => {
 // ── Tasks ──────────────────────────────────────────────────────────────────
 const listTasks = async (req, res) => {
   const { accId } = req.params
-  const { targetType, targetId, assigneeId, status } = req.query
+  const { targetType, targetId, assigneeId, status, type } = req.query
   try {
     const where = ['account_id=?']; const params = [accId]
     if (targetType) { where.push('target_type=?'); params.push(targetType) }
     if (targetId)   { where.push('target_id=?');   params.push(targetId) }
     if (assigneeId) { where.push('assignee_id=?'); params.push(assigneeId) }
     if (status)     { where.push('status=?');      params.push(status) }
+    if (type)       { where.push('type=?');        params.push(type) }
     const [rows] = await pool.query(
       `SELECT * FROM crm_tasks WHERE ${where.join(' AND ')} ORDER BY
         CASE WHEN status='open' THEN 0 ELSE 1 END,
@@ -299,7 +303,7 @@ const listTasks = async (req, res) => {
       id: r.id, targetType: r.target_type, targetId: r.target_id,
       title: r.title, description: r.description,
       dueAt: r.due_at, assigneeId: r.assignee_id, assigneeName: r.assignee_name,
-      status: r.status, priority: r.priority,
+      status: r.status, priority: r.priority, type: r.type || 'general',
       refs: parseJ(r.refs, []),
       createdBy: r.created_by, createdAt: r.created_at, completedAt: r.completed_at,
     })))
@@ -308,14 +312,14 @@ const listTasks = async (req, res) => {
 
 const createTask = async (req, res) => {
   const { accId } = req.params
-  const { targetType = null, targetId = null, title = '', description = '', dueAt = null, assigneeId = null, assigneeName = '', priority = 'normal', refs = [] } = req.body || {}
+  const { targetType = null, targetId = null, title = '', description = '', dueAt = null, assigneeId = null, assigneeName = '', priority = 'normal', type = 'general', refs = [] } = req.body || {}
   if (!title.trim()) return res.status(400).json({ error: 'title requerido' })
   const id = 'task_' + uid()
   try {
     await pool.query(
-      `INSERT INTO crm_tasks (id, account_id, target_type, target_id, title, description, due_at, assignee_id, assignee_name, status, priority, refs, created_by, created_at)
-       VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?)`,
-      [id, accId, targetType, targetId, title.trim(), description, dueAt, assigneeId, assigneeName, 'open', priority, JSON.stringify(Array.isArray(refs) ? refs : []), req.user?.name || '', Date.now()]
+      `INSERT INTO crm_tasks (id, account_id, target_type, target_id, title, description, due_at, assignee_id, assignee_name, status, priority, type, refs, created_by, created_at)
+       VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`,
+      [id, accId, targetType, targetId, title.trim(), description, dueAt, assigneeId, assigneeName, 'open', priority, type || 'general', JSON.stringify(Array.isArray(refs) ? refs : []), req.user?.name || '', Date.now()]
     )
     if (targetType && targetId) {
       await logActivity({ accId, targetType, targetId, kind: 'task', title: 'Nueva tarea: ' + title, detail: assigneeName ? `Asignada a ${assigneeName}` : '', authorId: req.user?.id, authorName: req.user?.name })
@@ -326,11 +330,12 @@ const createTask = async (req, res) => {
 
 const updateTask = async (req, res) => {
   const { accId, id } = req.params
-  const { title, description, dueAt, assigneeId, assigneeName, status, priority, refs } = req.body || {}
+  const { title, description, dueAt, assigneeId, assigneeName, status, priority, type, refs } = req.body || {}
   try {
     const sets = []; const vals = []
     if (title       !== undefined) { sets.push('title=?');         vals.push(title) }
     if (description !== undefined) { sets.push('description=?');   vals.push(description) }
+    if (type        !== undefined) { sets.push('type=?');          vals.push(type) }
     if (dueAt       !== undefined) { sets.push('due_at=?');        vals.push(dueAt) }
     if (assigneeId  !== undefined) { sets.push('assignee_id=?');   vals.push(assigneeId) }
     if (assigneeName!== undefined) { sets.push('assignee_name=?'); vals.push(assigneeName) }

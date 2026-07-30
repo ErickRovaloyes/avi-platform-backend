@@ -267,6 +267,8 @@ app.use('/api',                recontactRoutes)
        rule_id VARCHAR(50), target_id VARCHAR(80), fired_at BIGINT,
        PRIMARY KEY (rule_id, target_id)
      )`,
+    // Tipo de tarea del CRM (llamada, whatsapp, correo, reunión, seguimiento, general).
+    "ALTER TABLE crm_tasks ADD COLUMN type VARCHAR(30)",
     // Publicidad en cuentas Demo: código de anuncio (embed) gestionado por el super admin.
     "ALTER TABLE platform_settings ADD COLUMN demo_ads_enabled TINYINT(1) DEFAULT 0",
     "ALTER TABLE platform_settings ADD COLUMN demo_ads_html MEDIUMTEXT",
