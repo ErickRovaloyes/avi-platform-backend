@@ -115,6 +115,15 @@ async function resolveBookingConvo(accId, calendar, booking) {
     if (c) { const to = c.wa_from || c.messenger_from || c.ig_from || c.guest_id; outbound = buildOutbound(agent, c.channel_type, c.channel_id, to) }
     else convId = null
   }
+  // Blindaje anti-duplicados: si la reserva conoce el contacto, REUTILIZA su conversación
+  // más reciente en lugar de abrir un chat nuevo (evita duplicar el chat del cliente).
+  if (!convId && booking.meta?.contactId) {
+    const [[c]] = await pool.query(
+      "SELECT * FROM conversations WHERE account_id=? AND JSON_UNQUOTE(JSON_EXTRACT(local_vars,'$.contact_id'))=? ORDER BY updated_at DESC LIMIT 1",
+      [accId, String(booking.meta.contactId)]
+    )
+    if (c) { convId = c.id; const to = c.wa_from || c.messenger_from || c.ig_from || c.guest_id; outbound = buildOutbound(agent, c.channel_type, c.channel_id, to) }
+  }
   if (!convId && booking.clientPhone) {
     const channel = await resolveWhatsAppChannel(accId, agent.id, n.whatsappChannelId)
     const phone = String(booking.clientPhone).replace(/[^\d]/g, '')
