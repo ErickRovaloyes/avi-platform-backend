@@ -507,4 +507,104 @@ const kpis = async (req, res) => {
   }
 }
 
-module.exports = { listNotes, createNote, deleteNote, listTasks, createTask, updateTask, deleteTask, listActivity, kpis, logActivity, classifyConversations, previewExecutiveSummary, sendExecutiveSummary, pipelineVelocity, retention, copilotAsk, platformAsk, detectOpportunities, leadScores, qaRun, qaReview }
+// ── Tareas periódicas (programaciones recurrentes) ────────────────────────────
+const schedMap = r => ({
+  id: r.id, title: r.title, description: r.description, type: r.type || 'general',
+  priority: r.priority || 'normal', assigneeId: r.assignee_id, assigneeName: r.assignee_name,
+  targetType: r.target_type, targetId: r.target_id,
+  freq: r.freq || 'weekly', intervalN: r.interval_n || 1, weekday: r.weekday, monthday: r.monthday,
+  nextAt: r.next_at, enabled: !!r.enabled, lastSpawnedAt: r.last_spawned_at, createdAt: r.created_at,
+})
+
+const listTaskSchedules = async (req, res) => {
+  try { const [rows] = await pool.query('SELECT * FROM crm_task_schedules WHERE account_id=? ORDER BY created_at DESC', [req.params.accId]); res.json({ schedules: rows.map(schedMap) }) }
+  catch (err) { res.status(500).json({ error: 'Error interno' }) }
+}
+
+const createTaskSchedule = async (req, res) => {
+  const { accId } = req.params
+  const b = req.body || {}
+  if (!String(b.title || '').trim()) return res.status(400).json({ error: 'title requerido' })
+  const id = 'sched_' + uid()
+  const sched = { freq: b.freq || 'weekly', interval_n: Number(b.intervalN) || 1, weekday: b.weekday != null ? Number(b.weekday) : null, monthday: b.monthday != null ? Number(b.monthday) : null }
+  const nextAt = require('../services/crmTaskSchedules').initialNextAt(sched)
+  try {
+    await pool.query(
+      'INSERT INTO crm_task_schedules (id, account_id, title, description, type, priority, assignee_id, assignee_name, target_type, target_id, freq, interval_n, weekday, monthday, next_at, enabled, created_at) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)',
+      [id, accId, String(b.title).slice(0, 200), b.description || '', b.type || 'general', b.priority || 'normal',
+        b.assigneeId || null, b.assigneeName || '', b.targetType || null, b.targetId || null,
+        sched.freq, sched.interval_n, sched.weekday, sched.monthday, nextAt, b.enabled === false ? 0 : 1, Date.now()])
+    res.json({ id })
+  } catch (err) { console.error('[sched create]', err); res.status(500).json({ error: 'Error interno' }) }
+}
+
+const updateTaskSchedule = async (req, res) => {
+  const { accId, id } = req.params
+  const b = req.body || {}
+  try {
+    const [[cur]] = await pool.query('SELECT * FROM crm_task_schedules WHERE id=? AND account_id=?', [id, accId])
+    if (!cur) return res.status(404).json({ error: 'No encontrada' })
+    const map = { title: 'title', description: 'description', type: 'type', priority: 'priority', assigneeId: 'assignee_id', assigneeName: 'assignee_name', targetType: 'target_type', targetId: 'target_id', freq: 'freq', intervalN: 'interval_n', weekday: 'weekday', monthday: 'monthday' }
+    const sets = [], vals = []
+    for (const [k, col] of Object.entries(map)) if (b[k] !== undefined) { sets.push(`${col}=?`); vals.push(b[k]) }
+    if (b.enabled !== undefined) { sets.push('enabled=?'); vals.push(b.enabled ? 1 : 0) }
+    // Si cambió la recurrencia, recalcular next_at.
+    if (['freq', 'intervalN', 'weekday', 'monthday'].some(k => b[k] !== undefined)) {
+      const sched = { freq: b.freq ?? cur.freq, interval_n: b.intervalN ?? cur.interval_n, weekday: b.weekday ?? cur.weekday, monthday: b.monthday ?? cur.monthday }
+      sets.push('next_at=?'); vals.push(require('../services/crmTaskSchedules').initialNextAt(sched))
+    }
+    if (!sets.length) return res.json({ ok: true })
+    vals.push(id, accId)
+    await pool.query(`UPDATE crm_task_schedules SET ${sets.join(',')} WHERE id=? AND account_id=?`, vals)
+    res.json({ ok: true })
+  } catch (err) { res.status(500).json({ error: 'Error interno' }) }
+}
+
+const deleteTaskSchedule = async (req, res) => {
+  try { await pool.query('DELETE FROM crm_task_schedules WHERE id=? AND account_id=?', [req.params.id, req.params.accId]); res.json({ ok: true }) }
+  catch (err) { res.status(500).json({ error: 'Error interno' }) }
+}
+
+// ── Relaciones entre tickets/deals (posiblemente de pipelines distintos) ───────
+const listCardLinks = async (req, res) => {
+  const { accId } = req.params
+  const cardId = req.query.cardId
+  if (!cardId) return res.json({ links: [] })
+  try {
+    const [rows] = await pool.query('SELECT * FROM crm_card_links WHERE account_id=? AND (a_card=? OR b_card=?)', [accId, cardId, cardId])
+    const [pipes] = await pool.query('SELECT id, name, cards FROM pipelines WHERE account_id=?', [accId])
+    const pipeName = {}, cardTitle = {}
+    for (const p of pipes) { pipeName[p.id] = p.name; for (const c of parseJ(p.cards, [])) cardTitle[c.id] = c.title }
+    const links = rows.map(r => {
+      const isA = r.a_card === cardId
+      const otherPipe = isA ? r.b_pipeline : r.a_pipeline
+      const otherCard = isA ? r.b_card : r.a_card
+      return { id: r.id, relation: r.relation, pipelineId: otherPipe, pipelineName: pipeName[otherPipe] || '', cardId: otherCard, title: cardTitle[otherCard] || '(tarjeta eliminada)' }
+    })
+    res.json({ links })
+  } catch (err) { res.status(500).json({ error: 'Error interno' }) }
+}
+
+const createCardLink = async (req, res) => {
+  const { accId } = req.params
+  const b = req.body || {}
+  if (!b.aCard || !b.bCard || b.aCard === b.bCard) return res.status(400).json({ error: 'Tarjetas inválidas' })
+  const rel = String(b.relation || 'relacionado').slice(0, 30)
+  try {
+    // Evita duplicados (mismo par en cualquier orden): actualiza la relación si ya existe.
+    const [[dup]] = await pool.query('SELECT id FROM crm_card_links WHERE account_id=? AND ((a_card=? AND b_card=?) OR (a_card=? AND b_card=?)) LIMIT 1', [accId, b.aCard, b.bCard, b.bCard, b.aCard])
+    if (dup) { await pool.query('UPDATE crm_card_links SET relation=? WHERE id=?', [rel, dup.id]); return res.json({ id: dup.id }) }
+    const id = 'link_' + uid()
+    await pool.query('INSERT INTO crm_card_links (id, account_id, a_pipeline, a_card, b_pipeline, b_card, relation, created_at) VALUES (?,?,?,?,?,?,?,?)',
+      [id, accId, b.aPipeline || null, b.aCard, b.bPipeline || null, b.bCard, rel, Date.now()])
+    res.json({ id })
+  } catch (err) { res.status(500).json({ error: 'Error interno' }) }
+}
+
+const deleteCardLink = async (req, res) => {
+  try { await pool.query('DELETE FROM crm_card_links WHERE id=? AND account_id=?', [req.params.id, req.params.accId]); res.json({ ok: true }) }
+  catch (err) { res.status(500).json({ error: 'Error interno' }) }
+}
+
+module.exports = { listNotes, createNote, deleteNote, listTasks, createTask, updateTask, deleteTask, listActivity, kpis, logActivity, classifyConversations, previewExecutiveSummary, sendExecutiveSummary, pipelineVelocity, retention, copilotAsk, platformAsk, detectOpportunities, leadScores, qaRun, qaReview,
+  listTaskSchedules, createTaskSchedule, updateTaskSchedule, deleteTaskSchedule, listCardLinks, createCardLink, deleteCardLink }

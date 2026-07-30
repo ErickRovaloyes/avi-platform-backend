@@ -14,6 +14,17 @@ router.post('/accounts/:accId/crm/tasks',               authMiddleware, ctrl.cre
 router.put('/accounts/:accId/crm/tasks/:id',            authMiddleware, ctrl.updateTask)
 router.delete('/accounts/:accId/crm/tasks/:id',         authMiddleware, ctrl.deleteTask)
 
+// Tareas periódicas (programaciones recurrentes)
+router.get('/accounts/:accId/crm/task-schedules',       authMiddleware, ctrl.listTaskSchedules)
+router.post('/accounts/:accId/crm/task-schedules',      authMiddleware, ctrl.createTaskSchedule)
+router.put('/accounts/:accId/crm/task-schedules/:id',   authMiddleware, ctrl.updateTaskSchedule)
+router.delete('/accounts/:accId/crm/task-schedules/:id', authMiddleware, ctrl.deleteTaskSchedule)
+
+// Relaciones entre tickets/deals
+router.get('/accounts/:accId/crm/card-links',           authMiddleware, ctrl.listCardLinks)
+router.post('/accounts/:accId/crm/card-links',          authMiddleware, ctrl.createCardLink)
+router.delete('/accounts/:accId/crm/card-links/:id',    authMiddleware, ctrl.deleteCardLink)
+
 router.get('/accounts/:accId/crm/activity',             authMiddleware, ctrl.listActivity)
 router.get('/accounts/:accId/crm/kpis',                 authMiddleware, ctrl.kpis)
 router.get('/accounts/:accId/crm/pipeline-velocity',    authMiddleware, ctrl.pipelineVelocity)

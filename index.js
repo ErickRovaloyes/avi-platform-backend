@@ -269,6 +269,22 @@ app.use('/api',                recontactRoutes)
      )`,
     // Tipo de tarea del CRM (llamada, whatsapp, correo, reunión, seguimiento, general).
     "ALTER TABLE crm_tasks ADD COLUMN type VARCHAR(30)",
+    // Tareas periódicas: plantillas que generan una tarea cada cierto tiempo (worker).
+    `CREATE TABLE IF NOT EXISTS crm_task_schedules (
+       id VARCHAR(50) PRIMARY KEY, account_id VARCHAR(50) NOT NULL,
+       title VARCHAR(200), description TEXT, type VARCHAR(30), priority VARCHAR(12) DEFAULT 'normal',
+       assignee_id VARCHAR(50), assignee_name VARCHAR(120), target_type VARCHAR(20), target_id VARCHAR(80),
+       freq VARCHAR(12) DEFAULT 'weekly', interval_n INT DEFAULT 1, weekday INT, monthday INT,
+       next_at BIGINT, enabled TINYINT(1) DEFAULT 1, last_spawned_at BIGINT, created_at BIGINT,
+       INDEX idx_sched (account_id, enabled, next_at)
+     )`,
+    // Relaciones entre tickets/deals (posiblemente de pipelines distintos). Bidireccional.
+    `CREATE TABLE IF NOT EXISTS crm_card_links (
+       id VARCHAR(50) PRIMARY KEY, account_id VARCHAR(50) NOT NULL,
+       a_pipeline VARCHAR(50), a_card VARCHAR(80), b_pipeline VARCHAR(50), b_card VARCHAR(80),
+       relation VARCHAR(30) DEFAULT 'relacionado', created_at BIGINT,
+       INDEX idx_cl_a (account_id, a_card), INDEX idx_cl_b (account_id, b_card)
+     )`,
     // Publicidad en cuentas Demo: código de anuncio (embed) gestionado por el super admin.
     "ALTER TABLE platform_settings ADD COLUMN demo_ads_enabled TINYINT(1) DEFAULT 0",
     "ALTER TABLE platform_settings ADD COLUMN demo_ads_html MEDIUMTEXT",
@@ -1412,6 +1428,8 @@ app.use('/api',                recontactRoutes)
   try { require('./services/campaigns').startWorker() } catch (e) { console.warn('[campaigns] worker no iniciado:', e.message) }
   // Reglas/playbooks del CRM: evalúa disparadores y crea tareas automáticamente.
   try { require('./services/crmRules').startWorker() } catch (e) { console.warn('[crm rules] worker no iniciado:', e.message) }
+  // Tareas periódicas del CRM: genera tareas recurrentes cuando llega su próxima fecha.
+  try { require('./services/crmTaskSchedules').startWorker() } catch (e) { console.warn('[task schedules] worker no iniciado:', e.message) }
   // Procesador del outbox de eventos de dominio (Core Booking Engine, Fase 0)
   try { require('./core/events').startProcessor() } catch (e) { console.warn('[events] no iniciado:', e.message) }
   // Worker que libera los holds (bloqueos de asiento) vencidos — Cine (Fase 3)
