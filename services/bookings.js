@@ -525,11 +525,21 @@ function registerOutboxHandlers() {
       // Directiva de confirmación por reserva (citas manuales): elige método IA/flujo/ninguno,
       // por encima de la config del calendario. Sin directiva → comportamiento por defecto.
       const cf = bk.meta?.confirm
+      // La reserva la hizo el ASISTENTE dentro de un chat (channel 'ia' con conversación
+      // de origen): él ya confirma en línea (la herramienta agendar_cita devuelve
+      // "✅ Cita agendada…" y el modelo lo repite al cliente). La confirmación automática
+      // sobraría → mandaría un 2º mensaje y, si no resolviera el chat de origen, crearía
+      // una conversación duplicada con el nombre del cliente. Por eso la omitimos aquí.
+      const fromAssistantChat = bk.channel === 'ia' && !!(bk.meta?.conversationId || bk.meta?.convId)
       if (cf && cf.method) {
         if (cf.method === 'flow' && cf.flowId) notify(ev.accId, calendar, bk, 'confirmation', { ...cDefault, force: true, mode: 'flow', flowId: cf.flowId }).catch(() => {})
         else if (cf.method === 'ia') notify(ev.accId, calendar, bk, 'confirmation', { ...cDefault, force: true, mode: 'ia' }).catch(() => {})
         // cf.method === 'none' → no se envía confirmación.
+      } else if (fromAssistantChat) {
+        // El asistente ya confirmó en el chat → sin confirmación automática. El sync a
+        // Google Calendar (más abajo) sí se mantiene.
       } else {
+        // Reservas manuales / de la página pública: no hay confirmación en línea → se envía.
         notify(ev.accId, calendar, bk, 'confirmation', cDefault).catch(() => {})
       }
       sync.pushBooking(ev.accId, calendar, bk, 'create').then(eventId => {
