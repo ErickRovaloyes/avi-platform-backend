@@ -100,6 +100,7 @@ const metaCatalogRoutes   = require('./routes/metaCatalog.routes')
 const metaPagesRoutes     = require('./routes/metaPages.routes')
 const optimizerRoutes     = require('./routes/promptOptimizer.routes')
 const recontactRoutes     = require('./routes/recontact.routes')
+const billingRoutes       = require('./routes/billing.routes')
 const promptGenRoutes     = require('./routes/promptGenerator.routes')
 const promptHistoryRoutes = require('./routes/promptHistory.routes')
 const mediaRoutes         = require('./routes/media.routes')
@@ -178,6 +179,7 @@ app.use('/api',                metaCatalogRoutes)
 app.use('/api',                metaPagesRoutes)
 app.use('/api',                optimizerRoutes)
 app.use('/api',                recontactRoutes)
+app.use('/api',                billingRoutes)
 
 // ── Auto-migrate DB columns added after initial schema ────────────────────────
 ;(async () => {

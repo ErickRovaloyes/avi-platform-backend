@@ -110,6 +110,17 @@ const getSettings = async (req, res) => {
           brandLogo: r.brand_logo || '',
           brandFavicon: r.brand_favicon || '',
           brandName: r.brand_name || '',
+          // Pasarelas de cobro de la PLATAFORMA (suscripciones). Los secretos solo se
+          // exponen como "hasX"; las llaves públicas sí (van al navegador para el checkout).
+          wompiPublicKey: r.wompi_public_key || '',
+          hasWompiPrivateKey: !!r.wompi_private_key,
+          hasWompiEventsSecret: !!r.wompi_events_secret,
+          wompiMode: r.wompi_mode || 'production',
+          stripePublishableKey: r.stripe_publishable_key || '',
+          hasStripeSecretKey: !!r.stripe_secret_key,
+          hasStripeWebhookSecret: !!r.stripe_webhook_secret,
+          fxUsdCop: r.fx_usd_cop != null ? Number(r.fx_usd_cop) : null,
+          fxUpdatedAt: r.fx_updated_at || null,
         }
       : {
           changeAgentModel: 'gpt-4o-mini',
@@ -153,6 +164,9 @@ const getSettings = async (req, res) => {
           login2faEnabled: false,
           emailTemplates: { login: { ...DEFAULT_EMAIL_TEMPLATES.login }, signup: { ...DEFAULT_EMAIL_TEMPLATES.signup } },
           brandLogo: '', brandFavicon: '', brandName: '',
+          wompiPublicKey: '', hasWompiPrivateKey: false, hasWompiEventsSecret: false, wompiMode: 'production',
+          stripePublishableKey: '', hasStripeSecretKey: false, hasStripeWebhookSecret: false,
+          fxUsdCop: null, fxUpdatedAt: null,
         })
   } catch (err) { res.status(500).json({ error: 'Error interno' }) }
 }
@@ -175,6 +189,8 @@ const updateSettings = async (req, res) => {
     emailProvider, emailApiKey, emailFrom, emailFromName, signupVerifyEnabled, login2faEnabled, emailTemplates,
     smtpHost, smtpPort, smtpUser, smtpPass, smtpSecure,
     brandLogo, brandFavicon, brandName,
+    wompiPublicKey, wompiPrivateKey, wompiEventsSecret, wompiMode,
+    stripePublishableKey, stripeSecretKey, stripeWebhookSecret,
   } = req.body
   try {
     const sets = []; const vals = []
@@ -217,6 +233,15 @@ const updateSettings = async (req, res) => {
     if (businessAiModel           !== undefined) { sets.push('business_ai_model=?');             vals.push(String(businessAiModel || 'gpt-4o-mini')) }
     if (demoAdsEnabled            !== undefined) { sets.push('demo_ads_enabled=?');              vals.push(demoAdsEnabled ? 1 : 0) }
     if (demoAdsHtml               !== undefined) { sets.push('demo_ads_html=?');                 vals.push(demoAdsHtml || null) }
+    // Pasarelas de cobro de la plataforma (suscripciones). Las llaves públicas se guardan
+    // siempre; los secretos solo si llega un valor no vacío/enmascarado (no borrar al guardar).
+    if (wompiPublicKey            !== undefined) { sets.push('wompi_public_key=?');   vals.push(String(wompiPublicKey || '').trim() || null) }
+    if (wompiMode                 !== undefined) { sets.push('wompi_mode=?');         vals.push(wompiMode === 'sandbox' ? 'sandbox' : 'production') }
+    if (wompiPrivateKey           !== undefined && wompiPrivateKey && !wompiPrivateKey.includes('***')) { sets.push('wompi_private_key=?'); vals.push(String(wompiPrivateKey).trim()) }
+    if (wompiEventsSecret         !== undefined && wompiEventsSecret && !wompiEventsSecret.includes('***')) { sets.push('wompi_events_secret=?'); vals.push(String(wompiEventsSecret).trim()) }
+    if (stripePublishableKey      !== undefined) { sets.push('stripe_publishable_key=?'); vals.push(String(stripePublishableKey || '').trim() || null) }
+    if (stripeSecretKey           !== undefined && stripeSecretKey && !stripeSecretKey.includes('***')) { sets.push('stripe_secret_key=?'); vals.push(String(stripeSecretKey).trim()) }
+    if (stripeWebhookSecret       !== undefined && stripeWebhookSecret && !stripeWebhookSecret.includes('***')) { sets.push('stripe_webhook_secret=?'); vals.push(String(stripeWebhookSecret).trim()) }
     if (emailProvider             !== undefined) { sets.push('email_provider=?');                vals.push(String(emailProvider || 'none')) }
     // Solo se actualiza la API key si llega un valor no vacío y sin enmascarar (evita borrarla al guardar el placeholder).
     if (emailApiKey               !== undefined && emailApiKey !== '' && !emailApiKey.includes('***')) { sets.push('email_api_key=?'); vals.push(emailApiKey) }
