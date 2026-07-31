@@ -549,6 +549,8 @@ async function createOrGetSocialConvo(accId, agId, lookupCol, lookupVal, guestNa
   try { require('../services/subscriptions').incrementConversation(accId) } catch {}
   // Aviso por correo de "chat nuevo" (1 vez) a quien lo activó en su perfil.
   try { require('../services/emailNotify').onNewChat(accId, { convId: id, guestName, channelType }) } catch {}
+  // Notificación WEB de "chat nuevo" (con botón "Ir al chat") a la cuenta.
+  try { socket.emit(accId, 'conv:new', { accId, agId, convId: id, guestName, channelType }) } catch {}
   return id
 }
 
