@@ -3,18 +3,24 @@ const pool   = require('../db')
 const socket = require('../services/socket')
 const { parseJ, uid } = require('../utils')
 const modulesSvc = require('../services/modules')
+const subs = require('../services/subscriptions')
 
-// Módulos efectivos de una cuenta: override de la cuenta → preset del tipo → todos.
+// Módulos efectivos de una cuenta: override de la cuenta → preset del PLAN (familia
+// CRM/Agente o fase del Gratuito) → preset del tipo → todos.
 async function effectiveModules(accId, accModulesRaw) {
-  let typeModules = null
+  let layerModules = null
   try {
-    const [[sub]] = await pool.query('SELECT account_type_id FROM account_subscriptions WHERE account_id=?', [accId])
-    if (sub?.account_type_id) {
-      const [[t]] = await pool.query('SELECT modules FROM account_types WHERE id=?', [sub.account_type_id])
-      typeModules = t?.modules ?? null
+    const sub = await subs.getSubscription(accId)
+    if (sub) {
+      const st = subs.effectivePlanState(sub)
+      if (Array.isArray(st.modules)) layerModules = st.modules            // plan por familia / fase Gratuito
+      else if (sub.accountTypeId) {
+        const [[t]] = await pool.query('SELECT modules FROM account_types WHERE id=?', [sub.accountTypeId])
+        layerModules = t?.modules ?? null                                 // preset del tipo (compat)
+      }
     }
   } catch { /* sin suscripción → solo override de cuenta o todos */ }
-  return modulesSvc.resolveModules(accModulesRaw, typeModules)
+  return modulesSvc.resolveModules(accModulesRaw, layerModules)
 }
 
 const mapAgent = a => ({

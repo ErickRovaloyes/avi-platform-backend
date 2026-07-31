@@ -295,6 +295,8 @@ async function appendMessageCore(accId, agId, convId, body) {
       delete lv._recontact_stopped
       if (lv._case_status === 'closed') delete lv._case_status
       await pool.query('UPDATE conversations SET local_vars=? WHERE id=? AND account_id=?', [JSON.stringify(lv), convId, accId])
+      // Métrica de facturación por contactos: contacto distinto con actividad en el ciclo.
+      if (lv.contact_id) { try { require('../services/subscriptions').markContactActive(accId, lv.contact_id) } catch {} }
     } catch { /* non-critical */ }
   }
 

@@ -1351,6 +1351,49 @@ app.use('/api',                recontactRoutes)
      )`,
     // Precio mensual del plan (para MRR / ingresos por plan en el dashboard comercial).
     "ALTER TABLE subscription_plans ADD COLUMN monthly_price DECIMAL(10,2) DEFAULT 0",
+    // ── Planes de pago por familia (CRM/Agente) escalados por CONTACTOS mensuales ──
+    // family: 'agente' | 'crm' | 'free'. contact_limit: tope de contactos del ciclo (0/null = ilimitado).
+    // price_cop: precio base en pesos (el USD se calcula con la tasa viva). ai_enabled: si el plan da IA.
+    // modules: preset de módulos del plan (JSON array; null = deriva de la familia). is_custom_contact:
+    // tarifa "CUSTOM" (contactar ventas, sin checkout).
+    "ALTER TABLE subscription_plans ADD COLUMN family VARCHAR(20)",
+    "ALTER TABLE subscription_plans ADD COLUMN contact_limit INT DEFAULT 0",
+    "ALTER TABLE subscription_plans ADD COLUMN price_cop DECIMAL(12,2) DEFAULT 0",
+    "ALTER TABLE subscription_plans ADD COLUMN ai_enabled TINYINT(1) DEFAULT 1",
+    "ALTER TABLE subscription_plans ADD COLUMN modules JSON",
+    "ALTER TABLE subscription_plans ADD COLUMN is_custom_contact TINYINT(1) DEFAULT 0",
+    // Consumo por contactos + estado del Plan Gratuito + datos de cobro recurrente (pasarela).
+    "ALTER TABLE account_subscriptions ADD COLUMN contact_count_current_period INT DEFAULT 0",
+    "ALTER TABLE account_subscriptions ADD COLUMN plan_family VARCHAR(20)",
+    "ALTER TABLE account_subscriptions ADD COLUMN free_started_at BIGINT",
+    "ALTER TABLE account_subscriptions ADD COLUMN free_phase VARCHAR(12)",
+    "ALTER TABLE account_subscriptions ADD COLUMN gateway VARCHAR(20)",
+    "ALTER TABLE account_subscriptions ADD COLUMN stripe_customer_id VARCHAR(80)",
+    "ALTER TABLE account_subscriptions ADD COLUMN stripe_subscription_id VARCHAR(80)",
+    "ALTER TABLE account_subscriptions ADD COLUMN wompi_payment_source_id VARCHAR(80)",
+    "ALTER TABLE account_subscriptions ADD COLUMN next_charge_at BIGINT",
+    "ALTER TABLE account_subscriptions ADD COLUMN currency VARCHAR(8)",
+    "ALTER TABLE account_subscriptions ADD COLUMN charge_amount_cop DECIMAL(12,2)",
+    "ALTER TABLE account_subscriptions ADD COLUMN charge_amount_usd DECIMAL(12,2)",
+    // Contactos DISTINTOS con actividad por ciclo (métrica de facturación por contactos).
+    `CREATE TABLE IF NOT EXISTS subscription_contact_activity (
+       account_id   VARCHAR(50) NOT NULL,
+       contact_id   VARCHAR(50) NOT NULL,
+       period_start BIGINT NOT NULL,
+       created_at   BIGINT,
+       PRIMARY KEY (account_id, contact_id, period_start),
+       INDEX idx_sca_period (account_id, period_start)
+     )`,
+    // Credenciales de pasarela A NIVEL PLATAFORMA (cobro de AVI al dueño) + tasa FX cacheada.
+    "ALTER TABLE platform_settings ADD COLUMN wompi_public_key VARCHAR(200)",
+    "ALTER TABLE platform_settings ADD COLUMN wompi_private_key VARCHAR(200)",
+    "ALTER TABLE platform_settings ADD COLUMN wompi_events_secret VARCHAR(200)",
+    "ALTER TABLE platform_settings ADD COLUMN wompi_mode VARCHAR(20) DEFAULT 'production'",
+    "ALTER TABLE platform_settings ADD COLUMN stripe_secret_key VARCHAR(200)",
+    "ALTER TABLE platform_settings ADD COLUMN stripe_publishable_key VARCHAR(200)",
+    "ALTER TABLE platform_settings ADD COLUMN stripe_webhook_secret VARCHAR(200)",
+    "ALTER TABLE platform_settings ADD COLUMN fx_usd_cop DECIMAL(12,4)",
+    "ALTER TABLE platform_settings ADD COLUMN fx_updated_at BIGINT",
     // Datos del onboarding inteligente de la Demo (para métricas + generación de IA).
     "ALTER TABLE demo_registrations ADD COLUMN company VARCHAR(150)",
     "ALTER TABLE demo_registrations ADD COLUMN country VARCHAR(80)",

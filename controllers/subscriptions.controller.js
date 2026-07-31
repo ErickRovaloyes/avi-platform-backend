@@ -68,9 +68,12 @@ const createPlan = async (req, res) => {
   const b = req.body || {}; const now = Date.now(); const id = 'plan_' + uid()
   try {
     await pool.query(
-      `INSERT INTO subscription_plans (id,name,monthly_conversation_limit,is_custom_limit,grace_period_days,monthly_price,sort_order,created_at,updated_at)
-       VALUES (?,?,?,?,?,?,?,?,?)`,
-      [id, b.name || 'Nuevo plan', n(b.monthlyConversationLimit, 0), b.isCustomLimit ? 1 : 0, n(b.gracePeriodDays, 5), n(b.monthlyPrice, 0), n(b.sortOrder, 0), now, now]
+      `INSERT INTO subscription_plans (id,name,monthly_conversation_limit,is_custom_limit,grace_period_days,monthly_price,sort_order,
+         family,contact_limit,price_cop,ai_enabled,modules,is_custom_contact,created_at,updated_at)
+       VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`,
+      [id, b.name || 'Nuevo plan', n(b.monthlyConversationLimit, 0), b.isCustomLimit ? 1 : 0, n(b.gracePeriodDays, 5), n(b.monthlyPrice, 0), n(b.sortOrder, 0),
+       b.family || null, n(b.contactLimit, 0), n(b.priceCop, 0), b.aiEnabled === false ? 0 : 1,
+       Array.isArray(b.modules) ? JSON.stringify(b.modules) : null, b.isCustomContact ? 1 : 0, now, now]
     )
     res.json({ id })
   } catch (err) { console.error('[createPlan]', err); res.status(500).json({ error: 'Error interno' }) }
@@ -78,11 +81,17 @@ const createPlan = async (req, res) => {
 const updatePlan = async (req, res) => {
   if (!requireSA(req, res)) return
   const { id } = req.params; const b = req.body || {}
-  const map = { name: 'name', monthlyConversationLimit: 'monthly_conversation_limit', isCustomLimit: 'is_custom_limit', gracePeriodDays: 'grace_period_days', monthlyPrice: 'monthly_price', sortOrder: 'sort_order' }
+  const map = {
+    name: 'name', monthlyConversationLimit: 'monthly_conversation_limit', isCustomLimit: 'is_custom_limit',
+    gracePeriodDays: 'grace_period_days', monthlyPrice: 'monthly_price', sortOrder: 'sort_order',
+    family: 'family', contactLimit: 'contact_limit', priceCop: 'price_cop', aiEnabled: 'ai_enabled', isCustomContact: 'is_custom_contact',
+  }
+  const boolKeys = new Set(['isCustomLimit', 'aiEnabled', 'isCustomContact'])
   const sets = [], vals = []
   for (const [k, col] of Object.entries(map)) {
-    if (b[k] !== undefined) { sets.push(`${col}=?`); vals.push(k === 'isCustomLimit' ? (b[k] ? 1 : 0) : b[k]) }
+    if (b[k] !== undefined) { sets.push(`${col}=?`); vals.push(boolKeys.has(k) ? (b[k] ? 1 : 0) : b[k]) }
   }
+  if (b.modules !== undefined) { sets.push('modules=?'); vals.push(Array.isArray(b.modules) ? JSON.stringify(b.modules) : null) }
   if (!sets.length) return res.json({ ok: true })
   sets.push('updated_at=?'); vals.push(Date.now(), id)
   try { await pool.query(`UPDATE subscription_plans SET ${sets.join(',')} WHERE id=?`, vals); res.json({ ok: true }) }
@@ -113,6 +122,8 @@ const getAccountSubscription = async (req, res) => {
   try {
     const sub = await subs.getSubscription(accId)
     const limit = sub ? subs.effectiveMonthlyLimit(sub) : null
+    // Estado efectivo del plan por familia (módulos/IA/tope de contactos) + uso de contactos.
+    const planState = sub ? subs.effectivePlanState(sub) : null
     // Uso de canales (cuenta entre todos los agentes) para la pestaña Cuenta.
     const channelUsage = { webchat: 0, whatsapp: 0, test: 0, messenger: 0, instagram: 0 }
     try {
@@ -122,14 +133,17 @@ const getAccountSubscription = async (req, res) => {
         for (const c of chs) if (channelUsage[c.type] != null) channelUsage[c.type]++
       }
     } catch {}
-    res.json({ subscription: sub, effectiveMonthlyLimit: limit, channelUsage })
+    res.json({
+      subscription: sub, effectiveMonthlyLimit: limit, channelUsage,
+      planState, contactCount: sub?.contactCount ?? 0, contactLimit: planState?.contactLimit ?? 0,
+    })
   } catch (err) { console.error('[getAccountSubscription]', err); res.status(500).json({ error: 'Error interno' }) }
 }
 const assign = async (req, res) => {
   if (!requireSA(req, res)) return
   const { accId } = req.params
-  const { accountTypeId, subscriptionPlanId, customMonthlyLimit } = req.body || {}
-  try { res.json(await subs.assignSubscription(accId, { accountTypeId, subscriptionPlanId, customMonthlyLimit })) }
+  const { accountTypeId, subscriptionPlanId, customMonthlyLimit, planFamily } = req.body || {}
+  try { res.json(await subs.assignSubscription(accId, { accountTypeId, subscriptionPlanId, customMonthlyLimit, planFamily })) }
   catch (err) { console.error('[assign]', err); res.status(500).json({ error: 'Error interno' }) }
 }
 // Acciones rápidas del superadmin sobre la suscripción de una cuenta.

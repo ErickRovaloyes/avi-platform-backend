@@ -984,7 +984,10 @@ const aiNodes = [
           // Límite de respuestas IA por chat (Demo): NO se envía nada al contacto;
           // el gate ya desactivó la IA en la conversación. Solo se registra.
           if (gate.disableAi) {
-            logDebug(ctx, 'flow_run', `🚫 IA desactivada en este chat: alcanzó el límite de ${gate.max} respuestas IA`, { reason: gate.reason })
+            const why = gate.reason === 'plan_no_ai' ? 'el plan (CRM/Gratuito) no incluye Agente IA'
+              : gate.reason === 'contact_limit' ? 'se alcanzó el tope de contactos del plan'
+              : `alcanzó el límite de ${gate.max} respuestas IA`
+            logDebug(ctx, 'flow_run', `🚫 IA desactivada en este chat: ${why}`, { reason: gate.reason })
             ctx._suppressDefaultNext = true
             return
           }
