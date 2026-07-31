@@ -125,12 +125,17 @@ function fmtDate(value, preset = 'long') {
 async function setAssignedTo(ctx, assignee) {
   await store.updateConvo(ctx.accId, ctx.agId, ctx.convId, { assignedTo: assignee })
   if (!assignee?.id) return
-  // Notificación WEB (in-app) al asesor asignado por el flujo — mismo evento targeted que
-  // la asignación manual (controllers/conversations.controller). Antes solo llegaba el correo.
+  // Notificación WEB (in-app) al asesor asignado por el flujo. Se emite al ROOM de la
+  // cuenta con el id + email del asignado; el navegador filtra por "soy yo" (id o email).
+  // Esto es robusto aunque el id de miembro del asesor difiera de su sesión activa (por eso
+  // antes solo llegaba el correo, que se identifica por email, y no la web).
   try {
-    const [[c]] = await require('../db').query('SELECT guest_name, preview FROM conversations WHERE id=? AND account_id=?', [ctx.convId, ctx.accId])
-    require('../services/socket').emitToMember(assignee.id, 'conv:assigned', {
+    const pool = require('../db')
+    const [[c]] = await pool.query('SELECT guest_name, preview FROM conversations WHERE id=? AND account_id=?', [ctx.convId, ctx.accId])
+    const [[m]] = await pool.query('SELECT email FROM members WHERE account_id=? AND id=?', [ctx.accId, assignee.id])
+    require('../services/socket').emit(ctx.accId, 'conv:assigned', {
       accId: ctx.accId, agId: ctx.agId, convId: ctx.convId,
+      assigneeId: assignee.id, assigneeEmail: m?.email || null,
       guestName: c?.guest_name || assignee.name || 'Conversación',
       preview: c?.preview || '', assignedBy: 'El flujo',
     })

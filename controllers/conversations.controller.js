@@ -232,8 +232,12 @@ const updateConvo = async (req, res) => {
     const assignee = req.body.assignedTo
     if (assignee && assignee.id && assignee.id !== req.user?.id) {
       const [[c]] = await pool.query('SELECT guest_name, preview FROM conversations WHERE id=? AND account_id=?', [convId, accId])
-      socket.emitToMember(assignee.id, 'conv:assigned', {
+      const [[m]] = await pool.query('SELECT email FROM members WHERE account_id=? AND id=?', [accId, assignee.id])
+      // Se emite al room de la cuenta con id+email del asignado; el navegador filtra por
+      // "soy yo" (id o email) → robusto aunque el id de miembro difiera de la sesión activa.
+      socket.emit(accId, 'conv:assigned', {
         accId, agId, convId,
+        assigneeId: assignee.id, assigneeEmail: m?.email || null,
         guestName:  c?.guest_name || 'Conversación',
         preview:    c?.preview || '',
         assignedBy: req.user?.name || 'Un compañero',
