@@ -658,5 +658,18 @@ const deleteCardLink = async (req, res) => {
   catch (err) { res.status(500).json({ error: 'Error interno' }) }
 }
 
+// Acción de ticket (deal de pipeline o tarea CRM) sobre una conversación. La usan el
+// nodo de flujo del NAVEGADOR (webchat/test) y el inbox; el motor backend llama al
+// servicio directamente. Misma lógica compartida: services/tickets.js.
+const ticketAction = async (req, res) => {
+  const { accId } = req.params
+  const { convId, ...opts } = req.body || {}
+  if (!convId) return res.status(400).json({ error: 'Falta convId' })
+  try {
+    const r = await require('../services/tickets').applyTicketAction(accId, convId, opts)
+    res.json(r)
+  } catch (err) { res.status(400).json({ error: err.message || 'No se pudo aplicar la acción' }) }
+}
+
 module.exports = { listNotes, createNote, deleteNote, listTasks, createTask, updateTask, deleteTask, listActivity, kpis, logActivity, classifyConversations, previewExecutiveSummary, sendExecutiveSummary, pipelineVelocity, retention, copilotAsk, platformAsk, detectOpportunities, leadScores, qaRun, qaReview,
-  listTaskSchedules, createTaskSchedule, updateTaskSchedule, deleteTaskSchedule, listCardLinks, createCardLink, deleteCardLink, advisorMetrics }
+  listTaskSchedules, createTaskSchedule, updateTaskSchedule, deleteTaskSchedule, listCardLinks, createCardLink, deleteCardLink, advisorMetrics, ticketAction }

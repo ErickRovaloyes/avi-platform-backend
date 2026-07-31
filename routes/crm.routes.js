@@ -20,6 +20,9 @@ router.post('/accounts/:accId/crm/task-schedules',      authMiddleware, ctrl.cre
 router.put('/accounts/:accId/crm/task-schedules/:id',   authMiddleware, ctrl.updateTaskSchedule)
 router.delete('/accounts/:accId/crm/task-schedules/:id', authMiddleware, ctrl.deleteTaskSchedule)
 
+// Acción de ticket (deal o tarea) sobre una conversación — nodo de flujo + inbox
+router.post('/accounts/:accId/crm/ticket-action',       authMiddleware, ctrl.ticketAction)
+
 // Relaciones entre tickets/deals
 router.get('/accounts/:accId/crm/card-links',           authMiddleware, ctrl.listCardLinks)
 router.post('/accounts/:accId/crm/card-links',          authMiddleware, ctrl.createCardLink)

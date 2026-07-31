@@ -111,10 +111,29 @@ const crmNodes = [
     },
   },
   {
-    type: 'crm_pipeline_move', category: 'crm', label: 'Pipeline: mover',
+    // Administra el "ticket" de la conversación: tarjeta de pipeline (deal) o tarea del
+    // CRM. Acciones: crear / mover / cerrar. Reutiliza services/tickets.js (misma lógica
+    // que el inbox y el motor del navegador). Nodos viejos → tipo 'deal', acción 'mover'.
+    type: 'crm_pipeline_move', category: 'crm', label: 'Administrar ticket',
     async exec(node, ctx) {
-      logDebug(ctx, 'flow_run', '📊 Mover en pipeline', { pipelineId: node.data?.pipeline_id, stageId: node.data?.stage_id })
-      ctx.variables._pipeline_move = { pipelineId: node.data?.pipeline_id, stageId: node.data?.stage_id }
+      const d = node.data || {}
+      const tipo = d.tipo || 'deal'
+      const accion = d.accion || 'mover'
+      const opts = {
+        tipo, accion,
+        pipelineId: d.pipeline_id || null,
+        stageId: d.stage_id || null,
+        title: interpolate(d.titulo || '', ctx.variables),
+        value: interpolate(d.valor || '', ctx.variables),
+        estado: d.estado || 'open',
+        assigneeId: d.asignar_a || null,
+      }
+      if (opts.assigneeId) { const m = (ctx.account?.members || []).find(x => x.id === opts.assigneeId); if (m) opts.assigneeName = m.name }
+      try {
+        const r = await require('../../services/tickets').applyTicketAction(ctx.accId, ctx.convId, opts)
+        ctx.variables._ticket_action = r
+        logDebug(ctx, 'flow_run', `🎫 Ticket: ${accion} ${tipo}`, r)
+      } catch (e) { logDebug(ctx, 'error', `✗ Ticket no aplicado: ${e.message}`, {}) }
     },
   },
 ]
