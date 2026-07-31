@@ -35,30 +35,44 @@ async function loadBrand() {
   } catch { return { name: 'AVI Asistente', logo: '' } }
 }
 
-// Tarjeta HTML del correo de notificación (title + líneas + acento de color).
-function cardHtml({ emoji, title, lines = [], accent = '#0b8a4f', brand }) {
+// URL de la app (para el botón "Ir al chat" de los correos). Misma base que usa el
+// checkout de facturación (PUBLIC_URL). El enlace abre el chat exacto en la bandeja.
+function appBaseUrl() {
+  return (process.env.PUBLIC_URL || process.env.BASE_URL || 'https://platform.aviasistente.com').replace(/\/$/, '')
+}
+function chatLink(agId, convId) {
+  if (!agId || !convId) return ''
+  return `${appBaseUrl()}/?conv=${encodeURIComponent(convId)}&agent=${encodeURIComponent(agId)}`
+}
+
+// Tarjeta HTML del correo de notificación (title + líneas + acento de color + botón opcional).
+function cardHtml({ emoji, title, lines = [], accent = '#0b8a4f', brand, linkUrl, linkLabel }) {
   const logo = brand?.logo ? `<img src="${esc(brand.logo)}" alt="" style="max-height:40px;margin:0 auto 12px;display:block;">` : ''
   const body = lines.map(l => `<p style="margin:0 0 10px;font-size:14px;color:#444;line-height:1.5;">${l}</p>`).join('')
+  const btn = linkUrl
+    ? `<div style="margin-top:16px;"><a href="${esc(linkUrl)}" style="display:inline-block;padding:11px 22px;background:${esc(accent)};color:#fff;text-decoration:none;border-radius:9px;font-size:14px;font-weight:700;">${esc(linkLabel || '💬 Ir al chat')}</a></div>`
+    : ''
   return `<!doctype html><html><body style="margin:0;background:#f4f6f8;font-family:Segoe UI,Roboto,Helvetica,Arial,sans-serif;">
     <div style="max-width:480px;margin:0 auto;padding:30px 20px;">
       <div style="background:#fff;border-radius:14px;padding:26px 24px;box-shadow:0 2px 10px rgba(0,0,0,.06);border-top:4px solid ${esc(accent)};">
         ${logo}
         <h1 style="margin:0 0 14px;font-size:18px;color:#111;">${esc(emoji)} ${esc(title)}</h1>
         ${body}
+        ${btn}
       </div>
       <p style="text-align:center;font-size:11px;color:#aab;margin-top:14px;">${esc(brand?.name || 'AVI Asistente')}</p>
     </div></body></html>`
 }
 
 // Envía a una lista de miembros [{email, notif_prefs}] filtrando por su preferencia.
-async function sendToMembers(members, type, { subject, emoji, title, lines, accent }) {
+async function sendToMembers(members, type, { subject, emoji, title, lines, accent, linkUrl, linkLabel }) {
   const cfg = await loadEmailConfig()
   if (!isConfigured(cfg)) return
   const targets = (members || []).filter(m => m?.email && emailOn(m.notif_prefs, type))
   if (!targets.length) return
   const brand = await loadBrand()
-  const html = cardHtml({ emoji, title, lines, accent, brand })
-  const text = `${title}\n\n${(lines || []).map(l => String(l).replace(/<[^>]+>/g, '')).join('\n')}`
+  const html = cardHtml({ emoji, title, lines, accent, brand, linkUrl, linkLabel })
+  const text = `${title}\n\n${(lines || []).map(l => String(l).replace(/<[^>]+>/g, '')).join('\n')}${linkUrl ? `\n\nIr al chat: ${linkUrl}` : ''}`
   for (const m of targets) {
     try { await sendEmail({ to: m.email, cfg, subject, html, text }) }
     catch (e) { console.warn('[emailNotify send]', e.message) }
@@ -78,7 +92,7 @@ function throttled(key, ms) {
 // ── Eventos ──────────────────────────────────────────────────────────────────
 
 // Chat nuevo (1 vez): avisa a los miembros activos que activaron "Chat nuevo → Correo".
-async function onNewChat(accId, { convId, guestName, channelType } = {}) {
+async function onNewChat(accId, { convId, agId, guestName, channelType } = {}) {
   try {
     const [members] = await pool.query("SELECT email, notif_prefs FROM members WHERE account_id=? AND status<>'inactive'", [accId])
     await sendToMembers(members, 'new_chat', {
@@ -89,18 +103,21 @@ async function onNewChat(accId, { convId, guestName, channelType } = {}) {
         'Ábrela en tu bandeja de AVI para atenderla.',
       ],
       accent: '#3b82f6',
+      linkUrl: chatLink(agId, convId),
     })
   } catch (e) { console.warn('[emailNotify newChat]', e.message) }
 }
 
 // Conversación asignada / transferida a un asesor concreto.
-async function onAssigned(accId, { convId, assigneeId, guestName, assignedBy } = {}) {
+async function onAssigned(accId, { convId, agId, assigneeId, guestName, assignedBy } = {}) {
   if (!assigneeId) return
   if (throttled(`assign:${convId}:${assigneeId}`, 5 * 60000)) return
   try {
     const [members] = await pool.query('SELECT email, notif_prefs FROM members WHERE account_id=? AND id=?', [accId, assigneeId])
     if (!members.length) return
-    if (!guestName) { try { const [[c]] = await pool.query('SELECT guest_name FROM conversations WHERE id=? AND account_id=?', [convId, accId]); guestName = c?.guest_name } catch {} }
+    if (!guestName || !agId) {
+      try { const [[c]] = await pool.query('SELECT guest_name, agent_id FROM conversations WHERE id=? AND account_id=?', [convId, accId]); guestName = guestName || c?.guest_name; agId = agId || c?.agent_id } catch {}
+    }
     await sendToMembers(members, 'transfer', {
       subject: `👤 Se te asignó un chat: ${guestName || 'cliente'}`,
       emoji: '👤', title: 'Conversación asignada a ti',
@@ -109,6 +126,7 @@ async function onAssigned(accId, { convId, assigneeId, guestName, assignedBy } =
         'Ábrela en tu bandeja de AVI para continuar la atención.',
       ],
       accent: '#7c6fff',
+      linkUrl: chatLink(agId, convId),
     })
   } catch (e) { console.warn('[emailNotify assigned]', e.message) }
 }

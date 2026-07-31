@@ -141,7 +141,7 @@ async function setAssignedTo(ctx, assignee) {
     })
   } catch { /* no romper el flujo por la notificación */ }
   // Aviso por CORREO al asesor asignado (si lo activó en su perfil).
-  try { require('../services/emailNotify').onAssigned(ctx.accId, { convId: ctx.convId, assigneeId: assignee.id, assignedBy: 'El flujo' }) } catch {}
+  try { require('../services/emailNotify').onAssigned(ctx.accId, { convId: ctx.convId, agId: ctx.agId, assigneeId: assignee.id, assignedBy: 'El flujo' }) } catch {}
 }
 
 module.exports = { interpolate, logDebug, sendBotMsg, getVars, setVarBoth, resolveVar, safeJson, fmtDate, setAssignedTo }

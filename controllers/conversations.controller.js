@@ -243,7 +243,7 @@ const updateConvo = async (req, res) => {
         assignedBy: req.user?.name || 'Un compañero',
       })
       // Aviso por correo al asignado (si activó "Transferencia a asesor → Correo").
-      try { require('../services/emailNotify').onAssigned(accId, { convId, assigneeId: assignee.id, guestName: c?.guest_name, assignedBy: req.user?.name }) } catch {}
+      try { require('../services/emailNotify').onAssigned(accId, { convId, agId, assigneeId: assignee.id, guestName: c?.guest_name, assignedBy: req.user?.name }) } catch {}
     }
 
     res.json({ ok: true, aiLimitBlocked })
@@ -548,7 +548,7 @@ async function createOrGetSocialConvo(accId, agId, lookupCol, lookupVal, guestNa
   // Suma 1 al consumo de conversaciones de la suscripción (límites demo/mensuales).
   try { require('../services/subscriptions').incrementConversation(accId) } catch {}
   // Aviso por correo de "chat nuevo" (1 vez) a quien lo activó en su perfil.
-  try { require('../services/emailNotify').onNewChat(accId, { convId: id, guestName, channelType }) } catch {}
+  try { require('../services/emailNotify').onNewChat(accId, { convId: id, agId, guestName, channelType }) } catch {}
   // Notificación WEB de "chat nuevo" (con botón "Ir al chat") a la cuenta.
   try { socket.emit(accId, 'conv:new', { accId, agId, convId: id, guestName, channelType }) } catch {}
   return id
