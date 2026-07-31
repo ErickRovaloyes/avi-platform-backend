@@ -2,7 +2,7 @@
 const pool = require('../db')
 const { sign } = require('../auth')
 const { parseJ } = require('../utils')
-const { loadEmailConfig, isConfigured } = require('../services/email')
+const { loadEmailConfig, isConfigured, sendEmail } = require('../services/email')
 const { issueCode, verifyCode } = require('../services/verifyCodes')
 
 // Valida credenciales y arma la sesión (super admin o miembro). Devuelve la
@@ -277,4 +277,23 @@ const saveMyNotifPrefs = async (req, res) => {
   } catch (err) { res.status(500).json({ error: 'Error interno' }) }
 }
 
-module.exports = { login, verify2fa, resend2fa, switchAccount, impersonate, refreshSession, updateMyProfile, getMyNotifPrefs, saveMyNotifPrefs }
+// Envía un correo de prueba al propio usuario (botón "Probar notificación" del perfil).
+// Sirve para verificar que el envío por correo funciona de punta a punta.
+const notifTestEmail = async (req, res) => {
+  const to = String(req.user?.email || '').trim()
+  if (!to) return res.status(400).json({ error: 'Tu usuario no tiene un correo asociado' })
+  try {
+    const cfg = await loadEmailConfig()
+    if (!isConfigured(cfg)) return res.status(400).json({ error: 'El correo de la plataforma aún no está configurado (Super Panel → Correo).' })
+    const r = await sendEmail({
+      to, cfg,
+      subject: '🔔 Prueba de notificación — AVI',
+      html: '<div style="font-family:Segoe UI,Arial,sans-serif;padding:22px;"><h2 style="color:#0b8a4f;margin:0 0 10px;">✓ Notificaciones por correo activas</h2><p style="color:#444;font-size:14px;">Si recibes este mensaje, tus notificaciones por correo funcionan correctamente. Actívalas por tipo en tu perfil.</p></div>',
+      text: 'Notificaciones por correo activas. Si recibes este mensaje, funcionan.',
+    })
+    if (!r.ok) return res.status(502).json({ error: r.error || 'No se pudo enviar el correo' })
+    res.json({ ok: true })
+  } catch (err) { res.status(500).json({ error: 'Error interno' }) }
+}
+
+module.exports = { login, verify2fa, resend2fa, switchAccount, impersonate, refreshSession, updateMyProfile, getMyNotifPrefs, saveMyNotifPrefs, notifTestEmail }

@@ -12,5 +12,6 @@ router.post('/refresh',         authMiddleware, ctrl.refreshSession)
 router.put('/me',               authMiddleware, ctrl.updateMyProfile)
 router.get('/me/notif-prefs',   authMiddleware, ctrl.getMyNotifPrefs)
 router.put('/me/notif-prefs',   authMiddleware, ctrl.saveMyNotifPrefs)
+router.post('/me/notif-test-email', authMiddleware, ctrl.notifTestEmail)
 
 module.exports = router
