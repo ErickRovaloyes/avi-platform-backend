@@ -124,8 +124,19 @@ function fmtDate(value, preset = 'long') {
 // Actualiza el assignedTo de la conversación activa
 async function setAssignedTo(ctx, assignee) {
   await store.updateConvo(ctx.accId, ctx.agId, ctx.convId, { assignedTo: assignee })
-  // Aviso por correo al asesor asignado por el flujo (si lo activó en su perfil).
-  try { if (assignee?.id) require('../services/emailNotify').onAssigned(ctx.accId, { convId: ctx.convId, assigneeId: assignee.id, guestName: assignee.guestName, assignedBy: 'El flujo' }) } catch {}
+  if (!assignee?.id) return
+  // Notificación WEB (in-app) al asesor asignado por el flujo — mismo evento targeted que
+  // la asignación manual (controllers/conversations.controller). Antes solo llegaba el correo.
+  try {
+    const [[c]] = await require('../db').query('SELECT guest_name, preview FROM conversations WHERE id=? AND account_id=?', [ctx.convId, ctx.accId])
+    require('../services/socket').emitToMember(assignee.id, 'conv:assigned', {
+      accId: ctx.accId, agId: ctx.agId, convId: ctx.convId,
+      guestName: c?.guest_name || assignee.name || 'Conversación',
+      preview: c?.preview || '', assignedBy: 'El flujo',
+    })
+  } catch { /* no romper el flujo por la notificación */ }
+  // Aviso por CORREO al asesor asignado (si lo activó en su perfil).
+  try { require('../services/emailNotify').onAssigned(ctx.accId, { convId: ctx.convId, assigneeId: assignee.id, assignedBy: 'El flujo' }) } catch {}
 }
 
 module.exports = { interpolate, logDebug, sendBotMsg, getVars, setVarBoth, resolveVar, safeJson, fmtDate, setAssignedTo }
