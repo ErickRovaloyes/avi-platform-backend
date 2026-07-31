@@ -14,7 +14,7 @@ const pool = require('../db')
 const { uid } = require('../utils')
 const { chat } = require('./aiClient')
 const { generateAccountPrompt } = require('../controllers/promptGenerator.controller')
-const { buildResponseFlowNodes } = require('./accountProvision')
+const { provisionStarterAgent } = require('./accountProvision')
 
 const clean = s => String(s || '').trim()
 
@@ -129,36 +129,9 @@ async function provisionDemoAgent(accId, d, discoveryText = '') {
   } catch { masterPrompt = null }
   if (!masterPrompt) masterPrompt = buildMasterPrompt(d, discoveryText)
 
-  // 2) Variable {{respuesta_ia}} (nombre canónico que usa el flujo).
-  const varId = 'var_' + uid()
-  await pool.query(
-    'INSERT INTO variables (id,account_id,name,type,default_value,description,is_system) VALUES (?,?,?,?,?,?,?)',
-    [varId, accId, 'respuesta_ia', 'local', '', 'Respuesta generada por el asistente IA', 0]
-  )
-
-  // 3) Flujo "Generar respuesta con asistente IA" (mismo que el super admin).
-  const flowId = 'flow_' + uid()
-  const startNode = 'n_ai_' + uid()
-  const nodes = buildResponseFlowNodes(varId, startNode)
-  await pool.query(
-    'INSERT INTO flows (id,account_id,name,`trigger`,start_node_id,nodes,created_at) VALUES (?,?,?,?,?,?,?)',
-    [flowId, accId, 'Generar respuesta con asistente IA', 'manual', startNode, JSON.stringify(nodes), Date.now()]
-  )
-
-  // 4) Agente con el prompt activo en DeepSeek V4 Flash + canal Webchat activo.
-  const agentId = 'ag_' + uid()
-  const webchatId = 'lnk_' + uid()
-  const prompts = [{
-    id: 'pr_' + uid(), name: `Prompt Maestro · ${iaName}`,
-    content: masterPrompt, isActive: true, provider: 'deepseek', model: 'deepseek-v4-flash',
-  }]
-  const channels = [{ id: webchatId, type: 'webchat', name: 'Webchat', status: 'active', config: {}, createdAt: Date.now() }]
-  await pool.query(
-    'INSERT INTO agents (id,account_id,name,status,system_prompt,model,welcome_message,prompts,channels,rag,ai_tool_ids,fallback_flow_id) VALUES (?,?,?,?,?,?,?,?,?,?,?,?)',
-    [agentId, accId, iaName, 'active', masterPrompt, 'deepseek-v4-flash',
-     `¡Hola! Soy ${iaName}. ¿En qué puedo ayudarte?`,
-     JSON.stringify(prompts), JSON.stringify(channels), JSON.stringify({ enabled: false, files: [] }), '[]', flowId]
-  )
+  // Aprovisiona el "agente IA de inicio" completo (variable + flujos Generador y
+  // transferir_a_asesor + herramienta + agente deepseek + webchat) con el prompt maestro.
+  const { agentId, webchatId } = await provisionStarterAgent(accId, { agentName: iaName, prompt: masterPrompt })
   return { agentId, webchatLink: webchatId, iaName, masterPrompt }
 }
 

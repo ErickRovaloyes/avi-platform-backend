@@ -1,7 +1,7 @@
 'use strict'
 const pool = require('../db')
 const { uid, parseJ } = require('../utils')
-const { provisionDefaultAgent } = require('../services/accountProvision')
+const { provisionDefaultAgent, provisionStarterAgent } = require('../services/accountProvision')
 const { extractFileText } = require('./promptGenerator.controller')
 const { sendEmail, renderCodeEmail, DEFAULT_EMAIL_TEMPLATES } = require('../services/email')
 
@@ -438,6 +438,11 @@ const createAccount = async (req, res) => {
       'INSERT INTO roles (id,account_id,name,is_system,permissions) VALUES (?,?,?,0,?)',
       ['role_agent_' + uid(), id, 'Agente', '{"inbox":true,"agents":false,"channels":false,"crm":true,"pipeline":true,"config":false,"admins":false,"flows":false,"variables":false,"tools":false,"knowledge":false}']
     )
+    // Aprovisiona el "agente IA de inicio" (variable respuesta_ia + flujos Generador y
+    // transferir_a_asesor + herramienta + agente deepseek + canal webchat) con un prompt
+    // genérico, para que la cuenta quede lista para chatear por webchat. Best-effort.
+    try { await provisionStarterAgent(id, { agentName: name }) }
+    catch (e) { console.warn('[provision starter]', e.message) }
     res.json({ id })
   } catch (err) {
     console.error('[POST ACCOUNT SA]', err)

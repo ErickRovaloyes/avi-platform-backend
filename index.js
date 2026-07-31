@@ -101,6 +101,7 @@ const metaPagesRoutes     = require('./routes/metaPages.routes')
 const optimizerRoutes     = require('./routes/promptOptimizer.routes')
 const recontactRoutes     = require('./routes/recontact.routes')
 const billingRoutes       = require('./routes/billing.routes')
+const flowTemplatesRoutes = require('./routes/flowTemplates.routes')
 const promptGenRoutes     = require('./routes/promptGenerator.routes')
 const promptHistoryRoutes = require('./routes/promptHistory.routes')
 const mediaRoutes         = require('./routes/media.routes')
@@ -180,6 +181,7 @@ app.use('/api',                metaPagesRoutes)
 app.use('/api',                optimizerRoutes)
 app.use('/api',                recontactRoutes)
 app.use('/api',                billingRoutes)
+app.use('/api',                flowTemplatesRoutes)
 
 // ── Auto-migrate DB columns added after initial schema ────────────────────────
 ;(async () => {
@@ -1436,6 +1438,20 @@ app.use('/api',                billingRoutes)
     "ALTER TABLE members ADD COLUMN notif_prefs JSON",
     // Marca de "recordatorio de tarea por vencer ya enviado" (idempotencia del worker).
     "ALTER TABLE crm_tasks ADD COLUMN due_reminded_at BIGINT",
+    // Biblioteca GLOBAL de plantillas de flujos (creadas por el super admin; instalables
+    // por cualquier dueño de cuenta desde la pestaña Flujos).
+    `CREATE TABLE IF NOT EXISTS flow_templates (
+       id            VARCHAR(50) PRIMARY KEY,
+       name          VARCHAR(150) NOT NULL,
+       description   TEXT,
+       category      VARCHAR(60),
+       \`trigger\`     VARCHAR(30) DEFAULT 'manual',
+       start_node_id VARCHAR(80),
+       nodes         JSON,
+       created_by    VARCHAR(100),
+       created_at    BIGINT,
+       updated_at    BIGINT
+     )`,
   ]
   for (const sql of migrations) {
     try { await pool.query(sql) } catch (e) { /* column exists or unsupported */ }
