@@ -514,9 +514,10 @@ async function tick() {
         if (s.status === 'grace' && s.grace_until && now > s.grace_until) {
           await downgradeToFree(s.account_id, 'month2'); continue
         }
-        // Renovación vencida con pasarela y sin cobro confirmado (el webhook confirma en la
-        // Etapa 3) → abre 5 días de gracia. Los planes asignados a mano (sin pasarela) no se tocan.
-        if (s.gateway && s.next_charge_at && now > s.next_charge_at && s.status === 'active') {
+        // Renovación vencida en WOMPI sin cobro aprobado (el cobro lo intenta el worker de
+        // platformBilling; si declina, aquí abrimos 5 días de gracia). Stripe se rige por sus
+        // webhooks (invoice.payment_failed → gracia); los planes a mano (sin pasarela) no se tocan.
+        if (s.gateway === 'wompi' && s.next_charge_at && now > s.next_charge_at && s.status === 'active') {
           const until = now + 5 * DAY
           await pool.query("UPDATE account_subscriptions SET status='grace', grace_until=?, updated_at=? WHERE id=?", [until, now, s.id])
           socket.emit(s.account_id, 'subscription:alert', { accId: s.account_id, kind: 'renewal_grace', graceUntil: until })

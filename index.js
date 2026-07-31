@@ -1498,6 +1498,8 @@ app.use('/api',                billingRoutes)
   try { require('./services/crmTaskSchedules').startWorker() } catch (e) { console.warn('[task schedules] worker no iniciado:', e.message) }
 
   try { require('./services/emailNotify').startWorker() } catch (e) { console.warn('[email notify] worker no iniciado:', e.message) }
+
+  try { require('./services/platformBilling').startWorker() } catch (e) { console.warn('[platform billing] worker no iniciado:', e.message) }
   // Procesador del outbox de eventos de dominio (Core Booking Engine, Fase 0)
   try { require('./core/events').startProcessor() } catch (e) { console.warn('[events] no iniciado:', e.message) }
   // Worker que libera los holds (bloqueos de asiento) vencidos — Cine (Fase 3)

@@ -6,6 +6,7 @@
  */
 const subs = require('../services/subscriptions')
 const fx = require('../services/fx')
+const platformBilling = require('../services/platformBilling')
 
 // Catálogo de planes de pago (por familia) con precio COP + USD vivo. Público para
 // cualquier miembro autenticado (lo ve el dueño en su panel de planes).
@@ -51,4 +52,42 @@ const getMySubscription = async (req, res) => {
   } catch (err) { console.error('[billing subscription]', err); res.status(500).json({ error: 'Error interno' }) }
 }
 
-module.exports = { getCatalog, getFx, getMySubscription }
+// Pasarelas disponibles + datos para el widget de Wompi (llave pública + token de aceptación).
+const getGateways = async (req, res) => {
+  try {
+    const avail = await platformBilling.availability()
+    const out = { availability: avail }
+    if (avail.wompi) out.wompi = await platformBilling.wompiInit()
+    res.json(out)
+  } catch (err) { console.error('[billing gateways]', err); res.status(500).json({ error: 'Error interno' }) }
+}
+
+// Inicia el checkout de un plan. Stripe → { url } para redirigir; Wompi → cobra la tarjeta
+// tokenizada (cardToken del widget) y activa la suscripción. Solo el dueño de la cuenta.
+const checkout = async (req, res) => {
+  const accId = req.user?.accountId
+  if (!accId) return res.status(400).json({ error: 'Sin cuenta activa' })
+  const { planId, gateway, cardToken, acceptanceToken } = req.body || {}
+  if (!planId || !gateway) return res.status(400).json({ error: 'Faltan datos del checkout' })
+  try {
+    const r = await platformBilling.startCheckout(accId, { planId, gateway, email: req.user?.email, cardToken, acceptanceToken })
+    res.json(r)
+  } catch (err) { res.status(400).json({ error: err.message || 'No se pudo iniciar el pago' }) }
+}
+
+// Webhook de Stripe (sin auth; firma verificada sobre el cuerpo CRUDO req.rawBody).
+const webhookStripe = async (req, res) => {
+  try {
+    const out = await platformBilling.handleStripeWebhook(req.rawBody, req.headers['stripe-signature'])
+    if (!out.ok) console.warn('[stripe webhook]', out.reason || 'rechazado')
+    res.json({ received: true })
+  } catch (e) { console.error('[stripe webhook]', e.message); res.status(200).json({ received: true }) }
+}
+
+// Webhook de Wompi (sin auth; firma en el cuerpo del evento).
+const webhookWompi = async (req, res) => {
+  try { await platformBilling.handleWompiWebhook(req.body || {}) } catch (e) { console.warn('[wompi webhook]', e.message) }
+  res.json({ received: true })
+}
+
+module.exports = { getCatalog, getFx, getMySubscription, getGateways, checkout, webhookStripe, webhookWompi }
