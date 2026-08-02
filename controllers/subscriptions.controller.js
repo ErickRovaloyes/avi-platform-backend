@@ -19,15 +19,16 @@ const createType = async (req, res) => {
   const id = 'atype_' + uid()
   try {
     const modulesVal = Array.isArray(b.modules) ? JSON.stringify(b.modules) : null
+    const freeStagesVal = sanitizeStages(b.freeStages)
     await pool.query(
       `INSERT INTO account_types
         (id,name,max_webchat_channels,max_whatsapp_channels,max_test_channels,max_messenger_channels,max_instagram_channels,
-         is_demo,demo_days_duration,demo_max_conversations,demo_max_ai_responses_per_conversation,cms_storage_mb,sort_order,modules,created_at,updated_at)
-       VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`,
+         is_demo,demo_days_duration,demo_max_conversations,demo_max_ai_responses_per_conversation,cms_storage_mb,sort_order,modules,free_stages,created_at,updated_at)
+       VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`,
       [id, b.name || 'Nuevo tipo', n(b.maxWebchatChannels, 1), n(b.maxWhatsappChannels, 1), n(b.maxTestChannels, 1),
        n(b.maxMessengerChannels, 0), n(b.maxInstagramChannels, 0), b.isDemo ? 1 : 0,
        n(b.demoDaysDuration, 7), n(b.demoMaxConversations, 100), n(b.demoMaxAiResponsesPerConversation, 30),
-       n(b.cmsStorageMb, 500), n(b.sortOrder, 0), modulesVal, now, now]
+       n(b.cmsStorageMb, 500), n(b.sortOrder, 0), modulesVal, freeStagesVal, now, now]
     )
     res.json({ id })
   } catch (err) { console.error('[createType]', err); res.status(500).json({ error: 'Error interno' }) }
@@ -48,6 +49,8 @@ const updateType = async (req, res) => {
   }
   // Preset de módulos del tipo (array vacío o no-array → null = todos los módulos).
   if (b.modules !== undefined) { sets.push('modules=?'); vals.push(Array.isArray(b.modules) && b.modules.length ? JSON.stringify(b.modules) : null) }
+  // Etapas del Plan Gratuito (array de {label,days,aiEnabled,moduleSet,contactLimit,hardBlock}; null = defaults).
+  if (b.freeStages !== undefined) { sets.push('free_stages=?'); vals.push(sanitizeStages(b.freeStages)) }
   if (!sets.length) return res.json({ ok: true })
   sets.push('updated_at=?'); vals.push(Date.now(), id)
   try { await pool.query(`UPDATE account_types SET ${sets.join(',')} WHERE id=?`, vals); res.json({ ok: true }) }
@@ -292,6 +295,21 @@ const getCommercial = async (req, res) => {
 }
 
 function n(v, d) { return v === undefined || v === null || v === '' ? d : Number(v) }
+
+// Normaliza las etapas del Plan Gratuito a un array limpio (o null = usar defaults).
+const MODULE_SETS = new Set(['all', 'crm', 'crm_basic'])
+function sanitizeStages(raw) {
+  if (!Array.isArray(raw) || !raw.length) return null
+  const out = raw.map((s, i) => ({
+    label: String(s?.label || `Etapa ${i + 1}`).slice(0, 80),
+    days: Math.max(0, Number(s?.days) || 0),
+    aiEnabled: !!s?.aiEnabled,
+    moduleSet: MODULE_SETS.has(s?.moduleSet) ? s.moduleSet : 'all',
+    contactLimit: Math.max(0, Number(s?.contactLimit) || 0),
+    hardBlock: !!s?.hardBlock,
+  }))
+  return JSON.stringify(out)
+}
 
 module.exports = {
   listTypes, createType, updateType, deleteType,

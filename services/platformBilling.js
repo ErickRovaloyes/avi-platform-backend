@@ -59,9 +59,19 @@ async function setGatewayDetails(accId, patch) {
   await pool.query(`UPDATE account_subscriptions SET ${sets.join(',')} WHERE account_id=?`, vals)
 }
 
+// Tipo de cuenta por defecto según la familia del plan de pago: Agente → 'Starter', CRM → 'CRM'.
+// Le da a la cuenta de pago sus límites de canales (el super admin puede cambiarlo luego). El plan
+// por familia sigue definiendo IA/módulos/contactos. Devuelve null si el tipo no existe.
+async function accountTypeIdForFamily(family) {
+  const name = family === 'agente' ? 'Starter' : family === 'crm' ? 'CRM' : null
+  if (!name) return null
+  try { return (await subs.listTypes()).find(t => t.name === name)?.id || null } catch { return null }
+}
+
 // Activa/renueva la suscripción de pago de una cuenta con un plan por familia.
 async function activate(accId, plan, details = {}) {
-  await subs.assignSubscription(accId, { subscriptionPlanId: plan.id, planFamily: plan.family, resetPeriod: true })
+  const accountTypeId = await accountTypeIdForFamily(plan.family)
+  await subs.assignSubscription(accId, { subscriptionPlanId: plan.id, planFamily: plan.family, accountTypeId, resetPeriod: true })
   await setGatewayDetails(accId, {
     gateway: details.gateway, currency: details.currency,
     amountCop: details.amountCop ?? null, amountUsd: details.amountUsd ?? null,

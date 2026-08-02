@@ -105,6 +105,12 @@ async function seedDefaults() {
       }
     }
   } catch (e) { /* columnas family aún no migradas: se seedean en el próximo arranque */ }
+
+  // Etapas por defecto del Plan Gratuito en el/los tipos Demo (idempotente; también en
+  // instalaciones existentes que aún no las tenían). Requiere la columna free_stages.
+  try {
+    await pool.query('UPDATE account_types SET free_stages=? WHERE is_demo=1 AND free_stages IS NULL', [JSON.stringify(DEFAULT_FREE_STAGES)])
+  } catch (e) { /* columna free_stages aún no migrada: se aplica en el próximo arranque */ }
 }
 
 // ── Lecturas ──────────────────────────────────────────────────────────────────
@@ -128,6 +134,8 @@ const mapType = t => ({
   sortOrder: t.sort_order,
   // Preset de módulos del tipo (null = todos). Espejo en services/modules.js.
   modules: parseJ(t.modules, null),
+  // Etapas del Plan Gratuito configuradas en este tipo (null = usa DEFAULT_FREE_STAGES).
+  freeStages: parseJ(t.free_stages, null),
 })
 const mapPlan = p => ({
   id: p.id, name: p.name, monthlyConversationLimit: p.monthly_conversation_limit,
@@ -147,19 +155,51 @@ const ALL_MODULES       = ['inbox', 'crm', 'channels', 'campaigns', 'flows', 'ai
 const CRM_MODULES       = ['inbox', 'crm', 'channels', 'campaigns', 'flows', 'calendars', 'metrics', 'teamchat'] // sin ai_agents/knowledge
 const CRM_BASIC_MODULES = ['inbox', 'crm', 'channels']
 const FAMILY_MODULES    = { agente: ALL_MODULES, crm: CRM_MODULES }
+const MODULE_SETS       = { all: ALL_MODULES, crm: CRM_MODULES, crm_basic: CRM_BASIC_MODULES }
 
-// Estado efectivo del Plan Gratuito según antigüedad (free_started_at) o forzado a
-// "mes 2" cuando una cuenta de pago cae a Gratuito.
+// Etapas por defecto del Plan Gratuito (cuando el tipo Demo no define free_stages). Cortes
+// ACUMULATIVOS por `days`; `days:0` en la última = indefinida. moduleSet ∈ {all,crm,crm_basic}.
+const DEFAULT_FREE_STAGES = [
+  { label: 'Agente IA completo', days: 15, aiEnabled: true,  moduleSet: 'all',       contactLimit: 400,  hardBlock: false },
+  { label: 'CRM completo',       days: 15, aiEnabled: false, moduleSet: 'crm',       contactLimit: 1000, hardBlock: false },
+  { label: 'CRM limitado',       days: 0,  aiEnabled: false, moduleSet: 'crm_basic', contactLimit: 100,  hardBlock: true  },
+]
+// Claves de fase estables (compat) por índice de etapa; la última siempre 'month2' (sentinela
+// que el worker fuerza y que dispara el bloqueo duro del tramo final).
+const PHASE_KEYS = ['agente_starter', 'crm_starter', 'month2']
+
+// Suma de días de las etapas FINITAS (todas menos la última) → cuándo se entra al tramo final.
+function finiteFreeDays(stages) {
+  const s = (Array.isArray(stages) && stages.length) ? stages : DEFAULT_FREE_STAGES
+  return s.slice(0, -1).reduce((a, st) => a + (Number(st.days) || 0), 0)
+}
+
+// Estado efectivo del Plan Gratuito según antigüedad (free_started_at) leyendo las etapas
+// configuradas en el tipo (sub.type.freeStages) o forzado a la última cuando free_phase='month2'
+// (cuenta de pago que cae a Gratuito, o el worker que ya avanzó el tramo).
 function freeState(sub) {
+  const stages = (Array.isArray(sub?.type?.freeStages) && sub.type.freeStages.length)
+    ? sub.type.freeStages : DEFAULT_FREE_STAGES
+  const lastIdx = stages.length - 1
+  const phaseKey = i => (i >= lastIdx ? 'month2' : (PHASE_KEYS[i] || `stage${i + 1}`))
+  const build = (i) => {
+    const st = stages[Math.min(Math.max(i, 0), lastIdx)] || {}
+    return {
+      phase: phaseKey(i), stageIndex: i, label: st.label || `Etapa ${i + 1}`,
+      modules: MODULE_SETS[st.moduleSet] || ALL_MODULES,
+      aiEnabled: !!st.aiEnabled, contactLimit: Number(st.contactLimit) || 0,
+      hardBlock: !!st.hardBlock, days: Number(st.days) || 0, stages,
+    }
+  }
+  if (sub?.freePhase === 'month2') return build(lastIdx)
   const started = sub?.freeStartedAt || sub?.currentPeriodStart || Date.now()
   const ageDays = (Date.now() - started) / DAY
-  if (sub?.freePhase === 'month2' || ageDays >= 30) {
-    return { phase: 'month2', modules: CRM_BASIC_MODULES, aiEnabled: false, contactLimit: 100, hardBlock: true }
+  let acc = 0
+  for (let i = 0; i < lastIdx; i++) {
+    acc += Number(stages[i].days) || 0
+    if (ageDays < acc) return build(i)
   }
-  if (ageDays >= 15) {
-    return { phase: 'crm_starter', modules: CRM_MODULES, aiEnabled: false, contactLimit: 1000, hardBlock: false }
-  }
-  return { phase: 'agente_starter', modules: ALL_MODULES, aiEnabled: true, contactLimit: 400, hardBlock: false }
+  return build(lastIdx)
 }
 
 // Estado efectivo del plan de una suscripción: { family, modules, aiEnabled, contactLimit,
@@ -228,8 +268,10 @@ async function assignSubscription(accId, { accountTypeId, subscriptionPlanId, cu
 
   const periodStart = resetCycle ? now : (existing?.current_period_start || now)
   const periodEnd   = resetCycle ? (now + 30 * DAY) : (existing?.current_period_end || (now + 30 * DAY))
-  const demoStart   = isDemo ? (existing?.demo_started_at || now) : null
-  const demoExpires = isDemo ? (demoStart + (type.demo_days_duration || 7) * DAY) : null
+  // Un plan por familia 'free' NO usa el vencimiento a 7 días del tipo Demo: las 3 etapas
+  // (por free_started_at) reemplazan al contador. Solo un tipo Demo "puro" fija demo_expires_at.
+  const demoStart   = (isDemo && !isFree) ? (existing?.demo_started_at || now) : null
+  const demoExpires = (isDemo && !isFree) ? (demoStart + (type.demo_days_duration || 7) * DAY) : null
   const stayFree    = isFree && existing?.plan_family === 'free'
   const freeStarted = isFree ? (stayFree ? (existing?.free_started_at || now) : now) : null
   const freePhase   = isFree ? (stayFree ? (existing?.free_phase || null) : null) : null
@@ -495,6 +537,12 @@ async function maybeAlert(sub) {
 async function tick() {
   const now = Date.now()
   try {
+    // Etapas del Plan Gratuito por tipo (para calcular el corte del tramo final por config).
+    const stagesByType = {}
+    try {
+      const [types] = await pool.query('SELECT id, free_stages FROM account_types')
+      for (const t of types) stagesByType[t.id] = parseJ(t.free_stages, null)
+    } catch { /* columna free_stages aún no migrada */ }
     const [subs] = await pool.query('SELECT * FROM account_subscriptions')
     for (const s of subs) {
       const family = s.plan_family || null
@@ -502,10 +550,12 @@ async function tick() {
       // ── Planes por familia (CRM/Agente/Gratuito) ──
       if (family) {
         if (family === 'free') {
-          // Gratuito: al llegar a 30 días pasa a "mes 2" (100 contactos, sin IA) con un
-          // conteo fresco. No tiene ciclo de cobro; el tope de mes 2 no se reinicia.
+          // Gratuito: al superar la suma de días de las etapas finitas pasa al tramo final
+          // ("month2": 100 contactos por defecto, sin IA) con un conteo fresco. No tiene ciclo
+          // de cobro; el tope del tramo final no se reinicia.
           const started = s.free_started_at || s.current_period_start || now
-          if (s.free_phase !== 'month2' && (now - started) >= 30 * DAY) {
+          const finiteDays = finiteFreeDays(stagesByType[s.account_type_id])
+          if (s.free_phase !== 'month2' && (now - started) >= finiteDays * DAY) {
             await pool.query("UPDATE account_subscriptions SET free_phase='month2', contact_count_current_period=0, last_alert_threshold=0, updated_at=? WHERE id=?", [now, s.id])
           }
           continue
@@ -576,4 +626,5 @@ module.exports = {
   // Planes por familia + consumo por contactos.
   markContactActive, effectivePlanState, freeState, downgradeToFree,
   FAMILY_MODULES, ALL_MODULES, CRM_MODULES, CRM_BASIC_MODULES,
+  DEFAULT_FREE_STAGES, MODULE_SETS, finiteFreeDays,
 }

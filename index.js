@@ -1366,6 +1366,9 @@ app.use('/api',                flowTemplatesRoutes)
     "ALTER TABLE subscription_plans ADD COLUMN ai_enabled TINYINT(1) DEFAULT 1",
     "ALTER TABLE subscription_plans ADD COLUMN modules JSON",
     "ALTER TABLE subscription_plans ADD COLUMN is_custom_contact TINYINT(1) DEFAULT 0",
+    // Etapas configurables del Plan Gratuito (se guardan en el tipo Demo): array de 3 etapas
+    // { label, days, aiEnabled, moduleSet, contactLimit, hardBlock } — cortes acumulativos por days.
+    "ALTER TABLE account_types ADD COLUMN free_stages JSON",
     // Consumo por contactos + estado del Plan Gratuito + datos de cobro recurrente (pasarela).
     "ALTER TABLE account_subscriptions ADD COLUMN contact_count_current_period INT DEFAULT 0",
     "ALTER TABLE account_subscriptions ADD COLUMN plan_family VARCHAR(20)",
