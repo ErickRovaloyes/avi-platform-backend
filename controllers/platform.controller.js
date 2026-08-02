@@ -108,6 +108,7 @@ const getSettings = async (req, res) => {
           // Plantillas de correo (guardadas ∪ defaults) para el editor del Super Panel.
           emailTemplates: { login: { ...DEFAULT_EMAIL_TEMPLATES.login, ...(parseJ(r.email_templates, {})?.login || {}) }, signup: { ...DEFAULT_EMAIL_TEMPLATES.signup, ...(parseJ(r.email_templates, {})?.signup || {}) } },
           brandLogo: r.brand_logo || '',
+          brandLogoLight: r.brand_logo_light || '',
           brandFavicon: r.brand_favicon || '',
           brandName: r.brand_name || '',
           // Pasarelas de cobro de la PLATAFORMA (suscripciones). Los secretos solo se
@@ -163,7 +164,7 @@ const getSettings = async (req, res) => {
           signupVerifyEnabled: false,
           login2faEnabled: false,
           emailTemplates: { login: { ...DEFAULT_EMAIL_TEMPLATES.login }, signup: { ...DEFAULT_EMAIL_TEMPLATES.signup } },
-          brandLogo: '', brandFavicon: '', brandName: '',
+          brandLogo: '', brandLogoLight: '', brandFavicon: '', brandName: '',
           wompiPublicKey: '', hasWompiPrivateKey: false, hasWompiEventsSecret: false, wompiMode: 'production',
           stripePublishableKey: '', hasStripeSecretKey: false, hasStripeWebhookSecret: false,
           fxUsdCop: null, fxUpdatedAt: null,
@@ -188,15 +189,16 @@ const updateSettings = async (req, res) => {
     demoAdsEnabled, demoAdsHtml,
     emailProvider, emailApiKey, emailFrom, emailFromName, signupVerifyEnabled, login2faEnabled, emailTemplates,
     smtpHost, smtpPort, smtpUser, smtpPass, smtpSecure,
-    brandLogo, brandFavicon, brandName,
+    brandLogo, brandLogoLight, brandFavicon, brandName,
     wompiPublicKey, wompiPrivateKey, wompiEventsSecret, wompiMode,
     stripePublishableKey, stripeSecretKey, stripeWebhookSecret,
   } = req.body
   try {
     const sets = []; const vals = []
     if (emailTemplates !== undefined) { sets.push('email_templates=?'); vals.push(JSON.stringify(emailTemplates || {})) }
-    if (brandLogo    !== undefined) { sets.push('brand_logo=?');    vals.push(brandLogo || null) }
-    if (brandFavicon !== undefined) { sets.push('brand_favicon=?'); vals.push(brandFavicon || null) }
+    if (brandLogo      !== undefined) { sets.push('brand_logo=?');       vals.push(brandLogo || null) }
+    if (brandLogoLight !== undefined) { sets.push('brand_logo_light=?'); vals.push(brandLogoLight || null) }
+    if (brandFavicon   !== undefined) { sets.push('brand_favicon=?');    vals.push(brandFavicon || null) }
     if (brandName    !== undefined) { sets.push('brand_name=?');    vals.push(String(brandName || '').slice(0, 120) || null) }
     if (changeAgentModel          !== undefined) { sets.push('change_agent_model=?');           vals.push(changeAgentModel) }
     if (changeAgentDefaultLimit   !== undefined) { sets.push('change_agent_default_limit=?');   vals.push(changeAgentDefaultLimit) }
@@ -280,13 +282,15 @@ const updateSettings = async (req, res) => {
 // Public endpoint — returns only safe/public platform fields (no auth required)
 const getPublicIntegrations = async (req, res) => {
   try {
-    const [[r]] = await pool.query('SELECT meta_app_id, meta_config_id, media_max_size_mb, brand_logo, brand_favicon, brand_name FROM platform_settings WHERE id=1')
+    const [[r]] = await pool.query('SELECT meta_app_id, meta_config_id, media_max_size_mb, brand_logo, brand_logo_light, brand_favicon, brand_name FROM platform_settings WHERE id=1')
     res.json({
       metaAppId: r?.meta_app_id || '',
       metaConfigId: r?.meta_config_id || '',
       mediaMaxSizeMb: r?.media_max_size_mb || 30,
-      // Marca pública (para logo y favicon incluso antes de iniciar sesión).
+      // Marca pública (para logo y favicon incluso antes de iniciar sesión). brandLogo = fondo
+      // oscuro, brandLogoLight = fondo claro (el front elige según el tema activo).
       brandLogo: r?.brand_logo || '',
+      brandLogoLight: r?.brand_logo_light || '',
       brandFavicon: r?.brand_favicon || '',
       brandName: r?.brand_name || '',
     })

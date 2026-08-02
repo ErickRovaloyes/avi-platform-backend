@@ -193,6 +193,7 @@ app.use('/api',                flowTemplatesRoutes)
     "ALTER TABLE super_admins ADD COLUMN photo MEDIUMTEXT",
     // Marca de la plataforma (super admin): logo, favicon y nombre mostrado en la pestaña.
     "ALTER TABLE platform_settings ADD COLUMN brand_logo LONGTEXT",
+    "ALTER TABLE platform_settings ADD COLUMN brand_logo_light LONGTEXT",
     "ALTER TABLE platform_settings ADD COLUMN brand_favicon LONGTEXT",
     "ALTER TABLE platform_settings ADD COLUMN brand_name VARCHAR(120)",
     // Respuestas rápidas de audio: adjunto (data URL) y tipo del medio pre-guardado.
