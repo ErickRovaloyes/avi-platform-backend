@@ -202,6 +202,59 @@ function extractJson(text) {
   return null
 }
 
+// Extrae el valor de la clave "prompt" recorriendo el texto carácter a carácter (respetando
+// escapes), AUN CUANDO el JSON tenga saltos de línea/tabs sin escapar que rompen JSON.parse.
+// Causa raíz típica de que se guardara el JSON crudo como prompt en las cuentas nuevas/demo.
+function extractPromptField(text) {
+  const raw = String(text || '')
+  const keyPos = raw.search(/"prompt"\s*:/)
+  if (keyPos === -1) return ''
+  const colon = raw.indexOf(':', keyPos)
+  let i = raw.indexOf('"', colon + 1)
+  if (i === -1) return ''
+  i++ // primer carácter del valor de la cadena
+  let out = ''
+  for (; i < raw.length; i++) {
+    const ch = raw[i]
+    if (ch === '\\') {
+      const nx = raw[i + 1]
+      if (nx === 'n') out += '\n'
+      else if (nx === 't') out += '\t'
+      else if (nx === 'r') out += '\r'
+      else if (nx === '"') out += '"'
+      else if (nx === '\\') out += '\\'
+      else if (nx === '/') out += '/'
+      else if (nx === 'u') { out += String.fromCharCode(parseInt(raw.slice(i + 2, i + 6), 16) || 0); i += 4 }
+      else out += nx || ''
+      i++
+      continue
+    }
+    if (ch === '"') {
+      // ¿Es la comilla de cierre real? Lo siguiente (ignorando espacios) debe ser , o }
+      const rest = raw.slice(i + 1).replace(/^\s+/, '')
+      if (rest === '' || rest[0] === ',' || rest[0] === '}') break
+      out += '"' // comilla sin escapar DENTRO del texto → conservarla
+      continue
+    }
+    out += ch
+  }
+  return out.trim()
+}
+
+// Recupera el SYSTEM PROMPT de la respuesta del generador. Devuelve '' si es un envoltorio JSON
+// irrecuperable (para que el llamador use el fallback determinista en vez de guardar JSON crudo).
+function extractGeneratedPrompt(text) {
+  const raw = String(text || '').trim()
+  if (!raw) return ''
+  const obj = extractJson(raw)                                    // 1) JSON válido (o en ```json)
+  if (obj && typeof obj.prompt === 'string' && obj.prompt.trim()) return obj.prompt.trim()
+  const viaField = extractPromptField(raw)                        // 2) JSON malformado: rescatar "prompt"
+  if (viaField) return viaField
+  const looksJson = /^\s*[{[]/.test(raw) || /"prompt"\s*:/.test(raw)
+  if (!looksJson) return raw                                      // 3) texto plano (no era JSON) → úsalo
+  return ''                                                       // 4) envoltorio JSON irrecuperable
+}
+
 // ── Pick an API key for the configured generator model ──────────────────────
 
 async function pickAccountForProvider(accountId, provider) {
@@ -370,14 +423,17 @@ Genera ahora el system prompt completo, exhaustivo y fiel al documento, siguiend
     })
 
     const parsed = extractJson(aiText)
-    if (!parsed) {
-      return res.status(500).json({ error: 'La IA no devolvió un JSON válido', raw: aiText.slice(0, 500) })
+    // Recupera el prompt incluso si el JSON viene malformado (saltos de línea sin escapar).
+    const prompt = (parsed && typeof parsed.prompt === 'string' && parsed.prompt.trim())
+      ? parsed.prompt.trim() : extractGeneratedPrompt(aiText)
+    if (!prompt) {
+      return res.status(500).json({ error: 'La IA no devolvió un prompt válido', raw: aiText.slice(0, 500) })
     }
 
     res.json({
-      prompt: parsed.prompt || '',
-      summary: parsed.summary || '',
-      flows: Array.isArray(parsed.flows) ? parsed.flows : [],
+      prompt,
+      summary: parsed?.summary || '',
+      flows: Array.isArray(parsed?.flows) ? parsed.flows : [],
       docCharCount: docText.length,
       charsProcessed: docExcerpt.length,
       truncated,
@@ -617,12 +673,9 @@ Genera ahora el system prompt completo siguiendo la estructura base, las condici
       completionTokens: aiResult.usage?.completionTokens || 0,
       source: 'account-default-prompt',
     })
-    const parsed = extractJson(aiResult.text || '')
-    let prompt = parsed?.prompt || ''
-    // Si el modelo no devolvió JSON pero sí texto largo, úsalo tal cual.
-    if (!prompt && !parsed && typeof aiResult.text === 'string' && aiResult.text.trim().length > 120) {
-      prompt = aiResult.text.trim()
-    }
+    // Recupera el prompt del JSON (tolerante a saltos de línea sin escapar). NUNCA guarda el
+    // envoltorio JSON crudo: si es irrecuperable devuelve '' → el llamador usa el fallback.
+    const prompt = extractGeneratedPrompt(aiResult.text || '')
     return prompt && prompt.length > 80 ? prompt : null
   } catch (e) {
     console.warn('[generateAccountPrompt]', e.message)
@@ -633,5 +686,5 @@ Genera ahora el system prompt completo siguiendo la estructura base, las condici
 module.exports = {
   generateFromDoc, classifyChange, extractFileText, generateAccountPrompt,
   // Helpers reutilizables para otros generadores con IA (p. ej. diseño de flujos).
-  callAI, detectProvider, resolveProviderKey, extractJson,
+  callAI, detectProvider, resolveProviderKey, extractJson, extractGeneratedPrompt, extractPromptField,
 }
