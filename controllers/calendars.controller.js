@@ -160,6 +160,9 @@ const agenda = async (req, res) => {
         date: r.date, time: r.time, duration: Number(r.duration) || 30, status: r.status || 'pending',
         channel: r.channel || 'manual', convId: meta.conversationId || meta.convId || null,
         externalId: r.external_id || null, notes: r.notes || '',
+        // Asesor que atiende la cita (reparto del calendario o asignación manual).
+        assignedTo: parseJ(r.assigned_to, null),
+        assigneeName: parseJ(r.assigned_to, null)?.name || '',
       }
     })
     // Tareas con vencimiento (due_at) dentro del rango [from 00:00, to 23:59:59] en ms.

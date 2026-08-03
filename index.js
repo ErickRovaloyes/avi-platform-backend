@@ -107,6 +107,7 @@ const promptHistoryRoutes = require('./routes/promptHistory.routes')
 const mediaRoutes         = require('./routes/media.routes')
 const quickRepliesRoutes  = require('./routes/quickReplies.routes')
 const notificationsRoutes = require('./routes/notifications.routes')
+const flowAssistRoutes    = require('./routes/flowAssist.routes')
 const crmRoutes           = require('./routes/crm.routes')
 const dataTablesRoutes    = require('./routes/dataTables.routes')
 const contactsRoutes      = require('./routes/contacts.routes')
@@ -156,6 +157,7 @@ app.use('/api',                promptHistoryRoutes)
 app.use('/api',                mediaRoutes)
 app.use('/api',                quickRepliesRoutes)
 app.use('/api',                notificationsRoutes)
+app.use('/api',                flowAssistRoutes)
 app.use('/api',                crmRoutes)
 app.use('/api',                dataTablesRoutes)
 app.use('/api',                contactsRoutes)
@@ -1372,6 +1374,35 @@ app.use('/api',                flowTemplatesRoutes)
     // Etapas configurables del Plan Gratuito (se guardan en el tipo Demo): array de 3 etapas
     // { label, days, aiEnabled, moduleSet, contactLimit, hardBlock } — cortes acumulativos por days.
     "ALTER TABLE account_types ADD COLUMN free_stages JSON",
+    // Turno del reparto round-robin de asesores, por ámbito (un nodo de transferencia, un
+    // calendario…). Cada ámbito rota de forma independiente. El UPSERT sobre la PK hace el
+    // incremento atómico, así que dos conversaciones a la vez no caen en el mismo asesor.
+    `CREATE TABLE IF NOT EXISTS assignment_counters (
+       account_id VARCHAR(50) NOT NULL,
+       scope      VARCHAR(120) NOT NULL,
+       turn       INT DEFAULT 0,
+       updated_at BIGINT,
+       PRIMARY KEY (account_id, scope)
+     )`,
+    // Asesor asignado a una reserva (round-robin entre los asesores del calendario).
+    "ALTER TABLE calendar_bookings ADD COLUMN assigned_to JSON",
+    // Checkouts de suscripción de la PLATAFORMA. Wompi Payment Links no permite fijar la
+    // referencia, así que guardamos el link_id devuelto para casar el webhook con la cuenta
+    // y el plan cuando el cliente termina de pagar en la pasarela externa.
+    `CREATE TABLE IF NOT EXISTS platform_checkouts (
+       id          VARCHAR(50) PRIMARY KEY,
+       account_id  VARCHAR(50) NOT NULL,
+       plan_id     VARCHAR(50) NOT NULL,
+       gateway     VARCHAR(20),
+       link_id     VARCHAR(80),
+       reference   VARCHAR(80),
+       amount_cop  DECIMAL(12,2),
+       status      VARCHAR(20) DEFAULT 'pending',
+       created_at  BIGINT,
+       updated_at  BIGINT,
+       INDEX idx_pchk_link (link_id),
+       INDEX idx_pchk_acc (account_id, status)
+     )`,
     // Notificaciones de la campanita. Antes vivían SOLO en localStorage del navegador: se
     // perdían al limpiar caché, no se sincronizaban entre dispositivos y desaparecían al
     // recargar (el estado se inicializaba antes de conocer la cuenta). dedupe_key evita que

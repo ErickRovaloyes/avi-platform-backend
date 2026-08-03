@@ -44,4 +44,13 @@ const tool = async (req, res) => {
   } catch (e) { res.status(400).json({ error: e.message }) }
 }
 
-module.exports = { listTables, createTable, updateTable, deleteTable, listRows, createRow, updateRow, deleteRow, tool }
+// Proxy del NODO de flujo "Base de datos" para el motor del navegador (webchat/prueba).
+// Devuelve datos estructurados (no texto para la IA). Público igual que `tool`.
+const flowOp = async (req, res) => {
+  try {
+    const { op, params } = req.body || {}
+    res.json(await svc.flowOp(req.params.accId, op, params || {}))
+  } catch (e) { res.status(400).json({ error: e.message }) }
+}
+
+module.exports = { listTables, createTable, updateTable, deleteTable, listRows, createRow, updateRow, deleteRow, tool, flowOp }

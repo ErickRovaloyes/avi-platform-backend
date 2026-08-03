@@ -8,25 +8,90 @@ const pool = require('../../db')
 const { uid } = require('../../utils')
 const { interpolate, logDebug, sendBotMsg, setAssignedTo } = require('../common')
 const store = require('../store')
+const assignment = require('../../services/assignment')
+
+// Redacta con IA el mensaje de transferencia, usando el historial real de la conversación
+// para que reconozca el motivo del cliente en vez de soltar un texto genérico. Si no hay
+// API key o falla, devuelve null y el nodo usa el texto fijo configurado.
+async function draftTransferMessage(ctx, { assignee, fallback, extra } = {}) {
+  try {
+    const { chat, getApiKey, detectProvider } = require('../../services/aiClient')
+    const acc = ctx.account || {}
+    const model = acc.defaultPromptModel || 'gpt-4o-mini'
+    const provider = acc.defaultPromptProvider || detectProvider(model)
+    const apiKey = getApiKey(acc, provider)
+    if (!apiKey) return null
+
+    const [rows] = await pool.query(
+      "SELECT sender, content FROM messages WHERE conversation_id=? ORDER BY ts DESC LIMIT 10", [ctx.convId])
+    const history = rows.reverse()
+      .filter(r => r.content)
+      .map(r => ({ role: r.sender === 'user' ? 'user' : 'assistant', content: String(r.content).slice(0, 600) }))
+    if (!history.length) return null
+
+    const sys = `Eres el asistente virtual de ${acc.name || 'la empresa'}. Vas a TRANSFERIR esta conversación a ` +
+      `${assignee?.name ? `un asesor humano llamado ${assignee.name}` : 'un asesor humano'}. ` +
+      `Redacta UN SOLO mensaje breve (máximo 2 frases) para el cliente, en su mismo idioma y en el tono de la conversación, que: ` +
+      `(1) reconozca de forma concreta lo que el cliente venía pidiendo o el problema que planteó, y ` +
+      `(2) le avise de que un asesor humano continúa la atención. ` +
+      `No inventes datos, precios ni plazos. No te despidas ni firmes. Devuelve SOLO el texto del mensaje.` +
+      (extra ? `\nTen en cuenta esta indicación del negocio: "${String(extra).slice(0, 300)}"` : '')
+
+    const out = await chat({
+      provider, model, apiKey,
+      messages: [{ role: 'system', content: sys }, ...history],
+      maxTokens: 200, temperature: 0.5, signal: ctx._signal,
+    })
+    const text = typeof out === 'string' ? out.trim() : ''
+    return text && text.length > 3 ? text : null
+  } catch (e) {
+    logDebug(ctx, 'error', `No se pudo redactar el mensaje de transferencia con IA: ${e.message}`, {})
+    return null
+  }
+}
 
 const humanNodes = [
   {
     type: 'human_transfer', category: 'human', label: 'Transferir conversación',
     async exec(node, ctx) {
-      const msg = interpolate(node.data?.mensaje || '', ctx.variables)
+      const d = node.data || {}
+      // ── A quién se asigna ──
+      // Compat: los nodos antiguos solo tienen `asignar_a` (un miembro fijo).
+      const cfg = {
+        modo: d.asignar_modo || (d.asignar_a ? 'fijo' : 'ninguno'),
+        asignar_a: d.asignar_a,
+        equipoId: d.asignar_equipo,
+        miembros: d.asignar_miembros,
+        reparto: d.asignar_reparto || 'round_robin',
+      }
+      const scope = `transfer:${ctx.flowId || 'flow'}:${node.id || 'node'}`
+      const { assignees, all } = await assignment.pickAssignees(ctx.accId, cfg, ctx.account?.members || [], scope)
+      const assignee = assignees[0] || null
+
+      // ── Mensaje al cliente ──
+      // Con `mensaje_ia` lo redacta el Agente IA usando el contexto real de la conversación,
+      // en vez del texto fijo (que suena genérico cuando el cliente venía con un problema).
+      let msg = interpolate(d.mensaje || '', ctx.variables)
+      if (d.mensaje_ia) {
+        const draft = await draftTransferMessage(ctx, { assignee, fallback: msg, extra: d.mensaje })
+        if (draft) msg = draft
+      }
       if (msg.trim()) await sendBotMsg(ctx, msg)
-      if (node.data?.disable_ai !== false) {
+
+      if (d.disable_ai !== false) {
         await store.updateConvo(ctx.accId, ctx.agId, ctx.convId, { aiEnabled: false })
       }
-      const memberId = node.data?.asignar_a
-      let assignee = null
-      if (memberId) {
-        const members = ctx.account?.members || []
-        const m = members.find(x => x.id === memberId)
-        if (m) assignee = { id: m.id, name: m.name }
-      }
       if (assignee) await setAssignedTo(ctx, assignee)
-      logDebug(ctx, 'flow_run', `🙋 Transferido${assignee ? ' → ' + assignee.name : ''}`, { departamento: node.data?.departamento })
+      // "Todos a la vez": se asigna al primero (la conversación tiene un solo responsable)
+      // pero se avisa al resto para que cualquiera pueda entrar.
+      if (all && assignees.length > 1) {
+        for (const a of assignees.slice(1)) {
+          try { require('../../services/emailNotify').onAssigned(ctx.accId, { convId: ctx.convId, agId: ctx.agId, assigneeId: a.id, assignedBy: 'El flujo' }) } catch {}
+        }
+      }
+      logDebug(ctx, 'flow_run',
+        `🙋 Transferido${assignee ? ' → ' + assignee.name : ''}${all && assignees.length > 1 ? ` (+${assignees.length - 1} avisados)` : ''}`,
+        { departamento: d.departamento, modo: cfg.modo, reparto: cfg.reparto, redactadoPorIA: !!d.mensaje_ia })
     },
   },
   {

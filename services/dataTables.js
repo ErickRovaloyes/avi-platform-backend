@@ -186,7 +186,68 @@ async function toolCall(accId, fn, args = {}) {
   } catch (e) { return { text: `No se pudo completar la acción en la tabla: ${e.message}` } }
 }
 
+// ── Operaciones para el NODO DE FLUJO ────────────────────────────────────────
+// A diferencia de `toolCall` (que devuelve texto para que lo lea la IA), aquí se devuelven
+// datos ESTRUCTURADOS para guardarlos en variables y ramificar el flujo.
+// A diferencia de la IA, el nodo puede usar cualquier base de datos de la cuenta (no solo
+// las marcadas como `ai_enabled`), porque es el dueño quien lo configura explícitamente.
+async function resolveAnyTable(accId, tabla) {
+  const [rows] = await pool.query('SELECT * FROM data_tables WHERE account_id=?', [accId])
+  const list = rows.map(mapTable)
+  const q = norm(tabla)
+  return list.find(t => t.id === tabla) || list.find(t => norm(t.name) === q) || list.find(t => norm(t.name).includes(q)) || null
+}
+
+/**
+ * op: 'buscar' | 'agregar' | 'actualizar' | 'eliminar'
+ * params: { tabla, filtros:{}, valores:{}, limite }
+ * → { ok, found, count, row, rows, columns, text, error }
+ */
+async function flowOp(accId, op, params = {}) {
+  try {
+    const t = await resolveAnyTable(accId, params.tabla)
+    if (!t) return { ok: false, found: false, count: 0, rows: [], error: `No existe la base de datos "${params.tabla || ''}"` }
+    const columns = t.columns
+
+    if (op === 'agregar') {
+      const r = await createRow(accId, t.id, params.valores || {})
+      return { ok: true, found: true, count: 1, row: r.values, rows: [r.values], columns, text: rowToText(r.values, columns) }
+    }
+
+    const [raw] = await pool.query('SELECT * FROM data_table_rows WHERE table_id=? AND account_id=? ORDER BY created_at ASC LIMIT 5000', [t.id, accId])
+    const hasFilter = params.filtros && Object.keys(params.filtros).length > 0
+    const matches = raw.filter(r => !hasFilter || rowMatches(parseJ(r.values_json, {}), params.filtros, columns))
+
+    if (op === 'buscar') {
+      const limit = Math.min(50, Math.max(1, Number(params.limite) || 10))
+      const vals = matches.slice(0, limit).map(r => parseJ(r.values_json, {}))
+      return {
+        ok: true, found: vals.length > 0, count: matches.length,
+        row: vals[0] || null, rows: vals, columns,
+        text: vals.length ? vals.map(v => rowToText(v, columns)).join('\n') : '',
+      }
+    }
+
+    if (op === 'actualizar') {
+      if (!matches.length) return { ok: true, found: false, count: 0, rows: [], columns, text: '' }
+      const r = await updateRow(accId, t.id, matches[0].id, params.valores || {})
+      return { ok: true, found: true, count: 1, row: r.values, rows: [r.values], columns, text: rowToText(r.values, columns) }
+    }
+
+    if (op === 'eliminar') {
+      if (!matches.length) return { ok: true, found: false, count: 0, rows: [], columns, text: '' }
+      for (const m of matches) await pool.query('DELETE FROM data_table_rows WHERE id=?', [m.id])
+      return { ok: true, found: true, count: matches.length, rows: [], columns, text: `${matches.length} fila(s) eliminada(s)` }
+    }
+
+    return { ok: false, found: false, count: 0, rows: [], error: `Operación no reconocida: ${op}` }
+  } catch (e) {
+    return { ok: false, found: false, count: 0, rows: [], error: e.message }
+  }
+}
+
 module.exports = {
+  flowOp,
   listTables, getTable, createTable, updateTable, deleteTable,
   listRows, createRow, updateRow, deleteRow,
   publicConfig, toolCall,

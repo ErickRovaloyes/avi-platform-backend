@@ -6,6 +6,22 @@
 
 const { interpolate, logDebug, safeJson, fmtDate, setVarBoth } = require('../common')
 
+// "columna: valor" por línea → { columna: valor }, interpolando {{variables}}.
+// Se admite `=` como separador alternativo. Las líneas vacías se ignoran.
+function parsePairs(raw, vars) {
+  const out = {}
+  for (const line of String(raw || '').split('\n')) {
+    const s = line.trim()
+    if (!s) continue
+    const i = s.search(/[:=]/)
+    if (i < 1) continue
+    const k = s.slice(0, i).trim()
+    const v = interpolate(s.slice(i + 1).trim(), vars)
+    if (k) out[k] = v
+  }
+  return out
+}
+
 function getPath(obj, path) {
   if (!path) return obj
   return path.split('.').reduce((acc, k) => acc == null ? acc : acc[k], obj)
@@ -22,6 +38,48 @@ function setPath(obj, path, value) {
 }
 
 const dataNodes = [
+  {
+    // Lee y escribe en las BASES DE DATOS internas de la cuenta (Zona CRM → Bases de datos).
+    // Salidas: `success` cuando la operación encuentra/afecta filas, `error` cuando no.
+    type: 'data_table', category: 'data', label: 'Base de datos',
+    async exec(node, ctx) {
+      const d = node.data || {}
+      const op = d.operacion || 'buscar'
+      const tabla = interpolate(d.tabla || '', ctx.variables)
+      const filtros = parsePairs(d.filtros, ctx.variables)
+      const valores = parsePairs(d.valores, ctx.variables)
+
+      const svc = require('../../services/dataTables')
+      const r = await svc.flowOp(ctx.accId, op, { tabla, filtros, valores, limite: d.limite })
+
+      // Salida por la rama "error"; si no está conectada, el flujo se detiene aquí (no debe
+      // continuar por "success", que asumiría que sí hubo resultados).
+      const goError = () => {
+        if (node.connections?.error) ctx._nextOverride = node.connections.error
+        else ctx._suppressDefaultNext = true
+      }
+
+      if (!r.ok) {
+        logDebug(ctx, 'error', `✗ Base de datos: ${r.error}`, { operacion: op, tabla })
+        goError()
+        return
+      }
+      // Resultado en variables: el texto completo y, si hay fila, cada columna por su nombre.
+      if (d.variable_destino) await setVarBoth(ctx, d.variable_destino, r.text || '')
+      ctx.variables._db_found = !!r.found
+      ctx.variables._db_count = r.count
+      if (r.row && d.exponer_columnas !== false) {
+        for (const c of r.columns || []) {
+          if (r.row[c.key] !== undefined) ctx.variables[`db_${c.key}`] = r.row[c.key]
+        }
+      }
+      logDebug(ctx, 'flow_run',
+        `🗄 Base de datos · ${op} en "${tabla}" → ${r.found ? `${r.count} resultado(s)` : 'sin resultados'}`,
+        { filtros, valores: op === 'buscar' ? undefined : valores })
+      // Sin resultados sale por `error` para poder ramificar (p. ej. "no lo encontré").
+      if (!r.found) goError()
+    },
+  },
   {
     type: 'variable', category: 'data', label: 'Variable',
     async exec(node, ctx) {

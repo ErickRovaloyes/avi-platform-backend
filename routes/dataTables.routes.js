@@ -15,5 +15,7 @@ router.delete('/accounts/:accId/data-tables/:id/rows/:rowId', authMiddleware, ct
 
 // Proxy de la herramienta IA (público, igual que /scheduling/:accId/tool)
 router.post('/accounts/:accId/data-tables/tool',              ctrl.tool)
+// Proxy del nodo de flujo "Base de datos" (motor del navegador). También público.
+router.post('/accounts/:accId/data-tables/flow-op',           ctrl.flowOp)
 
 module.exports = router

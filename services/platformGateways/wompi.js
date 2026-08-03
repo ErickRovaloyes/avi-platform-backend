@@ -58,12 +58,29 @@ async function charge(cfg, { amountInCents, currency = 'COP', customerEmail, pay
   return { id: tx?.id || null, status: perAccount.normalizeStatus(tx?.status) }
 }
 
+// Crea un Payment Link (CHECKOUT ALOJADO de Wompi) para cobrar una suscripción. Es la vía
+// recomendada: el cliente paga en la pasarela externa de Wompi, con todos sus medios de pago
+// (tarjeta con 3D Secure, PSE, Nequi, Bancolombia…). Reutiliza el adaptador por-cuenta, que
+// ya implementa la llamada; solo hay que marcar el provider que espera su isEnabled().
+async function createPaymentLink(cfg, opts) {
+  return perAccount.createPaymentLink({ ...cfg, provider: 'wompi' }, opts)
+}
+
 // Verifica la firma del evento (con el secreto de eventos de la plataforma) y normaliza.
+// `paymentLinkId` es la clave para casar el pago con el checkout que lo originó (el Payment
+// Link no permite fijar nuestra propia referencia).
 function parseEvent(cfg, event) {
   if (!perAccount.verifyEvent({ eventsSecret: cfg.eventsSecret }, event)) return { ok: false, reason: 'bad signature' }
   const tx = event?.data?.transaction
   if (!tx) return { ok: false, reason: 'no transaction' }
-  return { ok: true, status: perAccount.normalizeStatus(tx.status), reference: tx.reference || null, transactionId: tx.id || null }
+  return {
+    ok: true,
+    status: perAccount.normalizeStatus(tx.status),
+    reference: tx.reference || null,
+    transactionId: tx.id || null,
+    paymentLinkId: tx.payment_link_id != null ? String(tx.payment_link_id) : null,
+    amountInCents: tx.amount_in_cents ?? null,
+  }
 }
 
-module.exports = { isEnabled, apiBase, testConnection, getAcceptanceToken, createPaymentSource, charge, parseEvent }
+module.exports = { isEnabled, apiBase, testConnection, getAcceptanceToken, createPaymentSource, charge, createPaymentLink, parseEvent }

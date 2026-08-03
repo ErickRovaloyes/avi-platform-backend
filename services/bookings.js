@@ -90,8 +90,24 @@ function mapBooking(r) {
     customerId: r.customer_id || null, partySize: r.party_size || 1,
     channel: r.channel || 'manual', status: r.status || 'pending',
     notes: r.notes || '', meta: parseJ(r.meta, {}), externalId: r.external_id || null,
+    // Asesor asignado a la cita ({ id, name }) — reparto round-robin del calendario.
+    assignedTo: parseJ(r.assigned_to, null),
     createdAt: r.created_at, updatedAt: r.updated_at,
   }
+}
+
+// Asesor que atiende la cita. La configuración vive en `calendar.appointment.asignacion`
+// ({ modo:'equipo'|'lista'|'fijo', equipoId, miembros[], reparto }) — mismo formato que el
+// nodo de transferencia, así que reutiliza services/assignment.js y su turno atómico.
+async function pickBookingAssignee(accId, calendar) {
+  const cfg = calendar?.appointment?.asignacion
+  if (!cfg || !cfg.modo || cfg.modo === 'ninguno') return null
+  try {
+    const assignment = require('./assignment')
+    const [members] = await pool.query('SELECT id, name, status FROM members WHERE account_id=?', [accId])
+    const { assignees } = await assignment.pickAssignees(accId, cfg, members, `booking:${calendar.id}`)
+    return assignees[0] || null
+  } catch { return null }
 }
 
 async function getCalendar(accId, calendarId) {
@@ -322,14 +338,19 @@ async function createBooking(accId, calendarId, data = {}, { validate = true, em
     const customerId = await findOrCreateCustomer(accId, {
       name: data.clientName, phone: data.clientPhone, email: data.clientEmail, profile: data.customerProfile,
     })
+    // Asesor que atiende: el indicado a mano o el que toque por reparto del calendario.
+    const assignee = data.assignedTo?.id
+      ? { id: data.assignedTo.id, name: data.assignedTo.name || '' }
+      : await pickBookingAssignee(accId, calendar)
     await pool.query(
       `INSERT INTO calendar_bookings
-         (id, account_id, calendar_id, date, time, duration, party_size, client_name, client_phone, client_email, customer_id, channel, status, notes, meta, external_id, created_at, updated_at)
-       VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`,
+         (id, account_id, calendar_id, date, time, duration, party_size, client_name, client_phone, client_email, customer_id, channel, status, notes, meta, external_id, assigned_to, created_at, updated_at)
+       VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`,
       [id, accId, calendarId, date, time, duration, partySize,
        data.clientName || '', data.clientPhone || '', data.clientEmail || '', customerId,
        data.channel || 'manual', status, data.notes || '',
-       JSON.stringify(data.meta || {}), data.externalId || null, ts, ts]
+       JSON.stringify(data.meta || {}), data.externalId || null,
+       assignee ? JSON.stringify(assignee) : null, ts, ts]
     )
     // Asignación según la estrategia del vertical.
     if (isCapacity) {
@@ -441,6 +462,11 @@ async function updateBooking(accId, bookingId, updates = {}) {
     if (updates[k] !== undefined) { sets.push(`${col}=?`); vals.push(updates[k]) }
   }
   if (updates.meta !== undefined) { sets.push('meta=?'); vals.push(JSON.stringify(updates.meta)) }
+  // Reasignar la cita a otro asesor (o quitar la asignación con null).
+  if (updates.assignedTo !== undefined) {
+    sets.push('assigned_to=?')
+    vals.push(updates.assignedTo?.id ? JSON.stringify({ id: updates.assignedTo.id, name: updates.assignedTo.name || '' }) : null)
+  }
   if (!sets.length) return getBooking(accId, bookingId)
   sets.push('updated_at=?'); vals.push(Date.now())
   vals.push(bookingId, accId)

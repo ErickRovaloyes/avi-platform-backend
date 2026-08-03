@@ -5,7 +5,11 @@
  * checkout y los cobros con los adaptadores de pasarela + el motor de suscripciones.
  *
  *   Stripe → Checkout Session (mode=subscription): recurrencia automática; confirma por webhook.
- *   Wompi  → payment source (tarjeta tokenizada): cobra el 1er mes y un worker los siguientes.
+ *   Wompi  → Payment Link (checkout ALOJADO): se redirige a la pasarela externa de Wompi y el
+ *            plan se activa cuando su webhook confirma la transacción. Sin tarjeta guardada no
+ *            hay cobro automático: al vencer el ciclo la cuenta entra en gracia y el dueño
+ *            renueva desde el panel. Las cuentas antiguas con payment source siguen cobrándose
+ *            solas con `chargeWompiRenewals`.
  */
 const pool = require('../db')
 const { uid } = require('../utils')
@@ -105,14 +109,24 @@ async function startCheckout(accId, { planId, gateway, email, cardToken, accepta
 
   if (gateway === 'wompi') {
     if (!wompi.isEnabled(cfg.wompi)) throw new Error('Wompi no está configurado')
-    if (!cardToken) throw new Error('Falta el token de la tarjeta')
-    const accept = acceptanceToken || await wompi.getAcceptanceToken(cfg.wompi)
-    const sourceId = await wompi.createPaymentSource(cfg.wompi, { token: cardToken, customerEmail: email, acceptanceToken: accept })
-    const reference = 'sub_' + uid() + uid()
-    const res = await wompi.charge(cfg.wompi, { amountInCents: Math.round(priceCop * 100), currency: 'COP', customerEmail: email, paymentSourceId: sourceId, reference })
-    if (res.status !== 'approved') return { gateway: 'wompi', ok: false, status: res.status }
-    await activate(accId, plan, { gateway: 'wompi', currency: 'COP', amountCop: priceCop, amountUsd: priceUsd, wompiPaymentSourceId: sourceId })
-    return { gateway: 'wompi', ok: true, status: 'approved' }
+    // CHECKOUT ALOJADO: se redirige a la pasarela externa de Wompi, donde el cliente paga con
+    // el medio que quiera (tarjeta con 3D Secure, PSE, Nequi, Bancolombia…). Antes se cobraba
+    // con un formulario de tarjeta propio sin autenticación, y el banco declinaba casi siempre.
+    // El plan se activa cuando llega el webhook con la transacción aprobada.
+    const link = await wompi.createPaymentLink(cfg.wompi, {
+      amountInCents: Math.round(priceCop * 100),
+      currency: 'COP',
+      name: `AVI ${plan.name}`,
+      description: `Suscripción mensual al plan ${plan.name} de AVI Asistente`,
+      redirectUrl: `${baseUrl()}/?billing=wompi`,
+    })
+    const now = Date.now()
+    await pool.query(
+      `INSERT INTO platform_checkouts (id, account_id, plan_id, gateway, link_id, amount_cop, status, created_at, updated_at)
+       VALUES (?,?,?,?,?,?,?,?,?)`,
+      ['pchk_' + uid(), accId, plan.id, 'wompi', link.linkId, priceCop, 'pending', now, now]
+    )
+    return { gateway: 'wompi', url: link.url }
   }
   throw new Error('Pasarela no soportada')
 }
@@ -156,13 +170,42 @@ async function handleStripeWebhook(rawBody, sigHeader) {
   return { ok: true, type }
 }
 
-// ── Webhook de Wompi (confirmación asíncrona; el cobro ya es síncrono) ─────────
+// ── Webhook de Wompi ──────────────────────────────────────────────────────────
+// Con el checkout alojado el pago ocurre FUERA de la plataforma, así que este webhook es la
+// fuente de verdad: al llegar la transacción aprobada se busca el checkout por payment_link_id
+// y se activa (o renueva) la suscripción. Idempotente: un checkout ya pagado se ignora.
 async function handleWompiWebhook(event) {
   const cfg = await loadConfig()
   if (!wompi.isEnabled(cfg.wompi)) return { ok: false }
   const parsed = wompi.parseEvent(cfg.wompi, event)
   if (!parsed.ok) return { ok: false, reason: parsed.reason }
-  return { ok: true, status: parsed.status } // reconciliación best-effort (el cobro se confirma en línea)
+  const now = Date.now()
+  try {
+    if (parsed.paymentLinkId) {
+      const [[chk]] = await pool.query('SELECT * FROM platform_checkouts WHERE link_id=? LIMIT 1', [parsed.paymentLinkId])
+      if (chk && chk.status !== 'approved') {
+        await pool.query('UPDATE platform_checkouts SET status=?, reference=?, updated_at=? WHERE id=?',
+          [parsed.status, parsed.reference || null, now, chk.id])
+        if (parsed.status === 'approved') {
+          const plan = await getPlan(chk.plan_id)
+          if (plan) {
+            const { rate } = await fx.getRate()
+            const priceCop = Number(chk.amount_cop) || plan.priceCop || 0
+            await activate(chk.account_id, plan, {
+              gateway: 'wompi', currency: 'COP',
+              amountCop: priceCop,
+              amountUsd: rate ? Math.round((priceCop / rate) * 100) / 100 : null,
+            })
+            console.log(`[wompi webhook] plan "${plan.name}" activado para ${chk.account_id}`)
+          }
+        }
+      }
+    }
+    // Sin paymentLinkId es un cobro recurrente con tarjeta guardada (cuentas antiguas):
+    // `chargeWompiRenewals` ya confirma ese cobro en línea y renueva, así que aquí no se
+    // hace nada (no se puede identificar la cuenta de forma fiable desde el evento).
+  } catch (e) { console.warn('[wompi webhook]', e.message) }
+  return { ok: true, status: parsed.status }
 }
 
 // ── Worker: cobra las renovaciones de Wompi vencidas ──────────────────────────
