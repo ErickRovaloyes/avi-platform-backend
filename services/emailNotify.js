@@ -18,12 +18,14 @@ const { sendEmail, loadEmailConfig, isConfigured } = require('./email')
 const TYPE_TO_PREF = { new_chat: 'new_chat', transfer: 'transfer', task: 'task', flow_error: 'flow_error' }
 
 // ¿Está activado el canal Correo para este tipo en las prefs del miembro?
-// Correo por defecto APAGADO (opt-in): sin pref guardada → false.
+// Correo por defecto ENCENDIDO (opt-out): un miembro que nunca abrió su perfil no tiene
+// preferencias guardadas y antes NO recibía ningún correo — era la causa principal de
+// "las notificaciones por correo nunca llegan". Solo se omite si el usuario lo apagó.
 function emailOn(prefsJson, type) {
   const key = TYPE_TO_PREF[type] || type
   const prefs = parseJ(prefsJson, null)
-  if (!prefs || !prefs[key]) return false
-  return prefs[key].email === true
+  if (!prefs || !prefs[key]) return true            // sin preferencia explícita → enviar
+  return prefs[key].email !== false
 }
 
 function esc(s) { return String(s == null ? '' : s).replace(/[&<>"]/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' }[c])) }
@@ -42,7 +44,9 @@ function appBaseUrl() {
 }
 function chatLink(agId, convId) {
   if (!agId || !convId) return ''
-  return `${appBaseUrl()}/?conv=${encodeURIComponent(convId)}&agent=${encodeURIComponent(agId)}`
+  // Apunta directo a /plataforma (antes iba a "/" y el redirect del router descartaba
+  // la querystring, así que el botón abría la bandeja pero no la conversación).
+  return `${appBaseUrl()}/plataforma?conv=${encodeURIComponent(convId)}&agent=${encodeURIComponent(agId)}`
 }
 
 // Tarjeta HTML del correo de notificación (title + líneas + acento de color + botón opcional).
@@ -65,18 +69,36 @@ function cardHtml({ emoji, title, lines = [], accent = '#0b8a4f', brand, linkUrl
 }
 
 // Envía a una lista de miembros [{email, notif_prefs}] filtrando por su preferencia.
+// Devuelve el nº de correos entregados (0 = no salió ninguno) para que el llamador pueda
+// decidir, p. ej., si marca un recordatorio como ya avisado.
 async function sendToMembers(members, type, { subject, emoji, title, lines, accent, linkUrl, linkLabel }) {
   const cfg = await loadEmailConfig()
-  if (!isConfigured(cfg)) return
+  // Antes era un `return` mudo: si el proveedor no estaba configurado no había ni rastro
+  // en el log y parecía que las notificaciones "fallaban" sin motivo.
+  if (!isConfigured(cfg)) {
+    console.warn(`[emailNotify] "${type}" no enviado: no hay proveedor de correo configurado (Super Panel → Correo).`)
+    return 0
+  }
   const targets = (members || []).filter(m => m?.email && emailOn(m.notif_prefs, type))
-  if (!targets.length) return
+  if (!targets.length) return 0
   const brand = await loadBrand()
   const html = cardHtml({ emoji, title, lines, accent, brand, linkUrl, linkLabel })
   const text = `${title}\n\n${(lines || []).map(l => String(l).replace(/<[^>]+>/g, '')).join('\n')}${linkUrl ? `\n\nIr al chat: ${linkUrl}` : ''}`
+  let sent = 0
   for (const m of targets) {
-    try { await sendEmail({ to: m.email, cfg, subject, html, text }) }
-    catch (e) { console.warn('[emailNotify send]', e.message) }
+    // sendEmail NO lanza: devuelve { ok:false, error }. Antes solo había try/catch, así que
+    // los rechazos del proveedor (SMTP/Resend/SendGrid) se descartaban en silencio total.
+    // 2 intentos con una espera corta: cubre los fallos transitorios de red/SMTP.
+    for (let attempt = 1; attempt <= 2; attempt++) {
+      let r
+      try { r = await sendEmail({ to: m.email, cfg, subject, html, text }) }
+      catch (e) { r = { ok: false, error: e.message } }
+      if (r?.ok !== false) { sent++; break }
+      if (attempt === 2) console.warn(`[emailNotify] "${type}" → ${m.email} FALLÓ (${cfg.provider}): ${r?.error || 'error desconocido'}`)
+      else await new Promise(res => setTimeout(res, 1500))
+    }
   }
+  return sent
 }
 
 // Anti-duplicados en memoria (best-effort; se reinicia al reiniciar el server).
@@ -187,7 +209,7 @@ async function dueTick() {
         const [members] = await pool.query('SELECT email, notif_prefs FROM members WHERE account_id=? AND id=?', [t.account_id, t.assignee_id])
         const overdue = Number(t.due_at) < now
         const due = t.due_at ? new Date(Number(t.due_at)).toLocaleString('es') : ''
-        await sendToMembers(members, 'task', {
+        const sent = await sendToMembers(members, 'task', {
           subject: `⏰ Tarea ${overdue ? 'vencida' : 'por vencer'}: ${t.title || 'sin título'}`,
           emoji: '⏰', title: overdue ? 'Tarea vencida' : 'Tarea por vencer',
           lines: [
@@ -196,7 +218,9 @@ async function dueTick() {
           ],
           accent: overdue ? '#ef4444' : '#f59e0b',
         })
-        await pool.query('UPDATE crm_tasks SET due_reminded_at=? WHERE id=?', [now, t.id])
+        // Solo se marca como avisada si el correo SALIÓ. Antes se marcaba siempre, así que
+        // un fallo puntual del proveedor hacía que ese recordatorio no se enviara nunca más.
+        if (sent > 0) await pool.query('UPDATE crm_tasks SET due_reminded_at=? WHERE id=?', [now, t.id])
       } catch (e) { console.warn('[emailNotify dueTick task]', t.id, e.message) }
     }
   } catch (e) { console.warn('[emailNotify dueTick]', e.message) }

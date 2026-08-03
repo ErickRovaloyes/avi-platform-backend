@@ -150,7 +150,7 @@ async function handleStripeWebhook(rawBody, sigHeader) {
       if (subId) await pool.query("UPDATE account_subscriptions SET status='grace', grace_until=?, updated_at=? WHERE stripe_subscription_id=? AND status<>'grace'", [now + 5 * DAY, now, subId])
     } else if (type === 'customer.subscription.deleted') {
       const subId = obj?.id
-      if (subId) { const [[s]] = await pool.query('SELECT account_id FROM account_subscriptions WHERE stripe_subscription_id=?', [subId]); if (s?.account_id) await subs.downgradeToFree(s.account_id, 'month2') }
+      if (subId) { const [[s]] = await pool.query('SELECT account_id FROM account_subscriptions WHERE stripe_subscription_id=?', [subId]); if (s?.account_id) await subs.downgradeToFree(s.account_id) }
     }
   } catch (e) { console.warn('[stripe webhook]', type, e.message) }
   return { ok: true, type }

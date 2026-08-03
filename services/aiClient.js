@@ -136,8 +136,12 @@ function buildAnthropicBody({ model, systemPrompt, history, tools, advanced = {}
  * Send a chat completion. Returns a string normally, or
  * { message, finish_reason } when tools are involved (OpenAI shape).
  * No streaming server-side (the flow waits for the full response).
+ *
+ * `onFinish({ finishReason, maxTokens })` (opcional) avisa del motivo de parada del proveedor.
+ * Sirve para detectar respuestas TRUNCADAS (`finishReason === 'length'`), que de otro modo se
+ * descartan en la rama sin herramientas. No cambia el tipo de retorno.
  */
-async function chat({ provider = 'openai', model, apiKey, messages, tools = [], advanced = {}, maxTokens, temperature, onUsage, signal }) {
+async function chat({ provider = 'openai', model, apiKey, messages, tools = [], advanced = {}, maxTokens, temperature, onUsage, onFinish, signal }) {
   const adv = { ...DEFAULT_ADVANCED, ...advanced }
   if (maxTokens   != null) adv.maxTokens   = maxTokens
   if (temperature != null) adv.temperature = temperature
@@ -172,6 +176,8 @@ async function chat({ provider = 'openai', model, apiKey, messages, tools = [], 
     const data = await res.json()
     const text = (data.content || []).map(b => b.text || '').join('').trim()
     if (onUsage) onUsage({ promptTokens: data.usage?.input_tokens || 0, completionTokens: data.usage?.output_tokens || 0 })
+    // Anthropic: 'max_tokens' = respuesta truncada por el techo de tokens.
+    if (onFinish) onFinish({ finishReason: data.stop_reason === 'max_tokens' ? 'length' : data.stop_reason, maxTokens: adv.maxTokens })
     if (useTools) {
       const tool_calls = (data.content || [])
         .filter(b => b.type === 'tool_use')
@@ -201,6 +207,8 @@ async function chat({ provider = 'openai', model, apiKey, messages, tools = [], 
   if (onUsage && data.usage) {
     onUsage({ promptTokens: data.usage.prompt_tokens || 0, completionTokens: data.usage.completion_tokens || 0 })
   }
+  // OpenAI/DeepSeek: finish_reason 'length' = respuesta truncada por el techo de tokens.
+  if (onFinish) onFinish({ finishReason: choice?.finish_reason, maxTokens: adv.maxTokens })
   if (useTools) return { message: choice?.message, finish_reason: choice?.finish_reason }
   return choice?.message?.content || ''
 }

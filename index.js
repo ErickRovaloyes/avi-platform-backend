@@ -106,6 +106,7 @@ const promptGenRoutes     = require('./routes/promptGenerator.routes')
 const promptHistoryRoutes = require('./routes/promptHistory.routes')
 const mediaRoutes         = require('./routes/media.routes')
 const quickRepliesRoutes  = require('./routes/quickReplies.routes')
+const notificationsRoutes = require('./routes/notifications.routes')
 const crmRoutes           = require('./routes/crm.routes')
 const dataTablesRoutes    = require('./routes/dataTables.routes')
 const contactsRoutes      = require('./routes/contacts.routes')
@@ -154,6 +155,7 @@ app.use('/api',                promptGenRoutes)
 app.use('/api',                promptHistoryRoutes)
 app.use('/api',                mediaRoutes)
 app.use('/api',                quickRepliesRoutes)
+app.use('/api',                notificationsRoutes)
 app.use('/api',                crmRoutes)
 app.use('/api',                dataTablesRoutes)
 app.use('/api',                contactsRoutes)
@@ -1370,6 +1372,27 @@ app.use('/api',                flowTemplatesRoutes)
     // Etapas configurables del Plan Gratuito (se guardan en el tipo Demo): array de 3 etapas
     // { label, days, aiEnabled, moduleSet, contactLimit, hardBlock } — cortes acumulativos por days.
     "ALTER TABLE account_types ADD COLUMN free_stages JSON",
+    // Notificaciones de la campanita. Antes vivían SOLO en localStorage del navegador: se
+    // perdían al limpiar caché, no se sincronizaban entre dispositivos y desaparecían al
+    // recargar (el estado se inicializaba antes de conocer la cuenta). dedupe_key evita que
+    // dos pestañas/dispositivos del mismo usuario creen la misma notificación por duplicado.
+    `CREATE TABLE IF NOT EXISTS notifications (
+       id          VARCHAR(50) PRIMARY KEY,
+       account_id  VARCHAR(50) NOT NULL,
+       member_id   VARCHAR(50) NOT NULL,
+       type        VARCHAR(30),
+       pref_key    VARCHAR(40),
+       icon        VARCHAR(16),
+       title       VARCHAR(200),
+       body        TEXT,
+       link        VARCHAR(60),
+       meta        JSON,
+       is_read     TINYINT(1) DEFAULT 0,
+       dedupe_key  VARCHAR(120),
+       created_at  BIGINT,
+       INDEX idx_notif_member (account_id, member_id, is_read, created_at),
+       UNIQUE KEY uniq_notif_dedupe (account_id, member_id, dedupe_key)
+     )`,
     // Consumo por contactos + estado del Plan Gratuito + datos de cobro recurrente (pasarela).
     "ALTER TABLE account_subscriptions ADD COLUMN contact_count_current_period INT DEFAULT 0",
     "ALTER TABLE account_subscriptions ADD COLUMN plan_family VARCHAR(20)",
@@ -1460,6 +1483,25 @@ app.use('/api',                flowTemplatesRoutes)
   for (const sql of migrations) {
     try { await pool.query(sql) } catch (e) { /* column exists or unsupported */ }
   }
+  // Respuestas de IA cortadas: el aprovisionamiento sembraba `advanced.maxTokens: 600` en el
+  // prompt de TODA cuenta nueva (un prompt creado a mano nace con 4096), así que los agentes
+  // auto-provisionados truncaban las respuestas largas. Se sube a 4096 SOLO donde vale
+  // exactamente 600 (la huella del seed); cualquier otro valor elegido a mano se respeta.
+  // Idempotente: tras el primer pase ya no queda ningún 600 que actualizar.
+  try {
+    const [ags] = await pool.query("SELECT id, prompts FROM agents WHERE prompts LIKE '%\"maxTokens\":600%'")
+    let fixed = 0
+    for (const a of ags) {
+      let list; try { list = JSON.parse(a.prompts || '[]') } catch { continue }
+      if (!Array.isArray(list)) continue
+      let touched = false
+      for (const p of list) {
+        if (p?.advanced && Number(p.advanced.maxTokens) === 600) { p.advanced.maxTokens = 4096; touched = true }
+      }
+      if (touched) { await pool.query('UPDATE agents SET prompts=? WHERE id=?', [JSON.stringify(list), a.id]); fixed++ }
+    }
+    if (fixed) console.log(`[migración] maxTokens 600 → 4096 en ${fixed} agente(s) (respuestas cortadas)`)
+  } catch (e) { console.warn('[migración maxTokens]', e.message) }
   // Dedup de membresías: una identidad (email) solo debe tener UNA fila por cuenta.
   // Datos legados podían tener duplicados (p. ej. invitarse a una cuenta donde ya se era
   // miembro) → se fusiona el acceso a agentes en la fila que se conserva y se borran las demás.

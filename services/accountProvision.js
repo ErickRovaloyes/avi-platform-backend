@@ -111,14 +111,16 @@ async function provisionStarterAgent(accId, { agentName, prompt } = {}) {
     [flowId, accId, 'Generador de respuestas Agente IA', 'manual', startNodeId, JSON.stringify(nodes), Date.now()]
   )
 
-  // 5) Agente deepseek-v4-flash con el prompt ACTIVO (max_tokens 600, temp 0.1, herramienta
+  // 5) Agente deepseek-v4-flash con el prompt ACTIVO (temp 0.1, herramienta
   //    transferir_a_asesor) + canal webchat + flujo Generador como entrada (fallback).
+  //    maxTokens 4096 = mismo techo que un prompt creado a mano en la UI. Es un TECHO:
+  //    no encarece salvo que se use, y evita que las respuestas lleguen cortadas.
   const agentId = 'ag_' + uid()
   const webchatId = 'lnk_' + uid()
   const prompts = [{
     id: 'pr_' + uid(), name: 'Prompt principal', content: promptContent, isActive: true,
     provider: 'deepseek', model: 'deepseek-v4-flash',
-    advanced: { maxTokens: 600, temperature: 0.1 }, toolIds: [toolId],
+    advanced: { maxTokens: 4096, temperature: 0.1 }, toolIds: [toolId],
   }]
   const channels = [{ id: webchatId, type: 'webchat', name: 'Webchat', status: 'active', config: {}, createdAt: Date.now() }]
   await pool.query(

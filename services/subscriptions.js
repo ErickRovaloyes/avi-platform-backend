@@ -106,11 +106,6 @@ async function seedDefaults() {
     }
   } catch (e) { /* columnas family aún no migradas: se seedean en el próximo arranque */ }
 
-  // Etapas por defecto del Plan Gratuito en el/los tipos Demo (idempotente; también en
-  // instalaciones existentes que aún no las tenían). Requiere la columna free_stages.
-  try {
-    await pool.query('UPDATE account_types SET free_stages=? WHERE is_demo=1 AND free_stages IS NULL', [JSON.stringify(DEFAULT_FREE_STAGES)])
-  } catch (e) { /* columna free_stages aún no migrada: se aplica en el próximo arranque */ }
 }
 
 // ── Lecturas ──────────────────────────────────────────────────────────────────
@@ -134,8 +129,6 @@ const mapType = t => ({
   sortOrder: t.sort_order,
   // Preset de módulos del tipo (null = todos). Espejo en services/modules.js.
   modules: parseJ(t.modules, null),
-  // Etapas del Plan Gratuito configuradas en este tipo (null = usa DEFAULT_FREE_STAGES).
-  freeStages: parseJ(t.free_stages, null),
 })
 const mapPlan = p => ({
   id: p.id, name: p.name, monthlyConversationLimit: p.monthly_conversation_limit,
@@ -157,49 +150,21 @@ const CRM_BASIC_MODULES = ['inbox', 'crm', 'channels']
 const FAMILY_MODULES    = { agente: ALL_MODULES, crm: CRM_MODULES }
 const MODULE_SETS       = { all: ALL_MODULES, crm: CRM_MODULES, crm_basic: CRM_BASIC_MODULES }
 
-// Etapas por defecto del Plan Gratuito (cuando el tipo Demo no define free_stages). Cortes
-// ACUMULATIVOS por `days`; `days:0` en la última = indefinida. moduleSet ∈ {all,crm,crm_basic}.
-const DEFAULT_FREE_STAGES = [
-  { label: 'Agente IA completo', days: 15, aiEnabled: true,  moduleSet: 'all',       contactLimit: 400,  hardBlock: false },
-  { label: 'CRM completo',       days: 15, aiEnabled: false, moduleSet: 'crm',       contactLimit: 1000, hardBlock: false },
-  { label: 'CRM limitado',       days: 0,  aiEnabled: false, moduleSet: 'crm_basic', contactLimit: 100,  hardBlock: true  },
-]
-// Claves de fase estables (compat) por índice de etapa; la última siempre 'month2' (sentinela
-// que el worker fuerza y que dispara el bloqueo duro del tramo final).
-const PHASE_KEYS = ['agente_starter', 'crm_starter', 'month2']
+// Límite de conversaciones mensuales del Plan Gratuito cuando el tipo no define otro.
+const FREE_CONVERSATION_LIMIT = 100
 
-// Suma de días de las etapas FINITAS (todas menos la última) → cuándo se entra al tramo final.
-function finiteFreeDays(stages) {
-  const s = (Array.isArray(stages) && stages.length) ? stages : DEFAULT_FREE_STAGES
-  return s.slice(0, -1).reduce((a, st) => a + (Number(st.days) || 0), 0)
-}
-
-// Estado efectivo del Plan Gratuito según antigüedad (free_started_at) leyendo las etapas
-// configuradas en el tipo (sub.type.freeStages) o forzado a la última cuando free_phase='month2'
-// (cuenta de pago que cae a Gratuito, o el worker que ya avanzó el tramo).
+// Estado del Plan Gratuito. Las cuentas demo/gratuitas tienen acceso a TODO (todos los
+// módulos y la IA activa); su ÚNICA limitación son las conversaciones mensuales. El tope
+// es configurable en el tipo de cuenta (account_types.demo_max_conversations).
 function freeState(sub) {
-  const stages = (Array.isArray(sub?.type?.freeStages) && sub.type.freeStages.length)
-    ? sub.type.freeStages : DEFAULT_FREE_STAGES
-  const lastIdx = stages.length - 1
-  const phaseKey = i => (i >= lastIdx ? 'month2' : (PHASE_KEYS[i] || `stage${i + 1}`))
-  const build = (i) => {
-    const st = stages[Math.min(Math.max(i, 0), lastIdx)] || {}
-    return {
-      phase: phaseKey(i), stageIndex: i, label: st.label || `Etapa ${i + 1}`,
-      modules: MODULE_SETS[st.moduleSet] || ALL_MODULES,
-      aiEnabled: !!st.aiEnabled, contactLimit: Number(st.contactLimit) || 0,
-      hardBlock: !!st.hardBlock, days: Number(st.days) || 0, stages,
-    }
+  const limit = Number(sub?.type?.demoMaxConversations) || FREE_CONVERSATION_LIMIT
+  return {
+    modules: null,            // null = sin recorte de módulos (acceso completo)
+    aiEnabled: true,
+    contactLimit: 0,          // el gratuito no se limita por contactos
+    conversationLimit: limit,
+    hardBlock: true,
   }
-  if (sub?.freePhase === 'month2') return build(lastIdx)
-  const started = sub?.freeStartedAt || sub?.currentPeriodStart || Date.now()
-  const ageDays = (Date.now() - started) / DAY
-  let acc = 0
-  for (let i = 0; i < lastIdx; i++) {
-    acc += Number(stages[i].days) || 0
-    if (ageDays < acc) return build(i)
-  }
-  return build(lastIdx)
 }
 
 // Estado efectivo del plan de una suscripción: { family, modules, aiEnabled, contactLimit,
@@ -375,22 +340,23 @@ async function maybeAlertContacts(sub) {
   }
 }
 
-// Baja una cuenta al Plan Gratuito en el estado indicado ('month2' = 100 contactos,
-// sin IA, CRM básico). Limpia los datos de cobro recurrente.
-async function downgradeToFree(accId, phase = 'month2') {
+// Baja una cuenta al Plan Gratuito (acceso completo, limitado a N conversaciones al mes).
+// Limpia los datos de cobro recurrente y abre un ciclo nuevo con el contador a cero.
+async function downgradeToFree(accId) {
   const now = Date.now()
   await pool.query(
-    `UPDATE account_subscriptions SET plan_family='free', subscription_plan_id=NULL, free_started_at=?, free_phase=?,
+    `UPDATE account_subscriptions SET plan_family='free', subscription_plan_id=NULL, free_started_at=?, free_phase=NULL,
        gateway=NULL, stripe_subscription_id=NULL, wompi_payment_source_id=NULL, next_charge_at=NULL,
-       contact_count_current_period=0, last_alert_threshold=0, grace_until=NULL, status='active', updated_at=? WHERE account_id=?`,
-    [now, phase, now, accId]
+       conversation_count_current_period=0, contact_count_current_period=0, last_alert_threshold=0, grace_until=NULL,
+       current_period_start=?, current_period_end=?, status='active', updated_at=? WHERE account_id=?`,
+    [now, now, now + 30 * DAY, now, accId]
   )
   socket.emit(accId, 'account:updated', { accId })
-  socket.emit(accId, 'subscription:alert', { accId, kind: 'downgraded_free', phase })
+  socket.emit(accId, 'subscription:alert', { accId, kind: 'downgraded_free' })
 }
 
-// Al llegar al tope de contactos (planes con bloqueo duro: Agente / Gratuito mes 2):
-// abre 5 días de gracia; vencida, baja a Gratuito "mes 2".
+// Al llegar al tope de contactos (planes de pago con bloqueo duro: Agente):
+// abre 5 días de gracia; vencida, baja al Plan Gratuito.
 async function applyContactGrace(sub, now) {
   const accId = sub.accountId
   const graceDays = sub.plan?.gracePeriodDays ?? 5
@@ -401,7 +367,7 @@ async function applyContactGrace(sub, now) {
     return { allowed: true, grace: true }
   }
   if (now < sub.graceUntil) return { allowed: true, grace: true }
-  await downgradeToFree(accId, 'month2')
+  await downgradeToFree(accId)
   return { allowed: false, disableAi: true, reason: 'contact_limit' }
 }
 
@@ -443,14 +409,18 @@ async function assistantGate(accId, convId) {
     return { allowed: false, message: sub.type?.isDemo ? MSG.demoExpired : MSG.suspended }
   }
 
-  // ── Planes por familia (CRM / Agente / Gratuito por fases) ──
+  // ── Planes por familia (CRM / Agente / Gratuito) ──
   const family = sub.planFamily || sub.plan?.family
   if (family) {
     const st = effectivePlanState(sub)
-    // Plan sin IA (CRM, o fase Gratuito sin IA) → la IA no responde (silencioso, sin
-    // aviso al cliente; el panel ya oculta la Zona IA por módulos).
+    // Plan sin IA (CRM) → la IA no responde (silencioso, sin aviso al cliente; el panel
+    // ya oculta la Zona IA por módulos).
     if (!st.aiEnabled) return { allowed: false, disableAi: true, reason: 'plan_no_ai' }
-    // Tope de contactos con bloqueo duro (Agente, o Gratuito "mes 2" a 100).
+    // Gratuito: única limitación = conversaciones mensuales (acceso completo a todo lo demás).
+    if (st.conversationLimit > 0 && sub.conversationCount >= st.conversationLimit) {
+      return { allowed: false, message: MSG.demoConv }
+    }
+    // Tope de contactos con bloqueo duro (planes Agente de pago).
     if (st.hardBlock && st.contactLimit > 0 && sub.contactCount >= st.contactLimit) {
       return applyContactGrace(sub, now)
     }
@@ -537,12 +507,6 @@ async function maybeAlert(sub) {
 async function tick() {
   const now = Date.now()
   try {
-    // Etapas del Plan Gratuito por tipo (para calcular el corte del tramo final por config).
-    const stagesByType = {}
-    try {
-      const [types] = await pool.query('SELECT id, free_stages FROM account_types')
-      for (const t of types) stagesByType[t.id] = parseJ(t.free_stages, null)
-    } catch { /* columna free_stages aún no migrada */ }
     const [subs] = await pool.query('SELECT * FROM account_subscriptions')
     for (const s of subs) {
       const family = s.plan_family || null
@@ -550,19 +514,20 @@ async function tick() {
       // ── Planes por familia (CRM/Agente/Gratuito) ──
       if (family) {
         if (family === 'free') {
-          // Gratuito: al superar la suma de días de las etapas finitas pasa al tramo final
-          // ("month2": 100 contactos por defecto, sin IA) con un conteo fresco. No tiene ciclo
-          // de cobro; el tope del tramo final no se reinicia.
-          const started = s.free_started_at || s.current_period_start || now
-          const finiteDays = finiteFreeDays(stagesByType[s.account_type_id])
-          if (s.free_phase !== 'month2' && (now - started) >= finiteDays * DAY) {
-            await pool.query("UPDATE account_subscriptions SET free_phase='month2', contact_count_current_period=0, last_alert_threshold=0, updated_at=? WHERE id=?", [now, s.id])
+          // Gratuito: sin cobro ni etapas. Solo se reinicia el contador de conversaciones
+          // cada 30 días (su única limitación).
+          if (s.current_period_end && now > s.current_period_end) {
+            await pool.query(
+              `UPDATE account_subscriptions SET conversation_count_current_period=0, contact_count_current_period=0,
+                 last_alert_threshold=0, current_period_start=?, current_period_end=?, updated_at=? WHERE id=?`,
+              [now, now + 30 * DAY, now, s.id]
+            )
           }
           continue
         }
         // Gracia vencida (por tope de contactos o por falta de renovación) → baja a Gratuito "mes 2".
         if (s.status === 'grace' && s.grace_until && now > s.grace_until) {
-          await downgradeToFree(s.account_id, 'month2'); continue
+          await downgradeToFree(s.account_id); continue
         }
         // Renovación vencida en WOMPI sin cobro aprobado (el cobro lo intenta el worker de
         // platformBilling; si declina, aquí abrimos 5 días de gracia). Stripe se rige por sus
@@ -626,5 +591,5 @@ module.exports = {
   // Planes por familia + consumo por contactos.
   markContactActive, effectivePlanState, freeState, downgradeToFree,
   FAMILY_MODULES, ALL_MODULES, CRM_MODULES, CRM_BASIC_MODULES,
-  DEFAULT_FREE_STAGES, MODULE_SETS, finiteFreeDays,
+  MODULE_SETS, FREE_CONVERSATION_LIMIT,
 }

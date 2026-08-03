@@ -105,7 +105,12 @@ async function execToolCall(ctx, toolList, toolName, toolArgs) {
   }
   if (tool.actionType === 'flow' && tool.flowId) {
     const { executeFlow } = require('../engine')
-    await executeFlow({ flowId: tool.flowId, accId: ctx.accId, agId: ctx.agId, convId: ctx.convId, triggerContext: { tool: tool.name, args: toolArgs } })
+    // parentCtx: hereda el canal de salida y devuelve el nº de mensajes enviados, para que el
+    // nodo Agente IA no vuelva a enviar su propio texto encima (doble respuesta).
+    await executeFlow({
+      flowId: tool.flowId, accId: ctx.accId, agId: ctx.agId, convId: ctx.convId,
+      triggerContext: { tool: tool.name, args: toolArgs }, parentCtx: ctx,
+    })
     return results.length ? results.join(', ') : 'Flujo ejecutado'
   }
   return results.length ? results.join(', ') : 'Ejecutado'
@@ -831,6 +836,18 @@ async function callAI(ctx, { systemPrompt, userPrompt, model, provider, maxToken
     } catch {}
   }
 
+  // Respuesta TRUNCADA por el techo de tokens: el proveedor devuelve finish_reason 'length'.
+  // Antes se descartaba en silencio y el usuario veía la respuesta cortada a la mitad sin
+  // ninguna pista. Ahora queda registrado en el log de la conversación con el límite aplicado.
+  const onFinish = (f) => {
+    if (f?.finishReason !== 'length') return
+    try {
+      logDebug(ctx, 'error',
+        `⚠️ Respuesta truncada: se alcanzó el límite de ${f.maxTokens} tokens de salida. Súbelo en los ajustes avanzados del prompt.`,
+        { maxTokens: f.maxTokens, provider: prov, model: finalModel })
+    } catch {}
+  }
+
   // Cuando hay herramientas, reforzamos por prompt que el modelo DEBE invocarlas
   // de verdad (function-calling) y nunca fingir en texto que ya ejecutó la acción.
   // Esto corrige el caso en que la IA "cree" que activó un trigger y solo responde
@@ -894,6 +911,9 @@ async function callAI(ctx, { systemPrompt, userPrompt, model, provider, maxToken
     const canThread = prov !== 'anthropic'
     const convo = messages.slice()
     const executed = []
+    // Mensajes ya enviados antes de ejecutar herramientas: si alguna herramienta responde
+    // por su cuenta, no hace falta que el modelo redacte nada más (se descartaría).
+    const sentAtStart = ctx._sentCount || 0
     // Headroom para varios triggers consecutivos (cada uno consume una ronda)
     // + la respuesta final del modelo.
     const MAX_ROUNDS = 6
@@ -919,7 +939,11 @@ async function callAI(ctx, { systemPrompt, userPrompt, model, provider, maxToken
       // típico de DeepSeek: llama la función y devuelve vacío), forzamos una
       // redacción final SIN herramientas usando los resultados ya añadidos a la
       // conversación, para que SIEMPRE responda en base a la info obtenida.
-      if (!clean && executed.length && canThread) {
+      // Excepción: si la herramienta YA envió un mensaje al usuario (p. ej. la
+      // transferencia a asesor), redactar sería una llamada inútil que además
+      // acabaría descartada por no duplicar la respuesta.
+      const toolAlreadySpoke = (ctx._sentCount || 0) > sentAtStart
+      if (!clean && executed.length && canThread && !toolAlreadySpoke) {
         try {
           const synth = await chat({ provider: prov, model: finalModel, apiKey, messages: convo, advanced: advForBody, maxTokens, temperature, onUsage, signal: ctx._signal })
           if (typeof synth === 'string' && synth.trim()) clean = synth.trim()
@@ -930,7 +954,7 @@ async function callAI(ctx, { systemPrompt, userPrompt, model, provider, maxToken
     }
 
     for (let round = 0; round < MAX_ROUNDS; round++) {
-      const result = await chat({ provider: prov, model: finalModel, apiKey, messages: convo, tools, advanced: advForBody, maxTokens, temperature, onUsage, signal: ctx._signal })
+      const result = await chat({ provider: prov, model: finalModel, apiKey, messages: convo, tools, advanced: advForBody, maxTokens, temperature, onUsage, onFinish, signal: ctx._signal })
       if (typeof result === 'string') {
         return await finishText(result)
       }
@@ -965,7 +989,7 @@ async function callAI(ctx, { systemPrompt, userPrompt, model, provider, maxToken
     provider: prov, model: finalModel, apiKey, messages,
     maxTokens, temperature,
     advanced: advForBody,
-    onUsage, signal: ctx._signal,
+    onUsage, onFinish, signal: ctx._signal,
   })
   return response || ''
 }
@@ -1164,18 +1188,23 @@ const aiNodes = [
           mensajeUsuario: (userMsg || '').slice(0, 200) })
 
       if (toolsInvoked) {
-        // Tras usar una herramienta, el flujo de entrada SIEMPRE se detiene aquí
-        // (no continúa a nodos posteriores). Además, si la herramienta ya envió su
-        // propio mensaje (enviar_recurso, catálogo, link de pago, pedido…), NO se
-        // envía además la respuesta del modelo para no duplicar. Solo se entrega la
-        // respuesta cuando la herramienta no comunicó nada (p. ej. la agenda, que
-        // devuelve texto para que el modelo redacte la confirmación).
+        // Si la herramienta ya envió su propio mensaje (transferencia, enviar_recurso,
+        // catálogo, link de pago, pedido…), NO se envía además la respuesta del modelo:
+        // sería una respuesta duplicada. Solo se entrega cuando la herramienta no comunicó
+        // nada (p. ej. la agenda, que devuelve datos para que el modelo redacte).
         const toolSentMsg = (ctx._sentCount || 0) > sentBefore
         logDebug(ctx, 'flow_run', '🔧 Herramienta IA activada' + (toolSentMsg ? ' (mensaje enviado por la herramienta)' : reply ? ' (+ respuesta final)' : ''), {})
         if (node.data?.variable_destino) await setVarBoth(ctx, node.data.variable_destino, reply || '')
-        if (reply && !toolSentMsg) await sendBotMsg(ctx, reply)
+        if (toolSentMsg) {
+          ctx._suppressDefaultNext = true            // ya se comunicó: cortar aquí
+        } else if (node.data?.sendToUser === false) {
+          // El nodo no responde por sí mismo: deja seguir el flujo para que un nodo
+          // posterior (p. ej. "message" con {{respuesta_ia}}) entregue la respuesta.
+        } else {
+          if (reply) await sendBotMsg(ctx, reply)
+          ctx._suppressDefaultNext = true
+        }
         scheduleMemory(ctx)
-        ctx._suppressDefaultNext = true
         return
       }
 
@@ -1196,7 +1225,7 @@ const aiNodes = [
       const history = await loadHistory(ctx)
       const reply = await callAI(ctx, {
         systemPrompt: sys, userPrompt: ctx.variables?._lastUserMessage || '',
-        model: node.data?.modelo, maxTokens: 600, history,
+        model: node.data?.modelo, maxTokens: 2000, history,
       })
       if (node.data?.variable_destino) await setVarBoth(ctx, node.data.variable_destino, reply)
       else if (reply) await sendBotMsg(ctx, reply)

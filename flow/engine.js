@@ -26,29 +26,41 @@ function cancel(convId) {
 const isAborted = ctx => !!(ctx?._signal && ctx._signal.aborted)
 
 // ─── Main executor ─────────────────────────────────────────────────────────
-async function executeFlow({ flowId, accId, agId, convId, triggerContext = {}, triggeredBy = { type: 'bot' }, outbound = null }) {
+// `parentCtx` = flujo ANIDADO (una herramienta IA con action_type 'flow' lo invoca desde dentro
+// de otro flujo). En ese caso NO se crea un AbortController propio (pisaba el del padre y lo
+// borraba de _running/_controllers, rompiendo la interrupción por mensaje nuevo), se HEREDA el
+// canal de salida `_outbound` (sin él los mensajes del sub-flujo se guardaban en BD pero nunca
+// salían a WhatsApp/Messenger/Instagram) y al terminar se propaga `_sentCount` al padre para que
+// sepa que la herramienta ya respondió y no duplique el mensaje.
+async function executeFlow({ flowId, accId, agId, convId, triggerContext = {}, triggeredBy = { type: 'bot' }, outbound = null, parentCtx = null }) {
   const account = await store.loadAccount(accId)
   if (!account) return
 
   const flow = account.flows?.find(f => f.id === flowId)
   if (!flow || !flow.nodes?.length) return
 
-  _running.add(convId)
-  const controller = new AbortController()
-  _controllers.set(convId, controller)
+  const nested = !!parentCtx
+  let controller = null
+  if (!nested) {
+    _running.add(convId)
+    controller = new AbortController()
+    _controllers.set(convId, controller)
+  }
+  const signal = nested ? parentCtx._signal : controller.signal
   // Indicador "escribiendo…" en la bandeja mientras el flujo genera la respuesta.
-  socket.emit(accId, 'flow:typing', { accId, agId, convId, typing: true })
+  if (!nested) socket.emit(accId, 'flow:typing', { accId, agId, convId, typing: true })
   const trace = { steps: [], startedAt: Date.now(), status: 'success' }
+  let ctx = null
   try {
     const variables = await buildVarContext(account, accId, agId, convId, triggerContext)
-    const ctx = {
+    ctx = {
       flowId, accId, agId, convId, account,
       nodes: flow.nodes,
       variables,
       visited: new Set(),
       _trace: trace,
-      _outbound: outbound,
-      _signal: controller.signal,   // para cancelar la generación (interrumpir)
+      _outbound: outbound || parentCtx?._outbound || null,
+      _signal: signal,   // para cancelar la generación (interrumpir)
       // Si el flujo lo dispara una campaña, marcamos los mensajes salientes con
       // su id para poder medir entregados/leídos/respondidos por campaña.
       _campaignId: triggeredBy?.campaignId || null,
@@ -57,7 +69,7 @@ async function executeFlow({ flowId, accId, agId, convId, triggerContext = {}, t
     await runNode(flow.startNodeId, ctx)
   } catch (err) {
     // Interrupción por mensaje nuevo → no es un error real; se rehará el flujo.
-    if (controller.signal.aborted) { trace.status = 'aborted' }
+    if (signal?.aborted) { trace.status = 'aborted' }
     else {
       logDebug(accId, agId, convId, 'error', `✗ Error en flujo: ${err.message}`, {})
       trace.status = 'error'
@@ -66,9 +78,16 @@ async function executeFlow({ flowId, accId, agId, convId, triggerContext = {}, t
       try { require('../services/emailNotify').onFlowError(accId, { flowName: flow.name, error: err.message }) } catch {}
     }
   } finally {
-    _running.delete(convId)
-    if (_controllers.get(convId) === controller) _controllers.delete(convId)
-    socket.emit(accId, 'flow:typing', { accId, agId, convId, typing: false })
+    // Un sub-flujo NO libera el registro de ejecución del padre (rompería su interrupción)
+    // ni apaga el indicador "escribiendo…": el padre sigue trabajando.
+    if (!nested) {
+      _running.delete(convId)
+      if (_controllers.get(convId) === controller) _controllers.delete(convId)
+      socket.emit(accId, 'flow:typing', { accId, agId, convId, typing: false })
+    } else if (ctx?._sentCount) {
+      // El padre necesita saber que el sub-flujo YA envió mensaje para no duplicarlo.
+      parentCtx._sentCount = (parentCtx._sentCount || 0) + ctx._sentCount
+    }
     trace.endedAt = Date.now()
     // Persistimos la ejecución para el log global / registro de errores
     store.saveExecution({

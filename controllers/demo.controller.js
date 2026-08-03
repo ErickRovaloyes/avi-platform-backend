@@ -86,12 +86,11 @@ const signup = async (req, res) => {
       [memId, accId, name.trim(), email.trim().toLowerCase(), password, (name || '').slice(0, 2).toUpperCase(), ownerRoleId, '[]', 'active']
     )
 
-    // Asignar el Plan GRATUITO (familia 'free'): fija free_started_at=now y activa las 3 etapas
-    // (Agente IA → CRM → CRM limitado) definidas en el tipo Demo (free_stages). Ya NO vence a 7 días.
+    // Asignar el Plan GRATUITO (familia 'free'): acceso a TODO, con una única limitación de
+    // N conversaciones al mes (configurable en el tipo de cuenta). Ya NO vence a 7 días.
     const sub = await subs.assignSubscription(accId, { accountTypeId: demoType.id, planFamily: 'free' })
-    const freeStages = sub?.type?.freeStages || null
     const freeStartedAt = sub?.freeStartedAt || Date.now()
-    const stage1ContactLimit = freeStages?.[0]?.contactLimit ?? 400
+    const conversationLimit = Number(sub?.type?.demoMaxConversations) || 100
     const expiresAt = null // el plan gratuito no vence a 7 días; el registro se guarda para antifraude/dashboard
 
     // Plantilla diligenciada (opcional): extraemos su texto para enriquecer la IA.
@@ -135,8 +134,8 @@ const signup = async (req, res) => {
     res.json({
       ok: true, accountId: accId, agentId: prov.agentId, iaName: prov.iaName,
       webchatLink: prov.webchatLink, webchatUrl,
-      // Plan Gratuito de 3 etapas (reemplaza el contador de 7 días de la Demo).
-      planFamily: 'free', freeStartedAt, freeStages, contactLimit: stage1ContactLimit,
+      // Plan Gratuito: acceso completo con un tope de conversaciones mensuales.
+      planFamily: 'free', freeStartedAt, conversationLimit,
       token: sign(session), session,
     })
   } catch (err) { console.error('[demo signup]', err); res.status(500).json({ error: 'No se pudo crear la cuenta Demo' }) }

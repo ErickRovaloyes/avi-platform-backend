@@ -130,12 +130,14 @@ const SPECIAL_ORDERS_TOOL = {
 }
 const ordersSvc = require('../services/orders')
 // Herramienta IA Especial "tablas": las bases de datos internas del cliente. El
-// asistente puede consultar y modificar filas de las tablas que el cliente marcó
-// como disponibles para la IA (Zona CRM → Tablas).
+// asistente puede consultar y modificar filas de las bases de datos que el cliente
+// marcó como disponibles para la IA (Zona CRM → Bases de datos).
+// El id/name se mantiene como 'tablas' a propósito: cambiarlo rompería los prompts
+// que ya la tienen asignada.
 const SPECIAL_DATATABLES_TOOL = {
   id: 'tablas',
   name: 'tablas',
-  description: 'Tablas internas (bases de datos del cliente): el asistente consulta y modifica filas (consultar_tabla, agregar_fila, editar_fila, eliminar_fila) de las tablas habilitadas. Asígnala a un prompt para habilitarla.',
+  description: 'Bases de datos internas del cliente: el asistente consulta y modifica filas (consultar_tabla, agregar_fila, editar_fila, eliminar_fila) de las bases de datos habilitadas. Asígnala a un prompt para habilitarla.',
   collectFields: [],
   actionType: 'data_tables',
   special: true,
