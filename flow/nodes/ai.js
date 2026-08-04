@@ -20,14 +20,6 @@ function scheduleMemory(ctx) {
   try { require('../../services/conversationMemory').updateMemory(ctx.accId, ctx.agId, ctx.convId).catch(() => {}) } catch {}
 }
 
-// Perfilamiento automático del cliente (notas, etiquetas, etapa y variables). Igual que la
-// memoria: corre DESPUÉS de responder y en segundo plano, así que no añade latencia ni
-// interviene en la conversación. Solo si el prompt tiene asignada la herramienta "perfilado".
-function scheduleProfiling(ctx, assignedTools) {
-  if (ctx?._sandbox || !ctx?.accId || !ctx?.convId) return
-  if (!(assignedTools || []).some(t => t.actionType === 'profiling')) return
-  try { require('../../services/profiling').profileConversation(ctx.accId, ctx.agId, ctx.convId).catch(() => {}) } catch {}
-}
 
 function buildOneToolDef(tool) {
   return {
@@ -62,9 +54,9 @@ function buildToolDefs(toolList, account) {
     else if (tool.actionType === 'orders') { if (account?.orders?.connected) defs.push(...buildOrdersToolDefs(account)) }
     else if (tool.actionType === 'data_tables') { if (account?.dataTables?.connected) defs.push(...buildDataTableToolDefs(account)) }
     else if (tool.actionType === 'recontact') { defs.push(...buildRecontactToolDefs()) }
-    // 'profiling' NO expone ninguna función: es solo el interruptor del perfilado en
-    // segundo plano. Si cayera en el `else` genérico, el modelo vería una función fantasma.
-    else if (tool.actionType === 'profiling') { /* sin funciones */ }
+    else if (tool.actionType === 'labels') { defs.push(...buildLabelToolDefs(account)) }
+    else if (tool.actionType === 'pipeline') { defs.push(...buildPipelineToolDefs(account)) }
+    else if (tool.actionType === 'variables') { defs.push(...buildVariableToolDefs(account)) }
     else { const d = buildOneToolDef(tool); if (d) defs.push(d) }
   }
   return defs
@@ -99,6 +91,15 @@ async function execToolCall(ctx, toolList, toolName, toolArgs) {
   // Tablas internas del cliente.
   if (RECONTACT_FUNCS.has(normalized) && (toolList || []).some(t => t.actionType === 'recontact')) {
     return recontactExec(ctx, normalized, toolArgs)
+  }
+  if (LABEL_FUNCS.has(normalized) && (toolList || []).some(t => t.actionType === 'labels')) {
+    return labelExec(ctx, normalized, toolArgs)
+  }
+  if (PIPELINE_FUNCS.has(normalized) && (toolList || []).some(t => t.actionType === 'pipeline')) {
+    return pipelineExec(ctx, normalized, toolArgs)
+  }
+  if (VARIABLE_FUNCS.has(normalized) && (toolList || []).some(t => t.actionType === 'variables')) {
+    return variableExec(ctx, toolArgs)
   }
   if (DATATABLE_FUNCS.has(normalized) && (toolList || []).some(t => t.actionType === 'data_tables')) {
     return dataTableExec(ctx, normalized, toolArgs)
@@ -558,6 +559,162 @@ async function recontactExec(ctx, fnName, args) {
       ? 'Listo: no se le enviarán más recontactos automáticos.'
       : 'Listo: los recontactos automáticos vuelven a estar activos.'
   } catch (e) { return `No se pudo cambiar el estado de recontacto: ${e.message}` }
+}
+
+// ── Etiquetas del CRM ─────────────────────────────────────────────────────────
+// El modelo solo ve las etiquetas MARCADAS como disponibles para la IA (account.aiLabels)
+// y trabaja con sus nombres; la descripción de cada una le dice cuándo aplicarla.
+const LABEL_FUNCS = new Set(['aplicar_etiqueta', 'quitar_etiqueta'])
+function buildLabelToolDefs(account) {
+  const labels = account?.aiLabels || []
+  if (!labels.length) return []
+  const menu = labels.map(l => `- "${l.name}"${l.description ? `: ${l.description}` : ''}`).join('\n')
+  const etiquetaDesc = `Nombre exacto de la etiqueta. Disponibles:\n${menu}`
+  return [
+    { type: 'function', function: {
+      name: 'aplicar_etiqueta',
+      description: `Etiqueta esta conversación para clasificar al cliente. Aplica una etiqueta solo cuando su descripción encaje de verdad con lo que dice el cliente. Etiquetas disponibles:\n${menu}`,
+      parameters: { type: 'object', properties: { etiqueta: { type: 'string', description: etiquetaDesc } }, required: ['etiqueta'] },
+    } },
+    { type: 'function', function: {
+      name: 'quitar_etiqueta',
+      description: 'Retira una etiqueta que ya no corresponde a esta conversación (p. ej. el cliente dejó de estar interesado).',
+      parameters: { type: 'object', properties: { etiqueta: { type: 'string', description: etiquetaDesc } }, required: ['etiqueta'] },
+    } },
+  ]
+}
+async function labelExec(ctx, fnName, args) {
+  try {
+    const labels = ctx.account?.aiLabels || []
+    const wanted = String(args?.etiqueta || '').trim().toLowerCase()
+    const found = labels.find(l => l.name.toLowerCase() === wanted)
+    if (!found) return `La etiqueta "${args?.etiqueta || ''}" no existe o no está disponible. Disponibles: ${labels.map(l => l.name).join(', ') || 'ninguna'}.`
+
+    const [[conv]] = await require('../../db').query('SELECT labels FROM conversations WHERE id=? AND account_id=?', [ctx.convId, ctx.accId])
+    if (!conv) return 'No se encontró la conversación.'
+    const current = require('../../utils').parseJ(conv.labels, [])
+    const add = fnName === 'aplicar_etiqueta'
+    const next = add
+      ? [...new Set([...current, found.id])]
+      : current.filter(id => id !== found.id)
+    if (next.length === current.length) {
+      return add ? `La conversación ya tenía la etiqueta "${found.name}".` : `La conversación no tenía la etiqueta "${found.name}".`
+    }
+    await store.updateConvo(ctx.accId, ctx.agId, ctx.convId, { labels: next })
+    logDebug(ctx, 'flow_run', `${add ? '🏷 Etiqueta aplicada' : '🏷 Etiqueta retirada'}: ${found.name}`, {})
+    return add ? `Etiqueta "${found.name}" aplicada.` : `Etiqueta "${found.name}" retirada.`
+  } catch (e) { return `No se pudo cambiar la etiqueta: ${e.message}` }
+}
+
+// ── Ticket del pipeline de ESTA conversación ──────────────────────────────────
+// Solo pipelines marcados para la IA. `applyTicketAction` actúa exclusivamente sobre la
+// tarjeta vinculada a esta conversación: nunca toca las de otros chats.
+const PIPELINE_FUNCS = new Set(['crear_ticket', 'mover_ticket'])
+function buildPipelineToolDefs(account) {
+  const pipes = account?.aiPipelines || []
+  if (!pipes.length) return []
+  const menu = pipes.map(p => `- Pipeline "${p.name}" → etapas: ${(p.stages || []).map(s => `"${s.name}"`).join(', ') || '(sin etapas)'}`).join('\n')
+  const multi = pipes.length > 1
+  const pipeDesc = multi
+    ? `Nombre del pipeline. Disponibles:\n${menu}`
+    : `(opcional; solo hay un pipeline: "${pipes[0].name}")`
+  const etapaDesc = `Nombre exacto de la etapa destino. Opciones:\n${menu}`
+  return [
+    { type: 'function', function: {
+      name: 'mover_ticket',
+      description: `Mueve el ticket de ESTA conversación a otra etapa del pipeline, cuando la conversación muestre que el cliente avanzó. Si aún no tiene ticket, se crea en esa etapa.\n${menu}`,
+      parameters: { type: 'object', properties: {
+        etapa: { type: 'string', description: etapaDesc },
+        pipeline: { type: 'string', description: pipeDesc },
+      }, required: ['etapa'] },
+    } },
+    { type: 'function', function: {
+      name: 'crear_ticket',
+      description: `Crea el ticket de ESTA conversación en un pipeline. Úsalo cuando aparezca una oportunidad de negocio que aún no está registrada.\n${menu}`,
+      parameters: { type: 'object', properties: {
+        etapa: { type: 'string', description: etapaDesc },
+        pipeline: { type: 'string', description: pipeDesc },
+        titulo: { type: 'string', description: 'Título breve del negocio. Opcional (por defecto, el nombre del cliente).' },
+        valor: { type: 'string', description: 'Valor estimado del negocio, si el cliente lo dijo. Opcional.' },
+      }, required: [] },
+    } },
+  ]
+}
+// Resuelve pipeline + etapa por NOMBRE contra los pipelines marcados. Compartido con el
+// proxy público del navegador, por eso vive suelto.
+function resolvePipelineTarget(pipes, pipelineName, stageName) {
+  const list = pipes || []
+  if (!list.length) return { error: 'No hay pipelines disponibles para el asistente.' }
+  const pn = String(pipelineName || '').trim().toLowerCase()
+  const pipe = pn
+    ? list.find(p => p.name.toLowerCase() === pn) || list.find(p => p.name.toLowerCase().includes(pn))
+    : list[0]
+  if (!pipe) return { error: `El pipeline "${pipelineName}" no existe o no está disponible. Disponibles: ${list.map(p => p.name).join(', ')}.` }
+  const sn = String(stageName || '').trim().toLowerCase()
+  const stage = sn
+    ? (pipe.stages || []).find(s => s.name.toLowerCase() === sn) || (pipe.stages || []).find(s => s.name.toLowerCase().includes(sn))
+    : (pipe.stages || [])[0]
+  if (sn && !stage) return { error: `La etapa "${stageName}" no existe en "${pipe.name}". Etapas: ${(pipe.stages || []).map(s => s.name).join(', ')}.` }
+  return { pipe, stage }
+}
+async function pipelineExec(ctx, fnName, args) {
+  try {
+    const r = resolvePipelineTarget(ctx.account?.aiPipelines, args?.pipeline, args?.etapa)
+    if (r.error) return r.error
+    const out = await require('../../services/tickets').applyTicketAction(ctx.accId, ctx.convId, {
+      tipo: 'deal',
+      accion: fnName === 'crear_ticket' ? 'crear' : 'mover',
+      pipelineId: r.pipe.id,
+      stageId: r.stage?.id || null,
+      title: args?.titulo || '',
+      value: args?.valor || '',
+    })
+    ctx.variables._ticket_action = out
+    logDebug(ctx, 'flow_run', `🎫 Ticket ${fnName === 'crear_ticket' ? 'creado' : 'movido'} en "${r.pipe.name}"${r.stage ? ` → ${r.stage.name}` : ''}`, {})
+    return fnName === 'crear_ticket'
+      ? `Ticket creado en "${r.pipe.name}"${r.stage ? `, etapa "${r.stage.name}"` : ''}.`
+      : `Ticket movido a "${r.stage?.name || '?'}" en "${r.pipe.name}".`
+  } catch (e) { return `No se pudo gestionar el ticket: ${e.message}` }
+}
+
+// ── Datos del cliente en variables ────────────────────────────────────────────
+// Solo las variables MARCADAS para la IA. Una sola llamada puede guardar varios datos.
+const VARIABLE_FUNCS = new Set(['guardar_datos'])
+function aiVariables(account) {
+  return (account?.variables || []).filter(v => v.aiEnabled !== false && !v.isSystem)
+}
+function buildVariableToolDefs(account) {
+  const vars = aiVariables(account)
+  if (!vars.length) return []
+  const menu = vars.map(v => `- "${v.name}"${v.description ? `: ${v.description}` : ''}`).join('\n')
+  return [
+    { type: 'function', function: {
+      name: 'guardar_datos',
+      description: `Guarda datos que el cliente haya dicho en esta conversación. Usa SOLO los nombres de esta lista y NO inventes valores: si el cliente no lo dijo, no lo incluyas.\nDatos que puedes guardar:\n${menu}`,
+      parameters: { type: 'object', properties: {
+        datos: { type: 'object', description: 'Objeto nombre_del_dato → valor. Ej: {"ciudad":"Bogotá","presupuesto":"2 millones"}' },
+      }, required: ['datos'] },
+    } },
+  ]
+}
+async function variableExec(ctx, args) {
+  try {
+    const vars = aiVariables(ctx.account)
+    const datos = (args && typeof args.datos === 'object' && args.datos) || {}
+    const saved = [], unknown = []
+    for (const [name, value] of Object.entries(datos)) {
+      if (value == null || String(value).trim() === '') continue
+      const def = vars.find(v => v.name.toLowerCase() === String(name).trim().toLowerCase())
+      if (!def) { unknown.push(name); continue }
+      await setVarBoth(ctx, def.id, String(value).slice(0, 500))
+      saved.push(def.name)
+    }
+    if (!saved.length && !unknown.length) return 'No había datos que guardar.'
+    logDebug(ctx, 'flow_run', `💾 Datos guardados: ${saved.join(', ') || 'ninguno'}`, { noReconocidos: unknown })
+    let msg = saved.length ? `Datos guardados: ${saved.join(', ')}.` : 'No se guardó ningún dato.'
+    if (unknown.length) msg += ` No existen (o no están disponibles): ${unknown.join(', ')}.`
+    return msg
+  } catch (e) { return `No se pudieron guardar los datos: ${e.message}` }
 }
 
 async function dataTableExec(ctx, fnName, args) {
@@ -1254,14 +1411,12 @@ const aiNodes = [
           ctx._suppressDefaultNext = true
         }
         scheduleMemory(ctx)
-        scheduleProfiling(ctx, assignedTools)
         return
       }
 
       if (node.data?.variable_destino) await setVarBoth(ctx, node.data.variable_destino, reply)
       if (node.data?.sendToUser !== false && reply) await sendBotMsg(ctx, reply)
       scheduleMemory(ctx)
-      scheduleProfiling(ctx, assignedTools)
       // El nodo Agente IA es TERMINAL para el flujo de entrada: tras responder, el
       // flujo se corta aquí y no continúa a nodos posteriores. Excepción: si el nodo
       // está configurado para NO responder al usuario (sendToUser:false), se asume
@@ -1364,4 +1519,6 @@ Responde SOLO JSON: {"intent":"<una de la lista>","confidence":0.0-1.0}`
   },
 ]
 
-module.exports = { aiNodes, callAI, execToolCall, buildToolDefs }
+// `resolvePipelineTarget` se exporta para que el proxy público del ticket (motor del
+// navegador) resuelva pipeline+etapa con exactamente el mismo criterio.
+module.exports = { aiNodes, callAI, execToolCall, buildToolDefs, resolvePipelineTarget }

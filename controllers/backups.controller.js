@@ -161,8 +161,10 @@ const restoreBackup = async (req, res) => {
          JSON.stringify(agent.rag || {}), JSON.stringify(agent.aiToolIds || []), agId, accId]
       )
     }
-    if (s?.labels)    await pool.query('DELETE FROM labels WHERE account_id=?', [accId]).then(() => s.labels.length && pool.query('INSERT INTO labels (id,account_id,name,color) VALUES ?', [s.labels.map(l => [l.id, accId, l.name, l.color])]))
-    if (s?.variables) await pool.query('DELETE FROM variables WHERE account_id=?', [accId]).then(() => s.variables.length && pool.query('INSERT INTO variables (id,account_id,name,type,default_value,description,is_system) VALUES ?', [s.variables.map(v => [v.id, accId, v.name, v.type, v.defaultValue, v.description, v.isSystem ? 1 : 0])]))
+    // Se restauran TODAS las columnas: antes se perdían `description` y `ai_enabled` de las
+    // etiquetas en cada restauración (quedaban en blanco / por defecto).
+    if (s?.labels)    await pool.query('DELETE FROM labels WHERE account_id=?', [accId]).then(() => s.labels.length && pool.query('INSERT INTO labels (id,account_id,name,color,description,ai_enabled) VALUES ?', [s.labels.map(l => [l.id, accId, l.name, l.color, l.description || null, l.aiEnabled === false ? 0 : 1])]))
+    if (s?.variables) await pool.query('DELETE FROM variables WHERE account_id=?', [accId]).then(() => s.variables.length && pool.query('INSERT INTO variables (id,account_id,name,type,default_value,description,is_system,ai_enabled) VALUES ?', [s.variables.map(v => [v.id, accId, v.name, v.type, v.defaultValue, v.description, v.isSystem ? 1 : 0, v.aiEnabled === false ? 0 : 1])]))
     if (s?.aiTools)   await pool.query('DELETE FROM ai_tools WHERE account_id=?', [accId]).then(() => s.aiTools.length && pool.query('INSERT INTO ai_tools (id,account_id,name,description,collect_fields,flow_id) VALUES ?', [s.aiTools.map(t => [t.id, accId, t.name, t.description, JSON.stringify(t.collectFields || []), t.flowId])]))
     if (s?.flows)     await pool.query('DELETE FROM flows WHERE account_id=?', [accId]).then(() => s.flows.length && pool.query('INSERT INTO flows (id,account_id,name,`trigger`,start_node_id,nodes) VALUES ?', [s.flows.map(f => [f.id, accId, f.name, f.trigger, f.startNodeId, JSON.stringify(f.nodes || [])])]))
     socket.emit(accId, 'account:updated', { accId })

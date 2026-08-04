@@ -1376,9 +1376,16 @@ app.use('/api',                flowTemplatesRoutes)
     // Etapas configurables del Plan Gratuito (se guardan en el tipo Demo): array de 3 etapas
     // { label, days, aiEnabled, moduleSet, contactLimit, hardBlock } — cortes acumulativos por days.
     "ALTER TABLE account_types ADD COLUMN free_stages JSON",
-    // Descripción de la etiqueta: explica CUÁNDO aplicarla. La usa el perfilado automático
-    // para que la IA etiquete por su cuenta con criterio.
+    // Descripción de la etiqueta: explica CUÁNDO aplicarla. La lee la herramienta IA de
+    // etiquetado para saber con qué criterio aplicarla.
     "ALTER TABLE labels ADD COLUMN description TEXT",
+    // "Disponible para la IA": qué puede tocar el asistente con sus herramientas de
+    // etiquetado, gestión de ticket y guardado de datos. Por defecto 1 (todo lo que ya
+    // existía queda disponible; el dueño desmarca lo que no quiera). Mismo patrón que
+    // data_tables.ai_enabled.
+    "ALTER TABLE labels    ADD COLUMN ai_enabled TINYINT(1) DEFAULT 1",
+    "ALTER TABLE variables ADD COLUMN ai_enabled TINYINT(1) DEFAULT 1",
+    "ALTER TABLE pipelines ADD COLUMN ai_enabled TINYINT(1) DEFAULT 1",
     // Mensajes DESTACADOS dentro de un chat (los marca un asesor para tenerlos a mano).
     "ALTER TABLE messages ADD COLUMN starred TINYINT(1) DEFAULT 0",
     "ALTER TABLE messages ADD COLUMN starred_at BIGINT",

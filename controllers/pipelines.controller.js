@@ -5,10 +5,10 @@ const { uid, parseJ } = require('../utils')
 
 const createPipeline = async (req, res) => {
   const { accId } = req.params
-  const { name, stages = [], cards = [] } = req.body
+  const { name, stages = [], cards = [], aiEnabled } = req.body
   const id = 'pipe_' + uid()
   try {
-    await pool.query('INSERT INTO pipelines (id,account_id,name,stages,cards) VALUES (?,?,?,?,?)', [id, accId, name, JSON.stringify(stages), JSON.stringify(cards)])
+    await pool.query('INSERT INTO pipelines (id,account_id,name,stages,cards,ai_enabled) VALUES (?,?,?,?,?,?)', [id, accId, name, JSON.stringify(stages), JSON.stringify(cards), aiEnabled === false ? 0 : 1])
     socket.emit(accId, 'account:updated', { accId })
     res.json({ id })
   } catch (err) { res.status(500).json({ error: 'Error interno' }) }
@@ -16,8 +16,14 @@ const createPipeline = async (req, res) => {
 
 const updatePipeline = async (req, res) => {
   const { accId, pipeId } = req.params
-  const { name, stages, cards, addStage, deleteStage, reorderStages, updateStage, addCard, updateCard, deleteCard, moveCard } = req.body
+  const { name, stages, cards, aiEnabled, addStage, deleteStage, reorderStages, updateStage, addCard, updateCard, deleteCard, moveCard } = req.body
   try {
+    // `aiEnabled` se aplica ANTES de la rama de operaciones: esa rama hace `return` y, si
+    // llegaran juntos en el mismo body, el flag se perdería en silencio.
+    if (aiEnabled !== undefined) {
+      await pool.query('UPDATE pipelines SET ai_enabled=? WHERE id=? AND account_id=?', [aiEnabled ? 1 : 0, pipeId, accId])
+      socket.emit(accId, 'account:updated', { accId })
+    }
     if (addStage || deleteStage || reorderStages || updateStage || addCard || updateCard || deleteCard || moveCard) {
       const [[pipe]] = await pool.query('SELECT * FROM pipelines WHERE id=? AND account_id=?', [pipeId, accId])
       if (!pipe) return res.status(404).json({ error: 'Pipeline no encontrado' })

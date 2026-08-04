@@ -671,5 +671,39 @@ const ticketAction = async (req, res) => {
   } catch (err) { res.status(400).json({ error: err.message || 'No se pudo aplicar la acción' }) }
 }
 
+// Proxy de la HERRAMIENTA IA de ticket para el motor del NAVEGADOR (webchat sin sesión).
+// Deliberadamente más estrecho que `ticketAction`:
+//   · solo `deal` (nunca tareas) y solo crear/mover,
+//   · el pipeline se resuelve por NOMBRE contra los pipelines MARCADOS para la IA, así que
+//     no se puede tocar uno no habilitado,
+//   · `applyTicketAction` solo actúa sobre la tarjeta vinculada a ESA conversación.
+const ticketTool = async (req, res) => {
+  const { accId } = req.params
+  const { convId, accion, pipeline, etapa, titulo, valor } = req.body || {}
+  if (!convId) return res.status(400).json({ error: 'Falta convId' })
+  try {
+    const [rows] = await pool.query('SELECT id, name, stages FROM pipelines WHERE account_id=? AND ai_enabled=1', [accId])
+    const pipes = rows.map(p => ({
+      id: p.id, name: p.name,
+      stages: [...parseJ(p.stages, [])].sort((a, b) => (a.order || 0) - (b.order || 0)).map(s => ({ id: s.id, name: s.name })),
+    }))
+    const { resolvePipelineTarget } = require('../flow/nodes/ai')
+    const r = resolvePipelineTarget(pipes, pipeline, etapa)
+    if (r.error) return res.json({ text: r.error })
+    const out = await require('../services/tickets').applyTicketAction(accId, convId, {
+      tipo: 'deal',
+      accion: accion === 'crear' ? 'crear' : 'mover',
+      pipelineId: r.pipe.id, stageId: r.stage?.id || null,
+      title: titulo || '', value: valor || '',
+    })
+    res.json({
+      ok: true, ...out,
+      text: accion === 'crear'
+        ? `Ticket creado en "${r.pipe.name}"${r.stage ? `, etapa "${r.stage.name}"` : ''}.`
+        : `Ticket movido a "${r.stage?.name || '?'}" en "${r.pipe.name}".`,
+    })
+  } catch (err) { res.json({ text: `No se pudo gestionar el ticket: ${err.message}` }) }
+}
+
 module.exports = { listNotes, createNote, deleteNote, listTasks, createTask, updateTask, deleteTask, listActivity, kpis, logActivity, classifyConversations, previewExecutiveSummary, sendExecutiveSummary, pipelineVelocity, retention, copilotAsk, platformAsk, detectOpportunities, leadScores, qaRun, qaReview,
-  listTaskSchedules, createTaskSchedule, updateTaskSchedule, deleteTaskSchedule, listCardLinks, createCardLink, deleteCardLink, advisorMetrics, ticketAction }
+  listTaskSchedules, createTaskSchedule, updateTaskSchedule, deleteTaskSchedule, listCardLinks, createCardLink, deleteCardLink, advisorMetrics, ticketAction, ticketTool }

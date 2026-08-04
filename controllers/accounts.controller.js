@@ -156,20 +156,41 @@ const SPECIAL_RECONTACT_TOOL = {
   special: true,
 }
 
-// Herramienta IA Especial "perfilado": NO es una función que el modelo llame. Actúa como
-// INTERRUPTOR: al asignarla a un prompt se activa el perfilado automático, que corre en
-// segundo plano después de responder (notas, etiquetas, etapa y variables) sin tocar la
-// atención al cliente ni añadir latencia.
-const SPECIAL_PROFILING_TOOL = {
-  id: 'perfilado',
-  name: 'perfilado',
-  description: 'Perfilamiento automático: tras cada respuesta, y en segundo plano, el asistente actualiza las notas del cliente, le aplica etiquetas, lo mueve de etapa y guarda datos en variables. No interviene en la conversación.',
+// Herramienta IA Especial "etiquetas": el asistente clasifica al cliente aplicando y
+// retirando etiquetas del CRM. Solo ve las etiquetas marcadas como disponibles para la IA,
+// y usa su descripción para saber cuándo aplica cada una.
+const SPECIAL_LABELS_TOOL = {
+  id: 'etiquetas',
+  name: 'etiquetas',
+  description: 'Permite al asistente etiquetar la conversación: aplicar_etiqueta y quitar_etiqueta. Solo puede usar las etiquetas marcadas como disponibles para la IA en Zona CRM → Etiquetas.',
   collectFields: [],
-  actionType: 'profiling',
+  actionType: 'labels',
   special: true,
 }
 
-const specialTools = () => [SPECIAL_WOO_TOOL, SPECIAL_AGENDA_TOOL, SPECIAL_PAYMENT_TOOL, SPECIAL_CATALOG_TOOL, SPECIAL_PMS_TOOL, SPECIAL_ORDERS_TOOL, SPECIAL_DATATABLES_TOOL, SPECIAL_RECONTACT_TOOL, SPECIAL_PROFILING_TOOL]
+// Herramienta IA Especial "ticket": el asistente gestiona la tarjeta del pipeline de ESTA
+// conversación (crear o mover de etapa). Nunca toca tarjetas de otras conversaciones.
+const SPECIAL_PIPELINE_TOOL = {
+  id: 'ticket',
+  name: 'ticket',
+  description: 'Permite al asistente gestionar el ticket de esta conversación en los pipelines: crear_ticket y mover_ticket entre etapas. Solo puede usar los pipelines marcados como disponibles para la IA.',
+  collectFields: [],
+  actionType: 'pipeline',
+  special: true,
+}
+
+// Herramienta IA Especial "datos": el asistente guarda en variables los datos que el cliente
+// va diciendo (ciudad, presupuesto, etc.). Solo las variables marcadas para la IA.
+const SPECIAL_VARIABLES_TOOL = {
+  id: 'datos',
+  name: 'datos',
+  description: 'Permite al asistente guardar datos del cliente en variables (guardar_datos). Solo puede rellenar las variables marcadas como disponibles para la IA.',
+  collectFields: [],
+  actionType: 'variables',
+  special: true,
+}
+
+const specialTools = () => [SPECIAL_WOO_TOOL, SPECIAL_AGENDA_TOOL, SPECIAL_PAYMENT_TOOL, SPECIAL_CATALOG_TOOL, SPECIAL_PMS_TOOL, SPECIAL_ORDERS_TOOL, SPECIAL_DATATABLES_TOOL, SPECIAL_RECONTACT_TOOL, SPECIAL_LABELS_TOOL, SPECIAL_PIPELINE_TOOL, SPECIAL_VARIABLES_TOOL]
 
 const mapCmsAsset = c => ({
   id: c.id, name: c.name, description: c.description || '', tags: parseJ(c.tags, []),
@@ -206,6 +227,12 @@ async function loadPublicAccount(accId) {
   try { [cmsProducts]   = await pool.query('SELECT * FROM cms_products WHERE account_id=? ORDER BY sort, created_at', [accId]) } catch { cmsProducts = [] }
   try { [stickers]      = await pool.query('SELECT * FROM stickers WHERE account_id=? ORDER BY created_at DESC', [accId]) } catch { stickers = [] }
   const [flows]     = await pool.query('SELECT * FROM flows WHERE account_id=?', [accId])
+  // Solo lo MARCADO como disponible para la IA: es lo único que verán las herramientas de
+  // etiquetado y de gestión de ticket. Se exponen con nombre propio (aiLabels/aiPipelines)
+  // para no confundirlas con las listas completas que `getAccount` da al panel.
+  let aiLabels = [], aiPipelines = []
+  try { [aiLabels] = await pool.query('SELECT id, name, color, description FROM labels WHERE account_id=? AND ai_enabled=1', [accId]) } catch { aiLabels = [] }
+  try { [aiPipelines] = await pool.query('SELECT id, name, stages FROM pipelines WHERE account_id=? AND ai_enabled=1', [accId]) } catch { aiPipelines = [] }
   // Resolve API keys with super-admin platform fallback
   const [[pf]] = await pool.query('SELECT openai_key, deepseek_key, anthropic_key, default_prompt_provider, default_prompt_model, returning_notice_default FROM platform_settings WHERE id=1')
   const effOpenai    = (acc.openai_key    && acc.openai_key.trim())    || pf?.openai_key    || ''
@@ -230,7 +257,13 @@ async function loadPublicAccount(accId) {
     defaultPromptProvider: pf?.default_prompt_provider || 'deepseek',
     defaultPromptModel: pf?.default_prompt_model || 'deepseek-v4-flash',
     agents: agents.map(mapAgent),
-    variables: variables.map(v => ({ id: v.id, name: v.name, type: v.type, defaultValue: v.default_value, description: v.description, isSystem: !!v.is_system })),
+    variables: variables.map(v => ({ id: v.id, name: v.name, type: v.type, defaultValue: v.default_value, description: v.description, isSystem: !!v.is_system, aiEnabled: v.ai_enabled == null ? true : !!v.ai_enabled })),
+    // Etiquetas y pipelines que el asistente PUEDE usar (solo los marcados).
+    aiLabels: aiLabels.map(l => ({ id: l.id, name: l.name, color: l.color, description: l.description || '' })),
+    aiPipelines: aiPipelines.map(p => ({
+      id: p.id, name: p.name,
+      stages: [...parseJ(p.stages, [])].sort((a, b) => (a.order || 0) - (b.order || 0)).map(s => ({ id: s.id, name: s.name })),
+    })),
     aiTools:   [SPECIAL_CMS_TOOL, ...specialTools(), ...aiTools.map(t => ({ id: t.id, name: t.name, description: t.description, collectFields: parseJ(t.collect_fields, []), flowId: t.flow_id, actionType: t.action_type || 'variable' }))],
     woocommerce: storeSvc.publicConfig(parseJ(acc.woocommerce, null)),
     scheduling: schedulingCfg,
@@ -333,10 +366,10 @@ const getAccount = async (req, res) => {
       roles:     roles.map(r => ({ id: r.id, name: r.name, isSystem: !!r.is_system, permissions: parseJ(r.permissions, {}) })),
       members:   members.map(m => ({ id: m.id, name: m.name, email: m.email, avatar: m.avatar, roleId: m.role_id, agentAccess: parseJ(m.agent_access, []), status: m.status })),
       agents:    agents.map(a => ({ ...mapAgent(a), createdAt: a.created_at })),
-      labels:    labels.map(l => ({ id: l.id, name: l.name, color: l.color, description: l.description || '' })),
+      labels:    labels.map(l => ({ id: l.id, name: l.name, color: l.color, description: l.description || '', aiEnabled: l.ai_enabled == null ? true : !!l.ai_enabled })),
       teams:     teams.map(t => ({ id: t.id, name: t.name, color: t.color || '#7c6fff', memberIds: parseJ(t.member_ids, []) })),
-      pipelines: pipelines.map(p => ({ id: p.id, name: p.name, stages: parseJ(p.stages, []), cards: parseJ(p.cards, []) })),
-      variables: variables.map(v => ({ id: v.id, name: v.name, type: v.type, defaultValue: v.default_value, description: v.description, isSystem: !!v.is_system })),
+      pipelines: pipelines.map(p => ({ id: p.id, name: p.name, stages: parseJ(p.stages, []), cards: parseJ(p.cards, []), aiEnabled: p.ai_enabled == null ? true : !!p.ai_enabled })),
+      variables: variables.map(v => ({ id: v.id, name: v.name, type: v.type, defaultValue: v.default_value, description: v.description, isSystem: !!v.is_system, aiEnabled: v.ai_enabled == null ? true : !!v.ai_enabled })),
       aiTools:   [SPECIAL_CMS_TOOL, ...specialTools(), ...aiTools.map(t => ({ id: t.id, name: t.name, description: t.description, collectFields: parseJ(t.collect_fields, []), flowId: t.flow_id, actionType: t.action_type || 'variable', createdAt: t.created_at }))],
       woocommerce: storeSvc.publicConfig(parseJ(acc.woocommerce, null)),
       scheduling: schedulingCfg,

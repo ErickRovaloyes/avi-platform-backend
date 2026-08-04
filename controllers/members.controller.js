@@ -209,15 +209,15 @@ const deleteTeam = async (req, res) => {
 
 // ── Labels ────────────────────────────────────────────────────────────────────
 
-// `description` explica cuándo aplicar la etiqueta: la lee el perfilado automático
-// para etiquetar por su cuenta, así que conviene que sea concreta.
+// `description` explica cuándo aplicar la etiqueta y `ai_enabled` si el asistente puede
+// usarla: los lee la herramienta IA de etiquetado, así que conviene que sean concretas.
 const createLabel = async (req, res) => {
   const { accId } = req.params
-  const { name, color, description } = req.body
+  const { name, color, description, aiEnabled } = req.body
   const id = 'lbl_' + uid()
   try {
-    await pool.query('INSERT INTO labels (id,account_id,name,color,description) VALUES (?,?,?,?,?)',
-      [id, accId, name, color, description || null])
+    await pool.query('INSERT INTO labels (id,account_id,name,color,description,ai_enabled) VALUES (?,?,?,?,?,?)',
+      [id, accId, name, color, description || null, aiEnabled === false ? 0 : 1])
     socket.emit(accId, 'account:updated', { accId })
     res.json({ id })
   } catch (err) { res.status(500).json({ error: 'Error interno' }) }
@@ -225,10 +225,14 @@ const createLabel = async (req, res) => {
 
 const updateLabel = async (req, res) => {
   const { accId, lblId } = req.params
-  const { name, color, description } = req.body
+  const { name, color, description, aiEnabled } = req.body
   try {
-    const sets = ['name=?', 'color=?']; const vals = [name, color]
+    const sets = []; const vals = []
+    if (name        !== undefined) { sets.push('name=?');        vals.push(name) }
+    if (color       !== undefined) { sets.push('color=?');       vals.push(color) }
     if (description !== undefined) { sets.push('description=?'); vals.push(description || null) }
+    if (aiEnabled   !== undefined) { sets.push('ai_enabled=?');  vals.push(aiEnabled ? 1 : 0) }
+    if (!sets.length) return res.json({ ok: true })
     await pool.query(`UPDATE labels SET ${sets.join(',')} WHERE id=? AND account_id=?`, [...vals, lblId, accId])
     socket.emit(accId, 'account:updated', { accId })
     res.json({ ok: true })

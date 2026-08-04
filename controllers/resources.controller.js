@@ -8,10 +8,10 @@ const { callAI, detectProvider, resolveProviderKey, extractJson } = require('./p
 
 const createVariable = async (req, res) => {
   const { accId } = req.params
-  const { id: gId, name, type = 'local', defaultValue = '', description = '', isSystem = false } = req.body
+  const { id: gId, name, type = 'local', defaultValue = '', description = '', isSystem = false, aiEnabled } = req.body
   const id = gId || ('var_' + uid())
   try {
-    await pool.query('INSERT INTO variables (id,account_id,name,type,default_value,description,is_system) VALUES (?,?,?,?,?,?,?)', [id, accId, name, type, defaultValue, description, isSystem ? 1 : 0])
+    await pool.query('INSERT INTO variables (id,account_id,name,type,default_value,description,is_system,ai_enabled) VALUES (?,?,?,?,?,?,?,?)', [id, accId, name, type, defaultValue, description, isSystem ? 1 : 0, aiEnabled === false ? 0 : 1])
     socket.emit(accId, 'account:updated', { accId })
     res.json({ id })
   } catch (err) { res.status(500).json({ error: 'Error interno' }) }
@@ -19,13 +19,14 @@ const createVariable = async (req, res) => {
 
 const updateVariable = async (req, res) => {
   const { accId, varId } = req.params
-  const { name, type, defaultValue, description } = req.body
+  const { name, type, defaultValue, description, aiEnabled } = req.body
   try {
     const sets = []; const vals = []
     if (name         !== undefined) { sets.push('name=?');          vals.push(name) }
     if (type         !== undefined) { sets.push('type=?');          vals.push(type) }
     if (defaultValue !== undefined) { sets.push('default_value=?'); vals.push(defaultValue) }
     if (description  !== undefined) { sets.push('description=?');   vals.push(description) }
+    if (aiEnabled    !== undefined) { sets.push('ai_enabled=?');    vals.push(aiEnabled ? 1 : 0) }
     if (!sets.length) return res.json({ ok: true })
     vals.push(varId, accId)
     await pool.query(`UPDATE variables SET ${sets.join(',')} WHERE id=? AND account_id=?`, vals)

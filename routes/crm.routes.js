@@ -22,6 +22,10 @@ router.delete('/accounts/:accId/crm/task-schedules/:id', authMiddleware, ctrl.de
 
 // Acción de ticket (deal o tarea) sobre una conversación — nodo de flujo + inbox
 router.post('/accounts/:accId/crm/ticket-action',       authMiddleware, ctrl.ticketAction)
+// Proxy de la HERRAMIENTA IA de ticket para el webchat (sin sesión), igual que el resto de
+// proxies del motor. Acotado: solo crear/mover el ticket de la conversación indicada y solo
+// en pipelines marcados como disponibles para la IA.
+router.post('/accounts/:accId/crm/ticket-tool',         ctrl.ticketTool)
 
 // Relaciones entre tickets/deals
 router.get('/accounts/:accId/crm/card-links',           authMiddleware, ctrl.listCardLinks)
