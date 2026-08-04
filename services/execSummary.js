@@ -78,7 +78,9 @@ function buildHtml(sm) {
   const topTopics = sm.topics.length ? sm.topics.map(t => `${TOPIC_LABEL[t.topic] || t.topic} (${t.count})`).join(' · ') : '—'
   const sentTot = (sm.sentiment.positivo + sm.sentiment.neutral + sm.sentiment.negativo) || 1
   const pos = Math.round(sm.sentiment.positivo / sentTot * 100), neg = Math.round(sm.sentiment.negativo / sentTot * 100)
-  return `<div style="font-family:Arial,Helvetica,sans-serif;max-width:600px;margin:0 auto;color:#12241b;">
+  // Misma pila de sistema que el resto de correos: las tipografías de marca no cargan en
+  // Gmail ni en Outlook de escritorio (ver services/email.js).
+  return `<div style="font-family:'Helvetica Neue',Helvetica,Arial,sans-serif;max-width:600px;margin:0 auto;color:#12241b;">
     <div style="background:linear-gradient(135deg,#0ea968,#6a53e6);padding:22px 24px;border-radius:14px 14px 0 0;color:#fff;">
       <div style="font-size:12px;letter-spacing:.12em;text-transform:uppercase;opacity:.85;">Resumen ejecutivo · últimos ${sm.days} días</div>
       <div style="font-size:22px;font-weight:800;margin-top:4px;">${sm.account}</div>

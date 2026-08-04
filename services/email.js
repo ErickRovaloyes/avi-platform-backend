@@ -124,7 +124,11 @@ function codeEmailHtml({ code, title, intro, footer, accent = '#0b8a4f', logo = 
   const isHex6 = /^#[0-9a-fA-F]{6}$/.test(String(accent))
   const tint = isHex6 ? accent + '1a' : '#eef4f1'   // fondo ~10% del acento (hex8) o gris suave
   const logoTag = logo ? `<img src="${_esc(logo)}" alt="" style="max-height:44px;margin:0 auto 14px;display:block;">` : ''
-  return `<!doctype html><html><body style="margin:0;background:#f4f6f8;font-family:Segoe UI,Roboto,Helvetica,Arial,sans-serif;">
+  // Pila de sistema deliberada: Gmail y Outlook de escritorio descartan @font-face, así que
+  // las tipografías de marca NO pueden viajar en un correo. Helvetica Neue/Helvetica es la
+  // familia de la que desciende Helvetica Now, así que el correo se parece a la app en vez
+  // de caer en la fuente por defecto de Windows.
+  return `<!doctype html><html><body style="margin:0;background:#f4f6f8;font-family:'Helvetica Neue',Helvetica,Arial,sans-serif;">
   <div style="max-width:460px;margin:0 auto;padding:32px 20px;">
     <div style="background:#fff;border-radius:14px;padding:28px 26px;box-shadow:0 2px 10px rgba(0,0,0,.06);">
       ${logoTag}

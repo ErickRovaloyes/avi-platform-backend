@@ -56,7 +56,9 @@ function cardHtml({ emoji, title, lines = [], accent = '#0b8a4f', brand, linkUrl
   const btn = linkUrl
     ? `<div style="margin-top:16px;"><a href="${esc(linkUrl)}" style="display:inline-block;padding:11px 22px;background:${esc(accent)};color:#fff;text-decoration:none;border-radius:9px;font-size:14px;font-weight:700;">${esc(linkLabel || '💬 Ir al chat')}</a></div>`
     : ''
-  return `<!doctype html><html><body style="margin:0;background:#f4f6f8;font-family:Segoe UI,Roboto,Helvetica,Arial,sans-serif;">
+  // Misma pila de sistema que el resto de correos: las tipografías de marca no cargan en
+  // Gmail ni en Outlook de escritorio (ver services/email.js).
+  return `<!doctype html><html><body style="margin:0;background:#f4f6f8;font-family:'Helvetica Neue',Helvetica,Arial,sans-serif;">
     <div style="max-width:480px;margin:0 auto;padding:30px 20px;">
       <div style="background:#fff;border-radius:14px;padding:26px 24px;box-shadow:0 2px 10px rgba(0,0,0,.06);border-top:4px solid ${esc(accent)};">
         ${logo}
