@@ -91,7 +91,9 @@ const detectOpportunities = async (req, res) => {
       // Origen del lead heredado del chat (directo/anuncio/link) → se muestra y se
       // puede filtrar en el pipeline. No toca `source:'ia'` (marca "Detectado por IA").
       const origin = parseJ(cv.origin, null)
-      newCards.push({ id: cardId, stageId: firstStage.id, title: `Oportunidad — ${contactName || 'Cliente'}`, contact: contactName, convId: cv.id, agentId: cv.agent_id, source: 'ia', ...(origin?.type ? { origin, originType: origin.type } : {}), createdAt: Date.now() })
+      // `contactId` es el vínculo DURO con la ficha del contacto (card.contact es solo un
+      // nombre y no distingue homónimos). La ficha 360° lo usa para listar sus tickets.
+      newCards.push({ id: cardId, stageId: firstStage.id, title: `Oportunidad — ${contactName || 'Cliente'}`, contact: contactName, ...(lv.contact_id ? { contactId: lv.contact_id } : {}), convId: cv.id, agentId: cv.agent_id, source: 'ia', ...(origin?.type ? { origin, originType: origin.type } : {}), createdAt: Date.now() })
       hist.push([accId, pipe.id, cardId, null, firstStage.id, Date.now()])
       withDeal.add(cv.id)
     }
@@ -705,5 +707,19 @@ const ticketTool = async (req, res) => {
   } catch (err) { res.json({ text: `No se pudo gestionar el ticket: ${err.message}` }) }
 }
 
+// Proxy de la HERRAMIENTA IA de tareas para el motor del NAVEGADOR (webchat sin sesión).
+// Igual de estrecho que `ticketTool`: solo crea UNA tarea ligada a la conversación indicada,
+// con la misma lógica de asignación y fecha que usa el motor del servidor.
+const taskTool = async (req, res) => {
+  const { accId } = req.params
+  const { convId, ...args } = req.body || {}
+  if (!convId) return res.status(400).json({ error: 'Falta convId' })
+  try {
+    const [[acc]] = await pool.query('SELECT ai_timezone FROM accounts WHERE id=?', [accId])
+    const out = await require('../services/aiTasks').createAiTask(accId, convId, args, { timezone: acc?.ai_timezone || 'America/Lima' })
+    res.json(out)
+  } catch (err) { res.json({ text: `No se pudo crear la tarea: ${err.message}` }) }
+}
+
 module.exports = { listNotes, createNote, deleteNote, listTasks, createTask, updateTask, deleteTask, listActivity, kpis, logActivity, classifyConversations, previewExecutiveSummary, sendExecutiveSummary, pipelineVelocity, retention, copilotAsk, platformAsk, detectOpportunities, leadScores, qaRun, qaReview,
-  listTaskSchedules, createTaskSchedule, updateTaskSchedule, deleteTaskSchedule, listCardLinks, createCardLink, deleteCardLink, advisorMetrics, ticketAction, ticketTool }
+  listTaskSchedules, createTaskSchedule, updateTaskSchedule, deleteTaskSchedule, listCardLinks, createCardLink, deleteCardLink, advisorMetrics, ticketAction, ticketTool, taskTool }

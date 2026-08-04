@@ -105,6 +105,60 @@ const resend2fa = async (req, res) => {
   } catch (err) { res.status(500).json({ error: 'Error interno' }) }
 }
 
+// ── Recuperar contraseña ──────────────────────────────────────────────────────
+// Paso 1: pide el código. Responde SIEMPRE ok cuando el correo está configurado, exista o
+// no la cuenta: si distinguiera, cualquiera podría averiguar qué correos están registrados.
+const forgot = async (req, res) => {
+  const email = String(req.body?.email || '').trim().toLowerCase()
+  if (!email) return res.status(400).json({ error: 'Correo requerido' })
+  try {
+    // Sin proveedor de correo el código no puede llegar; decirlo aquí evita que la persona
+    // espere un correo que nunca va a existir (y no revela nada sobre la cuenta).
+    if (!isConfigured(await loadEmailConfig())) {
+      return res.status(503).json({ error: 'El envío de correos no está configurado. Contacta al administrador para recuperar tu contraseña.' })
+    }
+    const [[m]] = await pool.query("SELECT id FROM members WHERE email=? AND status='active' LIMIT 1", [email])
+    const [[sa]] = await pool.query('SELECT id FROM super_admins WHERE email=? LIMIT 1', [email])
+    if (m || sa) {
+      // Este endpoint es público y manda correo: sin freno, cualquiera podría inundar el
+      // buzón de un usuario registrado. Un código por minuto es suficiente para el flujo real.
+      const [[recent]] = await pool.query(
+        "SELECT created_at FROM email_codes WHERE email=? AND purpose='reset' AND consumed=0 ORDER BY created_at DESC LIMIT 1",
+        [email]
+      )
+      if (recent && Date.now() - Number(recent.created_at) < 60000) return res.json({ ok: true })
+      const r = await issueCode(email, 'reset')
+      if (!r.ok) console.error('[FORGOT] no se pudo enviar:', r.error)
+    }
+    res.json({ ok: true })
+  } catch (err) {
+    console.error('[FORGOT]', err)
+    res.status(500).json({ error: 'Error interno' })
+  }
+}
+
+// Paso 2: código + contraseña nueva. La contraseña se actualiza en TODAS las filas de
+// members con ese correo (una persona puede ser miembro de varias cuentas) y en
+// super_admins si también lo es, para que no queden credenciales desincronizadas.
+const resetPassword = async (req, res) => {
+  const email = String(req.body?.email || '').trim().toLowerCase()
+  const code = String(req.body?.code || '').trim()
+  const newPassword = String(req.body?.newPassword || '')
+  if (!email || !code || !newPassword) return res.status(400).json({ error: 'Faltan datos' })
+  if (newPassword.length < 6) return res.status(400).json({ error: 'La contraseña debe tener al menos 6 caracteres' })
+  try {
+    const v = await verifyCode(email, 'reset', code)
+    if (!v.ok) return res.status(401).json({ error: v.error })
+    const [r1] = await pool.query('UPDATE members SET password=? WHERE email=?', [newPassword, email])
+    const [r2] = await pool.query('UPDATE super_admins SET password=? WHERE email=?', [newPassword, email])
+    if (!r1.affectedRows && !r2.affectedRows) return res.status(404).json({ error: 'No hay ninguna cuenta con ese correo' })
+    res.json({ ok: true })
+  } catch (err) {
+    console.error('[RESET PASSWORD]', err)
+    res.status(500).json({ error: 'Error interno' })
+  }
+}
+
 const switchAccount = async (req, res) => {
   const { accountId } = req.body
   const allIds = req.user.allAccountIds || [req.user.accountId].filter(Boolean)
@@ -296,4 +350,4 @@ const notifTestEmail = async (req, res) => {
   } catch (err) { res.status(500).json({ error: 'Error interno' }) }
 }
 
-module.exports = { login, verify2fa, resend2fa, switchAccount, impersonate, refreshSession, updateMyProfile, getMyNotifPrefs, saveMyNotifPrefs, notifTestEmail }
+module.exports = { login, verify2fa, resend2fa, forgot, resetPassword, switchAccount, impersonate, refreshSession, updateMyProfile, getMyNotifPrefs, saveMyNotifPrefs, notifTestEmail }

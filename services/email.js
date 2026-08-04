@@ -105,6 +105,13 @@ const DEFAULT_EMAIL_TEMPLATES = {
     footer: 'Este código expira en {{minutos}} minutos. Si no fuiste tú, ignora este correo.',
     accent: '#0b8a4f', logoUrl: '', html: '',
   },
+  reset: {
+    subject: 'Recupera tu contraseña',
+    title: 'Recupera tu contraseña',
+    intro: 'Usa este código para establecer una contraseña nueva.',
+    footer: 'Este código expira en {{minutos}} minutos. Si no pediste cambiar tu contraseña, ignora este correo: tu contraseña actual sigue siendo válida.',
+    accent: '#0b8a4f', logoUrl: '', html: '',
+  },
 }
 
 function _interp(str, vars) {

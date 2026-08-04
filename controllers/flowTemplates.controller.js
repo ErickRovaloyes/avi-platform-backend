@@ -7,6 +7,11 @@
 const pool = require('../db')
 const { uid, parseJ } = require('../utils')
 
+// Un super admin que ENTRA a una cuenta recibe un token con type:'member' e
+// isImpersonating:true (auth.controller.impersonate). Comprobar solo el tipo dejaba la
+// publicación de plantillas fuera del alcance de todos, incluido él.
+const isSuperAdmin = req => req.user?.type === 'superadmin' || req.user?.isImpersonating === true
+
 // Remapea recursivamente cualquier id de nodo (strings dentro de connections) a ids nuevos.
 function remapRefs(val, idMap) {
   if (typeof val === 'string') return idMap[val] || val
@@ -36,7 +41,7 @@ const list = async (_req, res) => {
 
 // Crear plantilla desde un flujo (solo super admin). El front envía el grafo del flujo.
 const create = async (req, res) => {
-  if (req.user?.type !== 'superadmin') return res.status(403).json({ error: 'Solo super admin' })
+  if (!isSuperAdmin(req)) return res.status(403).json({ error: 'Solo super admin' })
   const b = req.body || {}
   const name = String(b.name || '').trim()
   if (!name) return res.status(400).json({ error: 'El nombre es obligatorio' })
@@ -54,7 +59,7 @@ const create = async (req, res) => {
 }
 
 const update = async (req, res) => {
-  if (req.user?.type !== 'superadmin') return res.status(403).json({ error: 'Solo super admin' })
+  if (!isSuperAdmin(req)) return res.status(403).json({ error: 'Solo super admin' })
   const { id } = req.params; const b = req.body || {}
   const sets = [], vals = []
   if (b.name        !== undefined) { sets.push('name=?');        vals.push(String(b.name).slice(0, 150)) }
@@ -67,7 +72,7 @@ const update = async (req, res) => {
 }
 
 const remove = async (req, res) => {
-  if (req.user?.type !== 'superadmin') return res.status(403).json({ error: 'Solo super admin' })
+  if (!isSuperAdmin(req)) return res.status(403).json({ error: 'Solo super admin' })
   try { await pool.query('DELETE FROM flow_templates WHERE id=?', [req.params.id]); res.json({ ok: true }) }
   catch (err) { res.status(500).json({ error: 'Error interno' }) }
 }

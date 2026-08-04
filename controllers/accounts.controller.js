@@ -190,7 +190,19 @@ const SPECIAL_VARIABLES_TOOL = {
   special: true,
 }
 
-const specialTools = () => [SPECIAL_WOO_TOOL, SPECIAL_AGENDA_TOOL, SPECIAL_PAYMENT_TOOL, SPECIAL_CATALOG_TOOL, SPECIAL_PMS_TOOL, SPECIAL_ORDERS_TOOL, SPECIAL_DATATABLES_TOOL, SPECIAL_RECONTACT_TOOL, SPECIAL_LABELS_TOOL, SPECIAL_PIPELINE_TOOL, SPECIAL_VARIABLES_TOOL]
+// Herramienta IA Especial "tareas": el asistente crea tareas del CRM para este cliente,
+// con fecha y hora si hace falta recordatorio. Se asignan al asesor de la conversación
+// salvo que la IA indique otro.
+const SPECIAL_TASKS_TOOL = {
+  id: 'tareas',
+  name: 'tareas',
+  description: 'Permite al asistente crear tareas del CRM para este cliente (crear_tarea), con fecha y hora de vencimiento para que el asesor reciba un recordatorio.',
+  collectFields: [],
+  actionType: 'tasks',
+  special: true,
+}
+
+const specialTools = () => [SPECIAL_WOO_TOOL, SPECIAL_AGENDA_TOOL, SPECIAL_PAYMENT_TOOL, SPECIAL_CATALOG_TOOL, SPECIAL_PMS_TOOL, SPECIAL_ORDERS_TOOL, SPECIAL_DATATABLES_TOOL, SPECIAL_RECONTACT_TOOL, SPECIAL_LABELS_TOOL, SPECIAL_PIPELINE_TOOL, SPECIAL_VARIABLES_TOOL, SPECIAL_TASKS_TOOL]
 
 const mapCmsAsset = c => ({
   id: c.id, name: c.name, description: c.description || '', tags: parseJ(c.tags, []),
@@ -233,6 +245,11 @@ async function loadPublicAccount(accId) {
   let aiLabels = [], aiPipelines = []
   try { [aiLabels] = await pool.query('SELECT id, name, color, description FROM labels WHERE account_id=? AND ai_enabled=1', [accId]) } catch { aiLabels = [] }
   try { [aiPipelines] = await pool.query('SELECT id, name, stages FROM pipelines WHERE account_id=? AND ai_enabled=1', [accId]) } catch { aiPipelines = [] }
+  // Asesores activos: los necesitan el nodo "Ticket humano" (que sin esto NUNCA asignaba en
+  // WhatsApp/Messenger/IG) y la herramienta de tareas. Solo id y nombre — nada de correo ni
+  // contraseña, porque este objeto también alimenta el endpoint público (que los quita igual).
+  let members = []
+  try { [members] = await pool.query("SELECT id, name FROM members WHERE account_id=? AND status='active'", [accId]) } catch { members = [] }
   // Resolve API keys with super-admin platform fallback
   const [[pf]] = await pool.query('SELECT openai_key, deepseek_key, anthropic_key, default_prompt_provider, default_prompt_model, returning_notice_default FROM platform_settings WHERE id=1')
   const effOpenai    = (acc.openai_key    && acc.openai_key.trim())    || pf?.openai_key    || ''
@@ -264,6 +281,7 @@ async function loadPublicAccount(accId) {
       id: p.id, name: p.name,
       stages: [...parseJ(p.stages, [])].sort((a, b) => (a.order || 0) - (b.order || 0)).map(s => ({ id: s.id, name: s.name })),
     })),
+    members: members.map(mapNamed),
     aiTools:   [SPECIAL_CMS_TOOL, ...specialTools(), ...aiTools.map(t => ({ id: t.id, name: t.name, description: t.description, collectFields: parseJ(t.collect_fields, []), flowId: t.flow_id, actionType: t.action_type || 'variable' }))],
     woocommerce: storeSvc.publicConfig(parseJ(acc.woocommerce, null)),
     scheduling: schedulingCfg,
@@ -294,7 +312,10 @@ const getPublicAccount = async (req, res) => {
   try {
     const data = await loadPublicAccount(accId)
     if (!data) return res.status(404).json({ error: 'Cuenta no encontrada' })
-    res.json(data)
+    // Este endpoint NO pide autenticación: lo consume el webchat incrustado en cualquier web.
+    // La lista de asesores es para el motor del servidor, no para publicarla a quien pase.
+    const { members, ...publicData } = data
+    res.json(publicData)
   } catch (err) {
     console.error('[GET PUBLIC ACCOUNT]', err)
     res.status(500).json({ error: 'Error interno' })

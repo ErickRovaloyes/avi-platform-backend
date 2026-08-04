@@ -26,6 +26,8 @@ router.post('/accounts/:accId/crm/ticket-action',       authMiddleware, ctrl.tic
 // proxies del motor. Acotado: solo crear/mover el ticket de la conversación indicada y solo
 // en pipelines marcados como disponibles para la IA.
 router.post('/accounts/:accId/crm/ticket-tool',         ctrl.ticketTool)
+// Ídem para la herramienta de tareas: solo crea una tarea ligada a la conversación indicada.
+router.post('/accounts/:accId/crm/task-tool',           ctrl.taskTool)
 
 // Relaciones entre tickets/deals
 router.get('/accounts/:accId/crm/card-links',           authMiddleware, ctrl.listCardLinks)

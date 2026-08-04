@@ -15,6 +15,10 @@ const pool = mysql.createPool({
   connectionLimit:  parseInt(process.env.DB_POOL_LIMIT || '25'),
   queueLimit:       0,
   timezone:         '+00:00',
+  // Explícito a propósito: hoy mysql2 v3 ya negocia utf8mb4 por defecto, pero dejarlo
+  // implícito significa depender de que ese default no cambie. Con acentos y "ñ" de por
+  // medio, un cambio silencioso de charset corrompe texto de forma difícil de rastrear.
+  charset: 'UTF8MB4_UNICODE_CI',
 })
 
 // Sube el sort_buffer_size POR SESIÓN en cada conexión nueva del pool. El valor por

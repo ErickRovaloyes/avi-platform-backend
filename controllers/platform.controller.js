@@ -106,7 +106,10 @@ const getSettings = async (req, res) => {
           signupVerifyEnabled: !!r.signup_verify_enabled,
           login2faEnabled: !!r.login_2fa_enabled,
           // Plantillas de correo (guardadas ∪ defaults) para el editor del Super Panel.
-          emailTemplates: { login: { ...DEFAULT_EMAIL_TEMPLATES.login, ...(parseJ(r.email_templates, {})?.login || {}) }, signup: { ...DEFAULT_EMAIL_TEMPLATES.signup, ...(parseJ(r.email_templates, {})?.signup || {}) } },
+          // Se recorren los defaults en vez de nombrarlos uno a uno: así, al añadir una
+          // plantilla nueva, el editor la recibe sin tener que tocar también esta línea.
+          emailTemplates: Object.fromEntries(Object.keys(DEFAULT_EMAIL_TEMPLATES).map(k =>
+            [k, { ...DEFAULT_EMAIL_TEMPLATES[k], ...(parseJ(r.email_templates, {})?.[k] || {}) }])),
           brandLogo: r.brand_logo || '',
           brandLogoLight: r.brand_logo_light || '',
           brandFavicon: r.brand_favicon || '',
@@ -524,6 +527,11 @@ async function _loadBrand() {
   try { const [[s]] = await pool.query('SELECT brand_logo, brand_name FROM platform_settings WHERE id=1'); return { name: s?.brand_name || '', logo: s?.brand_logo || '' } } catch { return {} }
 }
 
+// Plantillas de código que el super admin puede editar y previsualizar. Cualquier otro
+// valor cae a 'login' (antes solo se reconocían 'login' y 'signup', así que una plantilla
+// nueva se previsualizaba como la de acceso).
+const EMAIL_PURPOSES = ['login', 'signup', 'reset']
+
 // Envía un correo de prueba (solo super admin). Con { purpose, template } envía una
 // prueba REAL de esa plantilla (con un código de ejemplo); si no, el correo genérico.
 const testEmail = async (req, res) => {
@@ -534,7 +542,7 @@ const testEmail = async (req, res) => {
   try {
     let subject, html, text
     if (purpose && template) {
-      const mail = renderCodeEmail(purpose === 'signup' ? 'signup' : 'login', { code: '123456', templates: { [purpose]: template }, brand: await _loadBrand() })
+      const mail = renderCodeEmail(EMAIL_PURPOSES.includes(purpose) ? purpose : 'login', { code: '123456', templates: { [purpose]: template }, brand: await _loadBrand() })
       subject = mail.subject; html = mail.html; text = mail.text
     } else {
       subject = 'Correo de prueba — AVI Asistente'
@@ -553,7 +561,8 @@ const emailPreview = async (req, res) => {
   if (req.user.type !== 'superadmin') return res.status(403).json({ error: 'Solo super admin' })
   const { purpose, template } = req.body || {}
   try {
-    const mail = renderCodeEmail(purpose === 'signup' ? 'signup' : 'login', { code: '123456', templates: { [purpose === 'signup' ? 'signup' : 'login']: template || {} }, brand: await _loadBrand() })
+    const p = EMAIL_PURPOSES.includes(purpose) ? purpose : 'login'
+    const mail = renderCodeEmail(p, { code: '123456', templates: { [p]: template || {} }, brand: await _loadBrand() })
     res.json({ subject: mail.subject, html: mail.html })
   } catch (err) { res.status(500).json({ error: 'Error interno' }) }
 }

@@ -10,7 +10,7 @@ const socket = require('./socket')
 const { uid, parseJ } = require('../utils')
 
 async function loadConv(accId, convId) {
-  const [[c]] = await pool.query('SELECT id, agent_id, guest_name, pipeline_cards FROM conversations WHERE id=? AND account_id=?', [convId, accId])
+  const [[c]] = await pool.query('SELECT id, agent_id, guest_name, pipeline_cards, local_vars FROM conversations WHERE id=? AND account_id=?', [convId, accId])
   return c || null
 }
 
@@ -20,7 +20,14 @@ async function dealCreate(accId, conv, { pipelineId, stageId, title, value }) {
   if (!pipe) throw new Error('Pipeline no encontrado')
   const cards = parseJ(pipe.cards, [])
   const cardId = 'card_' + uid()
-  cards.push({ id: cardId, stageId: stageId || null, title: title || conv.guest_name || 'Ticket', value: value || '', contact: conv.guest_name || '' })
+  // `convId`/`contactId` son los vínculos DUROS que permiten listar los tickets desde la
+  // ficha del contacto; `contact` es solo el nombre y no distingue homónimos.
+  const contactId = parseJ(conv.local_vars, {})?.contact_id || null
+  cards.push({
+    id: cardId, stageId: stageId || null, title: title || conv.guest_name || 'Ticket',
+    value: value || '', contact: conv.guest_name || '',
+    convId: conv.id, agentId: conv.agent_id, ...(contactId ? { contactId } : {}), createdAt: Date.now(),
+  })
   await pool.query('UPDATE pipelines SET cards=? WHERE id=?', [JSON.stringify(cards), pipelineId])
   if (stageId) { try { await pool.query('INSERT INTO deal_stage_history (account_id,pipeline_id,card_id,from_stage,to_stage,at) VALUES (?,?,?,?,?,?)', [accId, pipelineId, cardId, null, stageId, Date.now()]) } catch {} }
   const links = parseJ(conv.pipeline_cards, [])

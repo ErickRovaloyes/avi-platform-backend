@@ -122,9 +122,46 @@ const profile360 = async (req, res) => {
     const phone = c.phone || ''
 
     const [convos] = await pool.query(
-      `SELECT id, agent_id, channel_type, preview, ai_enabled, topic, sentiment, created_at, updated_at
+      `SELECT id, agent_id, channel_type, preview, ai_enabled, topic, sentiment, pipeline_cards, created_at, updated_at
        FROM conversations WHERE account_id=? AND JSON_UNQUOTE(JSON_EXTRACT(local_vars,'$.contact_id'))=?
        ORDER BY created_at DESC LIMIT 100`, [accId, id])
+
+    // ── Tickets (tarjetas de pipeline) del contacto ───────────────────────────
+    // No hay un id de contacto en las tarjetas históricas: `card.contact` es solo un nombre,
+    // y fiarse del nombre mezclaría homónimos. Se usan tres vías DURAS y se unen por card.id:
+    //   ① los enlaces conversación→tarjeta (`conversations.pipeline_cards`),
+    //   ② `card.convId` apuntando a una conversación de este contacto,
+    //   ③ `card.contactId`, que se guarda en las tarjetas nuevas desde ahora.
+    const convIds = new Set(convos.map(x => x.id))
+    const linkedCardIds = new Set()
+    for (const cv of convos) for (const l of parseJ(cv.pipeline_cards, [])) if (l?.cardId) linkedCardIds.add(l.cardId)
+
+    let deals = []
+    try {
+      const [pipes] = await pool.query('SELECT id, name, stages, cards FROM pipelines WHERE account_id=?', [accId])
+      for (const p of pipes) {
+        const stages = parseJ(p.stages, [])
+        for (const card of parseJ(p.cards, [])) {
+          if (!card?.id) continue
+          if (!(linkedCardIds.has(card.id) || (card.convId && convIds.has(card.convId)) || card.contactId === id)) continue
+          const st = stages.find(s => s.id === card.stageId) || null
+          deals.push({
+            cardId: card.id, pipelineId: p.id, pipelineName: p.name,
+            stageId: card.stageId || null, stageName: st?.name || '', stageColor: st?.color || '',
+            title: card.title || '', value: card.value || '',
+            convId: card.convId || null, agentId: card.agentId || null,
+            createdAt: card.createdAt || null,
+          })
+        }
+      }
+      deals.sort((a, b) => (b.createdAt || 0) - (a.createdAt || 0))
+    } catch { deals = [] }
+    // El "valor" es texto libre en la tarjeta ("2 millones", "$1.500"), así que solo suma lo
+    // que sea claramente numérico; si no, el total engañaría más que ayudar.
+    const dealsValue = deals.reduce((s, d) => {
+      const n = Number(String(d.value).replace(/[^\d.,-]/g, '').replace(/\.(?=\d{3}\b)/g, '').replace(',', '.'))
+      return s + (Number.isFinite(n) ? n : 0)
+    }, 0)
 
     let orders = []
     try { [orders] = await pool.query("SELECT id, code, status, total, currency, type, payment_status, created_at FROM orders WHERE account_id=? AND contact_id=? AND status<>'draft' ORDER BY created_at DESC LIMIT 100", [accId, id]) } catch {}
@@ -147,6 +184,8 @@ const profile360 = async (req, res) => {
       avgTicket: notCanceled.length ? Math.round(revenue / notCanceled.length) : 0,
       bookings: bookings.length,
       openTasks: tasks.filter(t => t.status === 'open').length,
+      deals: deals.length,
+      dealsValue: Math.round(dealsValue),
       currency,
       firstInteraction: tsAll.length ? Math.min(...tsAll) : c.created_at,
       lastInteraction: tsLast.length ? Math.max(...tsLast) : c.created_at,
@@ -159,9 +198,10 @@ const profile360 = async (req, res) => {
     for (const b of bookings) timeline.push({ type: 'booking', ts: b.created_at, status: b.status || '' })
     for (const n of notes) timeline.push({ type: 'note', ts: n.ts, author: n.author_name || '', detail: n.content || '' })
     for (const t of tasks) timeline.push({ type: 'task', ts: t.created_at, title: t.title, status: t.status, assignee: t.assignee_name || '', dueAt: t.due_at })
+    for (const d of deals) if (d.createdAt) timeline.push({ type: 'deal', ts: d.createdAt, title: d.title, pipelineName: d.pipelineName, stageName: d.stageName, value: d.value, cardId: d.cardId, pipelineId: d.pipelineId })
     timeline.sort((a, b) => (b.ts || 0) - (a.ts || 0))
 
-    res.json({ contact, metrics, timeline: timeline.slice(0, 150) })
+    res.json({ contact, metrics, deals, timeline: timeline.slice(0, 150) })
   } catch (err) { console.error('[CONTACT 360]', err); res.status(500).json({ error: 'Error interno' }) }
 }
 

@@ -1628,6 +1628,9 @@ app.use('/api',                flowTemplatesRoutes)
 
   try { require('./services/emailNotify').startWorker() } catch (e) { console.warn('[email notify] worker no iniciado:', e.message) }
   try { require('./services/scheduledMessages').startWorker() } catch (e) { console.warn('[scheduled messages] worker no iniciado:', e.message) }
+  // Repara en segundo plano el texto que quedó corrupto (ñ → Ã±) mientras el frontend
+  // leía mal el nombre del token. Idempotente: cuando no queda nada roto, no hace nada.
+  try { require('./services/repairMojibake').start() } catch (e) { console.warn('[repair] no iniciado:', e.message) }
 
   try { require('./services/platformBilling').startWorker() } catch (e) { console.warn('[platform billing] worker no iniciado:', e.message) }
   // Procesador del outbox de eventos de dominio (Core Booking Engine, Fase 0)

@@ -10,7 +10,7 @@ const MAX_ATTEMPTS = 6
 
 function gen6() { return String(Math.floor(100000 + Math.random() * 900000)) }
 
-// Crea + envía un código. purpose: 'login' | 'signup'. Devuelve { ok, error }.
+// Crea + envía un código. purpose: 'login' | 'signup' | 'reset'. Devuelve { ok, error }.
 async function issueCode(email, purpose) {
   const cfg = await loadEmailConfig()
   if (!isConfigured(cfg)) return { ok: false, error: 'Correo no configurado' }
