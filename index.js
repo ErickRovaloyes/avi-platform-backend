@@ -108,6 +108,7 @@ const mediaRoutes         = require('./routes/media.routes')
 const quickRepliesRoutes  = require('./routes/quickReplies.routes')
 const notificationsRoutes = require('./routes/notifications.routes')
 const flowAssistRoutes    = require('./routes/flowAssist.routes')
+const scheduledMsgRoutes  = require('./routes/scheduledMessages.routes')
 const crmRoutes           = require('./routes/crm.routes')
 const dataTablesRoutes    = require('./routes/dataTables.routes')
 const contactsRoutes      = require('./routes/contacts.routes')
@@ -158,6 +159,7 @@ app.use('/api',                mediaRoutes)
 app.use('/api',                quickRepliesRoutes)
 app.use('/api',                notificationsRoutes)
 app.use('/api',                flowAssistRoutes)
+app.use('/api',                scheduledMsgRoutes)
 app.use('/api',                crmRoutes)
 app.use('/api',                dataTablesRoutes)
 app.use('/api',                contactsRoutes)
@@ -1374,6 +1376,30 @@ app.use('/api',                flowTemplatesRoutes)
     // Etapas configurables del Plan Gratuito (se guardan en el tipo Demo): array de 3 etapas
     // { label, days, aiEnabled, moduleSet, contactLimit, hardBlock } — cortes acumulativos por days.
     "ALTER TABLE account_types ADD COLUMN free_stages JSON",
+    // Mensajes DESTACADOS dentro de un chat (los marca un asesor para tenerlos a mano).
+    "ALTER TABLE messages ADD COLUMN starred TINYINT(1) DEFAULT 0",
+    "ALTER TABLE messages ADD COLUMN starred_at BIGINT",
+    "ALTER TABLE messages ADD COLUMN starred_by VARCHAR(100)",
+    // Mensajes PROGRAMADOS: el asesor escribe ahora y se entrega a la hora indicada.
+    // En WhatsApp/Messenger/Instagram no puede pasarse de la ventana de servicio de 24 h
+    // (se valida al programar y otra vez justo antes de enviar).
+    `CREATE TABLE IF NOT EXISTS scheduled_messages (
+       id              VARCHAR(50) PRIMARY KEY,
+       account_id      VARCHAR(50) NOT NULL,
+       agent_id        VARCHAR(50),
+       conversation_id VARCHAR(80) NOT NULL,
+       channel_type    VARCHAR(20),
+       content         TEXT,
+       scheduled_at    BIGINT,
+       status          VARCHAR(20) DEFAULT 'pending',   -- pending|sent|failed|cancelled
+       error           VARCHAR(255),
+       created_by      VARCHAR(100),
+       created_by_name VARCHAR(120),
+       created_at      BIGINT,
+       sent_at         BIGINT,
+       INDEX idx_sched_due (status, scheduled_at),
+       INDEX idx_sched_conv (account_id, conversation_id, status)
+     )`,
     // Turno del reparto round-robin de asesores, por ámbito (un nodo de transferencia, un
     // calendario…). Cada ámbito rota de forma independiente. El UPSERT sobre la PK hace el
     // incremento atómico, así que dos conversaciones a la vez no caen en el mismo asesor.
@@ -1591,6 +1617,7 @@ app.use('/api',                flowTemplatesRoutes)
   try { require('./services/crmTaskSchedules').startWorker() } catch (e) { console.warn('[task schedules] worker no iniciado:', e.message) }
 
   try { require('./services/emailNotify').startWorker() } catch (e) { console.warn('[email notify] worker no iniciado:', e.message) }
+  try { require('./services/scheduledMessages').startWorker() } catch (e) { console.warn('[scheduled messages] worker no iniciado:', e.message) }
 
   try { require('./services/platformBilling').startWorker() } catch (e) { console.warn('[platform billing] worker no iniciado:', e.message) }
   // Procesador del outbox de eventos de dominio (Core Booking Engine, Fase 0)

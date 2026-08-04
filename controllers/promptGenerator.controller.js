@@ -513,6 +513,8 @@ const classifyChange = async (req, res) => {
     // Fall back to a heuristic if no OpenAI key is available (own + platform).
     let category = 'medium'
     let reason   = 'Clasificación heurística (sin API Key OpenAI disponible)'
+    // Sugerencias de qué precisar para que un cambio grande quede bien (vacío en los básicos).
+    let suggestions = []
     if (openaiKeyForClassifier) {
       try {
         const sysPrompt = `Eres un clasificador de cambios sobre prompts de IA.
@@ -521,7 +523,13 @@ Clasifica el cambio solicitado en EXACTAMENTE una de:
 - "medium": reescribir o reorganizar una o varias secciones (refactor parcial, añadir nuevas instrucciones)
 - "complex": replantear el prompt entero, redefinir el agente, cambios estructurales mayores
 
-Responde SOLO con JSON: { "category": "basic|medium|complex", "reason": "breve explicación" }`
+Además, si el cambio es "medium" o "complex", propón entre 2 y 4 SUGERENCIAS concretas y accionables
+de qué debería precisar el usuario para que el cambio quede bien (datos que faltan, decisiones que
+conviene tomar, casos límite a cubrir). Cada sugerencia: una sola frase, en español, en segunda persona
+("Indica…", "Define…", "Añade…"). Si el cambio es "basic", devuelve "suggestions": [].
+
+Responde SOLO con JSON:
+{ "category": "basic|medium|complex", "reason": "breve explicación", "suggestions": ["…", "…"] }`
         const aiResult = await callOpenAICompatible({
           provider: 'openai', model: 'gpt-4o-mini', apiKey: openaiKeyForClassifier,
           systemPrompt: sysPrompt, userPrompt: instruction,
@@ -538,6 +546,11 @@ Responde SOLO con JSON: { "category": "basic|medium|complex", "reason": "breve e
         if (parsed?.category && ['basic', 'medium', 'complex'].includes(parsed.category)) {
           category = parsed.category
           if (parsed.reason) reason = parsed.reason
+        }
+        if (Array.isArray(parsed?.suggestions)) {
+          suggestions = parsed.suggestions
+            .filter(x => typeof x === 'string' && x.trim())
+            .slice(0, 4).map(x => x.trim().slice(0, 220))
         }
       } catch (e) { console.warn('[classify LLM]', e.message) }
     } else {
@@ -567,6 +580,7 @@ Responde SOLO con JSON: { "category": "basic|medium|complex", "reason": "breve e
     res.json({
       category,
       reason,
+      suggestions,
       inputTokens,
       estimatedOutputTokens,
       estimatedTokens,
@@ -683,8 +697,41 @@ Genera ahora el system prompt completo siguiendo la estructura base, las condici
   }
 }
 
+// ── Adjuntar un archivo al Agente de Cambios ─────────────────────────────────
+// Devuelve el TEXTO del documento para incorporarlo como contexto de la instrucción.
+// Reutiliza extractFileText (mismo extractor del generador de prompts).
+const MAX_CHANGE_DOC_CHARS = 60000
+const extractForChange = async (req, res) => {
+  const { accId } = req.params
+  if (req.user?.type !== 'superadmin' && req.user?.accountId !== accId) {
+    return res.status(403).json({ error: 'No autorizado' })
+  }
+  if (!req.file) return res.status(400).json({ error: 'No llegó el archivo' })
+  try {
+    const [[s]] = await pool.query('SELECT prompt_generator_max_file_mb FROM platform_settings WHERE id=1')
+    const maxMb = s?.prompt_generator_max_file_mb || 30
+    if (req.file.size > maxMb * 1024 * 1024) {
+      return res.status(413).json({ error: `El archivo supera el límite de ${maxMb} MB` })
+    }
+    const text = await extractFileText(req.file)
+    if (!text || text.length < 20) {
+      return res.status(400).json({ error: 'No se pudo extraer texto del archivo. Usa .docx, .pdf, .txt o .md' })
+    }
+    const truncated = text.length > MAX_CHANGE_DOC_CHARS
+    res.json({
+      filename: req.file.originalname || 'documento',
+      text: text.slice(0, MAX_CHANGE_DOC_CHARS),
+      chars: text.length,
+      truncated,
+    })
+  } catch (err) {
+    console.error('[extractForChange]', err)
+    res.status(500).json({ error: err.message || 'No se pudo leer el archivo' })
+  }
+}
+
 module.exports = {
-  generateFromDoc, classifyChange, extractFileText, generateAccountPrompt,
+  generateFromDoc, classifyChange, extractFileText, generateAccountPrompt, extractForChange,
   // Helpers reutilizables para otros generadores con IA (p. ej. diseño de flujos).
   callAI, detectProvider, resolveProviderKey, extractJson, extractGeneratedPrompt, extractPromptField,
 }

@@ -92,7 +92,7 @@ const listConvos = async (req, res) => {
     const msgsByConv = {}
     for (const m of msgs) {
       if (!msgsByConv[m.conversation_id]) msgsByConv[m.conversation_id] = []
-      msgsByConv[m.conversation_id].push({ id: m.id, sender: m.sender, content: m.content, ts: m.ts, ...parseJ(m.metadata, {}) })
+      msgsByConv[m.conversation_id].push({ id: m.id, sender: m.sender, content: m.content, ts: m.ts, starred: !!m.starred, ...parseJ(m.metadata, {}) })
     }
     res.json(rows.map(c => mapConvo(c, msgsByConv[c.id] || [])))
   } catch (err) {
@@ -108,7 +108,7 @@ const getConvo = async (req, res) => {
     if (!c) return res.status(404).json({ error: 'Conversación no encontrada' })
     const [msgs] = await pool.query('SELECT * FROM messages WHERE conversation_id=?', [convId])
     msgs.sort((a, b) => (a.ts || 0) - (b.ts || 0))
-    res.json(mapConvo(c, msgs.map(m => ({ id: m.id, sender: m.sender, content: m.content, ts: m.ts, ...parseJ(m.metadata, {}) }))))
+    res.json(mapConvo(c, msgs.map(m => ({ id: m.id, sender: m.sender, content: m.content, ts: m.ts, starred: !!m.starred, ...parseJ(m.metadata, {}) }))))
   } catch (err) {
     console.error('[GET CONVO]', err)
     res.status(500).json({ error: 'Error interno' })
@@ -336,92 +336,118 @@ async function resolveChannelConfig(accId, agId, channelType, channelId) {
 // Envío MANUAL del asesor: entrega el texto al canal real (WhatsApp/Messenger/IG)
 // y lo persiste en la conversación. En webchat solo persiste (el visitante lo
 // recibe por socket). Esto arregla que las respuestas manuales no llegaban.
+// Canales con ventana de servicio de 24 h (Meta rechaza el texto libre fuera de ella).
+// Antes solo se validaba WhatsApp; Messenger e Instagram tienen la misma regla.
+const WINDOW_CHANNELS = { whatsapp: 24, messenger: 24, instagram: 24 }
+const CHANNEL_LABEL = { whatsapp: 'WhatsApp', messenger: 'Messenger', instagram: 'Instagram' }
+
+/**
+ * Estado de la ventana de servicio de una conversación.
+ * → { applies, open, lastTs, expiresAt }. `applies:false` = canal sin ventana (webchat/prueba).
+ */
+async function serviceWindow(convId, channelType) {
+  const hours = WINDOW_CHANNELS[channelType]
+  if (!hours) return { applies: false, open: true, lastTs: 0, expiresAt: 0 }
+  const [[lastIn]] = await pool.query(
+    "SELECT MAX(ts) AS ts FROM messages WHERE conversation_id=? AND sender='user'", [convId]
+  )
+  const lastTs = Number(lastIn?.ts) || 0
+  const expiresAt = lastTs ? lastTs + hours * 3600 * 1000 : 0
+  return { applies: true, open: !!lastTs && Date.now() < expiresAt, lastTs, expiresAt }
+}
+
+/**
+ * Entrega un mensaje del asesor al canal y lo persiste. Devuelve
+ * `{ ok:true, message }` o `{ ok:false, status, error, code }`.
+ *
+ * Extraído de `sendManual` para que el worker de MENSAJES PROGRAMADOS use exactamente
+ * la misma ruta de entrega (ventana de servicio incluida) y no se duplique la lógica.
+ */
+async function deliverManualMessage(accId, agId, convId, { text, senderName, replyToId } = {}) {
+  if (!text || !String(text).trim()) return { ok: false, status: 400, error: 'Texto vacío' }
+  const [[conv]] = await pool.query(
+    'SELECT channel_type, channel_id, wa_from, messenger_from, ig_from FROM conversations WHERE id=? AND account_id=?',
+    [convId, accId]
+  )
+  if (!conv) return { ok: false, status: 404, error: 'Conversación no encontrada' }
+  const type = conv.channel_type
+
+  // Ventana de servicio de 24 h (WhatsApp, Messenger e Instagram): se reinicia con cada
+  // mensaje entrante del cliente. Fuera de ella la API de Meta rechaza el texto libre.
+  const win = await serviceWindow(convId, type)
+  if (win.applies && !win.open) {
+    return {
+      ok: false, status: 409, code: 'window_closed',
+      error: `La ventana de 24 h de ${CHANNEL_LABEL[type] || type} está cerrada. Solo puedes enviar una plantilla aprobada o ejecutar un flujo.`,
+    }
+  }
+
+  // ¿El asesor está citando un mensaje? Resolvemos su wamid y contenido.
+  let replyTo = null, quotedWamid = null
+  if (replyToId) {
+    const [[qm]] = await pool.query('SELECT id, sender, content, metadata FROM messages WHERE id=? AND conversation_id=?', [replyToId, convId])
+    if (qm) {
+      const meta = parseJ(qm.metadata, {})
+      let content = qm.content || ''
+      if (!content && meta.kind) content = `[${meta.kind}${meta.filename ? ': ' + meta.filename : ''}]`
+      replyTo = { id: qm.id, content, sender: qm.sender, kind: meta.kind || null, filename: meta.filename || null }
+      quotedWamid = meta.waMessageId || null
+    }
+  }
+
+  let providerMsgId = null
+  let status = null
+  try {
+    if (type === 'whatsapp' && conv.wa_from) {
+      const ch = await resolveChannelConfig(accId, agId, 'whatsapp', conv.channel_id)
+      const cfg = ch?.config || {}
+      if (!cfg.phoneNumberId || !cfg.accessToken) return { ok: false, status: 400, error: 'Canal WhatsApp sin configurar' }
+      const r = await sendWhatsAppText({ phoneNumberId: cfg.phoneNumberId, accessToken: cfg.accessToken, to: conv.wa_from, text, contextMessageId: quotedWamid })
+      providerMsgId = r?.messages?.[0]?.id || null; status = 'sent'
+    } else if (type === 'messenger' && conv.messenger_from) {
+      const ch = await resolveChannelConfig(accId, agId, 'messenger', conv.channel_id)
+      const cfg = ch?.config || {}
+      if (!cfg.pageId || !cfg.pageAccessToken) return { ok: false, status: 400, error: 'Canal Messenger sin configurar' }
+      const r = await sendMessengerText({ pageId: cfg.pageId, pageAccessToken: cfg.pageAccessToken, recipientId: conv.messenger_from, text })
+      providerMsgId = r?.message_id || null; status = 'sent'
+    } else if (type === 'instagram' && conv.ig_from) {
+      const ch = await resolveChannelConfig(accId, agId, 'instagram', conv.channel_id)
+      const cfg = ch?.config || {}
+      if (!cfg.igAccountId || !cfg.pageAccessToken) return { ok: false, status: 400, error: 'Canal Instagram sin configurar' }
+      const r = await sendInstagramText({ igAccountId: cfg.igAccountId, pageAccessToken: cfg.pageAccessToken, recipientId: conv.ig_from, text })
+      providerMsgId = r?.message_id || null; status = 'sent'
+    }
+    // webchat / test: no hay envío externo; solo se persiste
+  } catch (e) {
+    return { ok: false, status: 502, error: e.message || 'No se pudo entregar el mensaje al canal' }
+  }
+
+  const out = await appendMessageCore(accId, agId, convId, {
+    role: 'assistant', sender: 'human',
+    senderName: senderName || 'Asesor',
+    content: String(text), channel: type, channelId: conv.channel_id,
+    ...(replyTo ? { replyTo } : {}),
+    ...(providerMsgId ? { waMessageId: providerMsgId } : {}),
+    ...(status ? { status } : {}),
+  })
+  return { ok: true, message: out }
+}
+
 const sendManual = async (req, res) => {
   const { accId, agId, convId } = req.params
   const { text, senderName, replyToId } = req.body || {}
-  if (!text || !String(text).trim()) return res.status(400).json({ error: 'Texto vacío' })
   try {
-    const [[conv]] = await pool.query(
-      'SELECT channel_type, channel_id, wa_from, messenger_from, ig_from FROM conversations WHERE id=? AND account_id=?',
-      [convId, accId]
-    )
-    if (!conv) return res.status(404).json({ error: 'Conversación no encontrada' })
-    const type = conv.channel_type
-
-    // ¿El asesor está respondiendo (citando) un mensaje? Resolvemos el mensaje
-    // citado: su wamid (para la cita nativa de WhatsApp) y su contenido (para
-    // mostrar la cita en la bandeja).
-    let replyTo = null, quotedWamid = null
-    if (replyToId) {
-      const [[qm]] = await pool.query('SELECT id, sender, content, metadata FROM messages WHERE id=? AND conversation_id=?', [replyToId, convId])
-      if (qm) {
-        const meta = parseJ(qm.metadata, {})
-        let content = qm.content || ''
-        if (!content && meta.kind) content = `[${meta.kind}${meta.filename ? ': ' + meta.filename : ''}]`
-        replyTo = { id: qm.id, content, sender: qm.sender, kind: meta.kind || null, filename: meta.filename || null }
-        quotedWamid = meta.waMessageId || null
-      }
-    }
-
-    // Ventana de servicio de 24h de WhatsApp: se reinicia con cada mensaje
-    // entrante del cliente. Fuera de ella la API de Meta rechaza el texto libre,
-    // así que el asesor solo puede enviar una plantilla aprobada o un flujo.
-    if (type === 'whatsapp') {
-      const [[lastIn]] = await pool.query(
-        "SELECT MAX(ts) AS ts FROM messages WHERE conversation_id=? AND sender='user'", [convId]
-      )
-      const lastTs = Number(lastIn?.ts) || 0
-      if (!lastTs || (Date.now() - lastTs) >= 24 * 3600 * 1000) {
-        return res.status(409).json({
-          error: 'La ventana de 24 h de WhatsApp está cerrada. Solo puedes enviar una plantilla aprobada o ejecutar un flujo.',
-          code: 'wa_window_closed',
-        })
-      }
-    }
-
-    let providerMsgId = null
-    let status = null
-
-    // Entrega al canal externo si corresponde
-    try {
-      if (type === 'whatsapp' && conv.wa_from) {
-        const ch = await resolveChannelConfig(accId, agId, 'whatsapp', conv.channel_id)
-        const cfg = ch?.config || {}
-        if (!cfg.phoneNumberId || !cfg.accessToken) return res.status(400).json({ error: 'Canal WhatsApp sin configurar' })
-        const r = await sendWhatsAppText({ phoneNumberId: cfg.phoneNumberId, accessToken: cfg.accessToken, to: conv.wa_from, text, contextMessageId: quotedWamid })
-        providerMsgId = r?.messages?.[0]?.id || null; status = 'sent'
-      } else if (type === 'messenger' && conv.messenger_from) {
-        const ch = await resolveChannelConfig(accId, agId, 'messenger', conv.channel_id)
-        const cfg = ch?.config || {}
-        if (!cfg.pageId || !cfg.pageAccessToken) return res.status(400).json({ error: 'Canal Messenger sin configurar' })
-        const r = await sendMessengerText({ pageId: cfg.pageId, pageAccessToken: cfg.pageAccessToken, recipientId: conv.messenger_from, text })
-        providerMsgId = r?.message_id || null; status = 'sent'
-      } else if (type === 'instagram' && conv.ig_from) {
-        const ch = await resolveChannelConfig(accId, agId, 'instagram', conv.channel_id)
-        const cfg = ch?.config || {}
-        if (!cfg.igAccountId || !cfg.pageAccessToken) return res.status(400).json({ error: 'Canal Instagram sin configurar' })
-        const r = await sendInstagramText({ igAccountId: cfg.igAccountId, pageAccessToken: cfg.pageAccessToken, recipientId: conv.ig_from, text })
-        providerMsgId = r?.message_id || null; status = 'sent'
-      }
-      // webchat / test: no hay envío externo; solo se persiste
-    } catch (e) {
-      return res.status(502).json({ error: e.message || 'No se pudo entregar el mensaje al canal' })
-    }
-
-    const out = await appendMessageCore(accId, agId, convId, {
-      role: 'assistant', sender: 'human',
-      senderName: senderName || req.user?.name || 'Asesor',
-      content: String(text), channel: type, channelId: conv.channel_id,
-      ...(replyTo ? { replyTo } : {}),
-      ...(providerMsgId ? { waMessageId: providerMsgId } : {}),
-      ...(status ? { status } : {}),
+    const r = await deliverManualMessage(accId, agId, convId, {
+      text, replyToId, senderName: senderName || req.user?.name || 'Asesor',
     })
-    res.json({ ok: true, ...out })
+    if (!r.ok) return res.status(r.status || 500).json({ error: r.error, ...(r.code ? { code: r.code } : {}) })
+    return res.json({ ok: true, ...r.message })
   } catch (err) {
     console.error('[SEND MANUAL]', err)
-    res.status(500).json({ error: 'Error interno' })
+    return res.status(500).json({ error: 'Error interno' })
   }
 }
+
 
 const appendDebug = async (req, res) => {
   const { accId, agId, convId } = req.params
@@ -641,10 +667,44 @@ const suggestReply = async (req, res) => {
   }
 }
 
+// ── Mensajes destacados ───────────────────────────────────────────────────────
+// El asesor marca mensajes clave de un chat (un dato, un acuerdo, una dirección) para
+// tenerlos a mano sin releer toda la conversación.
+const starMessage = async (req, res) => {
+  const { accId, convId, msgId } = req.params
+  const starred = req.body?.starred !== false
+  try {
+    const [[c]] = await pool.query('SELECT id FROM conversations WHERE id=? AND account_id=?', [convId, accId])
+    if (!c) return res.status(404).json({ error: 'Conversación no encontrada' })
+    await pool.query(
+      'UPDATE messages SET starred=?, starred_at=?, starred_by=? WHERE id=? AND conversation_id=?',
+      [starred ? 1 : 0, starred ? Date.now() : null, starred ? (req.user?.name || req.user?.email || 'Asesor') : null, msgId, convId]
+    )
+    socket.emit(accId, 'convos:updated', { accId })
+    res.json({ ok: true, starred })
+  } catch (err) { console.error('[starMessage]', err); res.status(500).json({ error: 'Error interno' }) }
+}
+
+// Mensajes destacados de una conversación (para el panel lateral del chat).
+const listStarred = async (req, res) => {
+  const { accId, convId } = req.params
+  try {
+    const [rows] = await pool.query(
+      'SELECT * FROM messages WHERE conversation_id=? AND starred=1 ORDER BY ts ASC LIMIT 200', [convId])
+    res.json(rows.map(m => ({
+      id: m.id, sender: m.sender, content: m.content, ts: m.ts,
+      starredAt: m.starred_at, starredBy: m.starred_by, ...parseJ(m.metadata, {}),
+    })))
+  } catch { res.status(500).json({ error: 'Error interno' }) }
+}
+
 module.exports = {
   listConvos, getConvo, createConvo, updateConvo, deleteConvo, markRead,
   appendMessage, sendManual, appendDebug, patchVars, getGuest, updateMemory,
   createWhatsApp, createMessenger, createInstagram, createSocial, suggestReply,
+  starMessage, listStarred,
   // Reusable cores for the server-side flow engine
   createOrGetSocialConvo,
+  // Reutilizados por el worker de mensajes programados
+  deliverManualMessage, serviceWindow,
 }

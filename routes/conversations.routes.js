@@ -1,6 +1,6 @@
 'use strict'
 const router = require('express').Router()
-const { optionalAuth } = require('../auth')
+const { optionalAuth, authMiddleware } = require('../auth')
 const ctrl = require('../controllers/conversations.controller')
 
 router.post('/guest',                                   ctrl.getGuest)
@@ -13,6 +13,9 @@ router.post('/:accId/:agId/:convId/messages',           optionalAuth, ctrl.appen
 router.post('/:accId/:agId/:convId/send-manual',        optionalAuth, ctrl.sendManual)
 router.post('/:accId/:agId/:convId/suggest-reply',      optionalAuth, ctrl.suggestReply)
 router.post('/:accId/:agId/:convId/debug',              optionalAuth, ctrl.appendDebug)
+// Mensajes destacados del chat (solo asesores autenticados; el widget no los usa).
+router.get('/:accId/:agId/:convId/starred',             authMiddleware, ctrl.listStarred)
+router.put('/:accId/:agId/:convId/messages/:msgId/star', authMiddleware, ctrl.starMessage)
 router.patch('/:accId/:agId/:convId/vars',              optionalAuth, ctrl.patchVars)
 router.post('/:accId/:agId/:convId/memory',             optionalAuth, ctrl.updateMemory)
 router.post('/:accId/:agId/whatsapp',                   optionalAuth, ctrl.createWhatsApp)
