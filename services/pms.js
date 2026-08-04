@@ -559,7 +559,26 @@ async function toolCall(accId, fn, args = {}, { convId, agId } = {}) {
     catch (e) { if (e.status === 404) return { text: `No existe una reserva con el código ${code}. Verifica el código.` } }
     const cleanDate = s => (isDate(s) ? s : '?')
     const motivo = String(args.motivo || '').replace(/\s+/g, ' ').trim().slice(0, 200)
-    await internalNote(accId, agId, convId, `🏨 SOLICITUD PMS: el cliente pide REAGENDAR la reserva ${code}${detail} → nuevas fechas: ${cleanDate(args.nueva_checkin)} a ${cleanDate(args.nueva_checkout)}.${motivo ? ` Motivo: ${motivo}` : ''} — Requiere gestión manual en ${pub.providerLabel || 'el PMS'}.`)
+
+    // Reagendado REAL cuando el proveedor lo soporta (Kunas lo hace por el motor de
+    // reservas). Solo se intenta con fechas válidas: sin ellas el API cambiaría la reserva
+    // a algo sin sentido en vez de fallar.
+    const nuevoIn = args.nueva_checkin, nuevoOut = args.nueva_checkout
+    if (typeof prov.reschedule === 'function' && isDate(nuevoIn) && isDate(nuevoOut)) {
+      if (nuevoOut <= nuevoIn) return { text: 'El nuevo check-out debe ser posterior al nuevo check-in.' }
+      try {
+        const r = await prov.reschedule(cfg, code, { checkin: nuevoIn, checkout: nuevoOut })
+        if (cfg.notifyTeam !== false) internalNote(accId, agId, convId, `🏨 RESERVA PMS REAGENDADA por el asistente: ${code}${detail} → ${nuevoIn} a ${nuevoOut}.${motivo ? ` Motivo: ${motivo}` : ''}`).catch(() => {})
+        return { text: `✅ Reserva ${code} REAGENDADA en el PMS: ${nuevoIn} → ${nuevoOut}${r.total ? `. Nuevo total: ${fmtMoney(r.total, currency)}` : ''}. Confírmaselo al cliente.` }
+      } catch (e) {
+        // No se pudo cambiar (sin cupo en las fechas nuevas, política que no lo permite…):
+        // se deja registrada la solicitud, como antes, en vez de perder la petición.
+        await internalNote(accId, agId, convId, `🏨 SOLICITUD PMS: falló el reagendado automático de ${code}${detail} → ${nuevoIn} a ${nuevoOut}. Motivo técnico: ${e.message}. Requiere gestión manual.`)
+        return { text: `No se pudo cambiar las fechas automáticamente: ${e.message} Se avisó al equipo del hotel para que lo gestione. NO le afirmes al cliente que la reserva ya quedó reagendada.` }
+      }
+    }
+
+    await internalNote(accId, agId, convId, `🏨 SOLICITUD PMS: el cliente pide REAGENDAR la reserva ${code}${detail} → nuevas fechas: ${cleanDate(nuevoIn)} a ${cleanDate(nuevoOut)}.${motivo ? ` Motivo: ${motivo}` : ''} — Requiere gestión manual en ${pub.providerLabel || 'el PMS'}.`)
     return { text: `⚠ El cambio de fechas NO se ejecutó automáticamente en el PMS (${pub.providerLabel || 'este PMS'} no permite reagendar por API). Se registró la SOLICITUD y se avisó al equipo del hotel. IMPORTANTE para tu respuesta al cliente: dile que su SOLICITUD de cambio de fechas quedó registrada y que el hotel se la confirmará; NO afirmes que la reserva ya quedó reagendada.` }
   }
 

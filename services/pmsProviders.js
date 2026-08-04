@@ -14,7 +14,25 @@
  * NOTA: el engine NO expone cancelar/reagendar; esas operaciones van como
  * "solicitud gestionada" (nota interna + aviso al equipo) desde services/pms.js.
  *
- * Kunas — en la lista, pendiente de documentación oficial (mismo contrato).
+ * Kunas (HotelSync) — integración REAL contra su API pública (spec en
+ * https://api-docs.hotelsync.com/openapi.yaml). Base: https://app.hotelsync.com
+ * (staging: https://beta.hotelsync.com). Todo es POST con JSON en el cuerpo.
+ *
+ * Tiene DOS mitades y conviene no confundirlas:
+ *
+ *   · MOTOR DE RESERVAS /api/engine/*  — PÚBLICO: solo pide `id_properties`. Es lo que usa
+ *     el asistente: avail_and_prices (disponibilidad + precio por noche + min_stay),
+ *     reservation_preview (cotización con impuestos), insert/reservation (crear),
+ *     reservation_by_code (consultar) e insert/reservation_by_code (cancelar/reagendar).
+ *     Al reservar por aquí no hace falta canal ni permisos, que era el origen del
+ *     "Missing channel access rights for this user".
+ *
+ *   · GESTIÓN /api/{property,room,avail,calendar,channels}/* — exige login:
+ *     POST /api/user/auth/login con {token, username, password} → `pkey`, que se manda
+ *     como `key` en cada llamada junto al `token` de partner. El `token` lo da el soporte
+ *     de HotelSync; el usuario y la contraseña son los de la propiedad.
+ *
+ * ⚠ `currency` NUNCA puede ir vacía: el motor cotiza TODO a 0 si lo está (comprobado).
  */
 
 const first = (...vals) => vals.find(v => v !== undefined && v !== null && v !== '')
@@ -321,6 +339,10 @@ const _kunasRoomImgCache = new Map() // token:propId:rtId → { at, photos } (fo
 const KUNAS_ROOMIMG_TTL = 10 * 60 * 1000
 const _kunasChannelsCache = new Map() // token:propId → { at, channels } (canales de reserva)
 const KUNAS_CHANNELS_TTL = 10 * 60 * 1000
+// Motor de reservas (endpoints públicos /api/engine/*): ajustes y planes de tarifa por
+// propiedad. Se cachean porque hacen falta en CADA búsqueda y cambian muy de vez en cuando.
+const _kunasEngineCache = new Map() // propId:qué → { at, value }
+const KUNAS_ENGINE_TTL = 10 * 60 * 1000
 // Busca recursivamente una clave (pkey/apikey…) en la respuesta del login.
 function deepFind(obj, names, depth = 0) {
   if (!obj || typeof obj !== 'object' || depth > 4) return null
@@ -446,7 +468,9 @@ const kunas = {
     if (cfg.username) loginBody.username = cfg.username
     if (cfg.password) loginBody.password = cfg.password
     let diag = ''
-    for (const path of ['/api/user/auth/login', '/api/login/login', '/api/auth/login']) {
+    // Ruta única y documentada. Antes se probaban además /api/login/login y /api/auth/login,
+    // que no existen: solo servían para tardar más y enturbiar el diagnóstico del fallo real.
+    for (const path of ['/api/user/auth/login']) {
       let res, text
       try {
         res = await tfetch(`${base}${path}`, {
@@ -506,30 +530,21 @@ const kunas = {
     }
   },
 
-  // Auto-descubre el id_properties (el usuario no lo escribe).
-  async _discoverProperty(cfg) {
-    for (const path of ['/api/property/data/properties', '/api/properties/data/properties', '/api/property/data/property_list']) {
-      try {
-        const data = await this._rawPost(cfg, path, {})
-        const list = Array.isArray(data) ? data : arr(first(data?.data, data?.properties, data?.property, []))
-        const p = list[0] || (data && typeof data === 'object' && !Array.isArray(data) ? data : null)
-        const id = first(p?.id_properties, p?.id, p?.property_id)
-        if (id) return { id: String(id), name: first(p?.name, p?.shortname, '') }
-      } catch (e) { if (e.status === 401 || e.status === 403) throw e }
-    }
-    return null
-  },
-
-  // id_properties efectivo: el configurado, o el del login (o descubrimiento explícito).
+  // id_properties efectivo. Orden: el configurado a mano → el que trae el login.
+  //
+  // No existe endpoint para "listar mis propiedades": la única fuente documentada es la
+  // respuesta del login (`properties[]`), que `_loginImpl` ya cachea. Antes se sondeaban
+  // tres rutas que no existen en el API, y eso costaba tres viajes de ida y vuelta
+  // fallidos en cada arranque en frío.
+  //
+  // Con `propertyId` configurado, TODO el flujo de reserva del huésped funciona SIN
+  // credenciales, porque los endpoints del motor son públicos.
   async _propId(cfg) {
-    if (cfg.propertyId) return cfg.propertyId
+    if (cfg.propertyId) return String(cfg.propertyId)
     if (_kunasPropCache.has(cfg.token)) return _kunasPropCache.get(cfg.token)
-    // El login ya trae las propiedades: forzarlo puebla la caché.
-    await this._key(cfg).catch(() => {})
+    await this._key(cfg).catch(() => {})   // el login puebla la caché de propiedades
     if (_kunasPropCache.has(cfg.token)) return _kunasPropCache.get(cfg.token)
-    const found = await this._discoverProperty(cfg)
-    if (found?.id) { _kunasPropCache.set(cfg.token, found.id); return found.id }
-    return ''
+    throw new Error('Kunas: no se sabe qué propiedad usar. Escribe el ID de propiedad en la configuración del PMS, o revisa el token y el usuario (el login es lo que trae la lista de propiedades).')
   },
 
   // POST autenticado que siempre incluye el id_properties resuelto.
@@ -638,12 +653,45 @@ const kunas = {
     }
   },
 
-  // Habitaciones (tipos) desde el calendario, con SUS fotos propias.
+  // Habitaciones (tipos). Primero por el calendario, que es lo único que trae las FOTOS
+  // propias de cada tipo; si no hay credenciales (o el login falla) se caen al motor, que
+  // es público y da nombre, descripción y capacidad. Así "ver habitaciones" nunca se queda
+  // en blanco solo porque falte el token de gestión.
   async getRooms(cfg) {
     const date = new Date().toISOString().slice(0, 10)
-    const data = await this._calendar(cfg, date)
-    const list = deepFindArray(data, 'room_types') || (Array.isArray(data) ? data : arr(first(data?.data, data?.rooms, [])))
-    return (list || []).map(rt => this._mapRoomType(rt)).filter(r => r.id || r.name)
+    try {
+      const data = await this._calendar(cfg, date)
+      const list = deepFindArray(data, 'room_types') || (Array.isArray(data) ? data : arr(first(data?.data, data?.rooms, [])))
+      const rooms = (list || []).map(rt => this._mapRoomType(rt)).filter(r => r.id || r.name)
+      if (rooms.length) return rooms
+    } catch (e) { /* sin credenciales de gestión: se usa el motor */ }
+    return this._roomsFromEngine(cfg, date)
+  },
+
+  // Tipos de habitación deducidos del motor (público). Se piden 30 días para que no
+  // desaparezca un tipo solo porque hoy esté lleno.
+  async _roomsFromEngine(cfg, date) {
+    const cur = await this._currency(cfg)
+    const plans = await this._pricingPlans(cfg)
+    if (!plans.length) return []
+    const d = await this._engine(cfg, '/api/engine/data/avail_and_prices', {
+      id_pricing_plans: Number(plans[0].id) || plans[0].id, currency: cur,
+      dfrom: date, dto: addDays(date, 30), guests: { adults: 2, children_1: 0 },
+    })
+    const list = Array.isArray(d) ? d : arr(first(d?.data, d?.rooms, []))
+    return list.map(rt => {
+      const prices = arr(rt.dates).map(x => Number(x.price)).filter(n => n > 0)
+      return {
+        id: String(first(rt.id_room_types, rt.id, '')),
+        name: first(rt.name, 'Habitación'),
+        capacity: Number(first(rt.max_adults, rt.occupancy, 2)) || 2,
+        description: first(rt.description, '') || '',
+        photos: [],
+        basePrice: prices.length ? Math.min(...prices) : 0,
+        rates: [],
+        raw: rt,
+      }
+    }).filter(r => r.id)
   },
 
   // Disponibilidad real por rango: /api/avail/data/avail → { roomTypeId: { fecha: cupo } }.
@@ -661,27 +709,132 @@ const kunas = {
     return map
   },
 
-  async getAvailability(cfg, { checkin, checkout }) {
-    const map = await this._avail(cfg, checkin, checkout)
+  // ── Motor de reservas (/api/engine/*) ────────────────────────────────────────
+  // Son endpoints PÚBLICOS: solo piden id_properties, sin login ni token de partner. Es la
+  // vía correcta para lo que hace el asistente (buscar, cotizar y reservar como reserva
+  // directa) y además evita el "Missing channel access rights for this user" que devuelve
+  // la API de gestión, porque no se imputa a un canal ni depende de permisos del usuario.
+  async _engine(cfg, path, body = {}) {
+    const propId = await this._propId(cfg)
+    return this._rawFetch(cfg, path, { id_properties: propId, id_language: cfg.language || '', ...body })
+  },
+
+  async _engineCached(cfg, what, fn) {
+    const propId = await this._propId(cfg)
+    const ck = `${propId}:${what}`
+    const hit = _kunasEngineCache.get(ck)
+    if (hit && Date.now() - hit.at < KUNAS_ENGINE_TTL) return hit.value
+    const value = await fn.call(this)
+    _kunasEngineCache.set(ck, { at: Date.now(), value })
+    return value
+  },
+
+  // Ajustes públicos de la propiedad (horas de check-in/out, moneda, si exige tarjeta).
+  async _settings(cfg) {
+    return this._engineCached(cfg, 'settings', async () => {
+      const d = await this._engine(cfg, '/api/engine/data/settings', {})
+      return d?.settings || d || {}
+    })
+  },
+
+  // Moneda efectiva. CRÍTICO: si se envía vacía, el motor cotiza TODO a 0 (comprobado
+  // contra el API: con currency:"" el preview devuelve total_price 0; con "EUR", 450).
+  // Por eso nunca se deja vacía: config → ajustes de la propiedad → EUR.
+  async _currency(cfg) {
+    if (cfg.currency) return String(cfg.currency)
+    try { const s = await this._settings(cfg); if (s.currency) return String(s.currency) } catch {}
+    return 'EUR'
+  },
+
+  // Planes de tarifa: cada uno es una OPCIÓN reservable (régimen y política distintos).
+  async _pricingPlans(cfg) {
+    return this._engineCached(cfg, 'plans', async () => {
+      const cur = await this._currency(cfg)
+      const d = await this._engine(cfg, '/api/engine/data/pricing_plans', { currency: cur })
+      const list = Array.isArray(d) ? d : arr(first(d?.pricing_plans, d?.data, []))
+      return list.map(p => ({
+        id: String(first(p.id_pricing_plans, p.id, '')),
+        name: first(p.name, 'Tarifa'),
+        board: first(p.board_name, ''),
+        policy: first(p.policy_name, ''),
+        policyText: first(p.policy_description, ''),
+      })).filter(p => p.id)
+    })
+  },
+
+  // Disponibilidad + precios REALES por noche, del motor. Una llamada por plan de tarifa,
+  // así el cliente ve opciones de verdad ("Doble · Desayuno — 450 €") en vez de una sola
+  // tarifa calculada a partir de un precio base que casi siempre llegaba en 0.
+  async getAvailability(cfg, { checkin, checkout, adults, children }) {
     const nights = datesOfStay(checkin, checkout)
-    let byId = {}
-    try { const rooms = await this.getRooms(cfg); for (const rm of rooms) byId[rm.id] = rm } catch {}
-    const out = []
-    for (const [rtId, byDate] of Object.entries(map)) {
-      let minAvail = Infinity
-      for (const d of nights) { const c = Number(byDate[d]); minAvail = Math.min(minAvail, isNaN(c) ? 0 : c) }
-      if (!isFinite(minAvail)) minAvail = 0
-      const rm = byId[String(rtId)] || { id: String(rtId), name: `Habitación ${rtId}`, capacity: 2, description: '', photos: [], basePrice: 0 }
-      const total = (rm.basePrice || 0) * nights.length
-      // La tarifa lleva el plan de precios en el id ("plan:rtId") cuando está configurado,
-      // para que la reserva sepa a qué id_pricing_plans imputar. Sin plan → solo el rtId.
-      const rateId = cfg.pricingPlanId ? `${cfg.pricingPlanId}:${rtId}` : String(rtId)
-      out.push({
-        ...rm,
-        rates: [{ id: rateId, name: rm.name, capacity: rm.capacity, total: total || null, perNight: rm.basePrice || null, available: minAvail, mealType: '', _rtId: rtId, _room: {}, _nightPrices: nights.map(d => ({ date: d, price: rm.basePrice || 0 })) }],
-      })
+    const cur = await this._currency(cfg)
+    let plans = await this._pricingPlans(cfg)
+    if (cfg.pricingPlanId) {
+      const only = plans.filter(p => p.id === String(cfg.pricingPlanId))
+      if (only.length) plans = only
     }
-    return { rooms: out }
+    if (!plans.length) plans = [{ id: String(cfg.pricingPlanId || ''), name: 'Tarifa', board: '', policy: '' }]
+    const guests = { adults: Math.max(1, Number(adults) || 1), children_1: Number(children) || 0 }
+
+    // Como mucho 6 planes: más opciones no ayudan a decidir y multiplican las llamadas
+    // en una conversación que el cliente está esperando.
+    const results = await Promise.all(plans.slice(0, 6).map(async plan => {
+      try {
+        const d = await this._engine(cfg, '/api/engine/data/avail_and_prices', {
+          id_pricing_plans: Number(plan.id) || plan.id, currency: cur, dfrom: checkin, dto: checkout, guests,
+        })
+        return { plan, list: Array.isArray(d) ? d : arr(first(d?.data, d?.rooms, [])) }
+      } catch { return { plan, list: [] } }
+    }))
+
+    // Se agrupa por tipo de habitación; cada plan aporta una tarifa a esa habitación.
+    const byRoom = new Map()
+    for (const { plan, list } of results) {
+      for (const rt of list) {
+        const rtId = String(first(rt.id_room_types, rt.id, ''))
+        if (!rtId) continue
+        const dates = arr(rt.dates).filter(d => nights.includes(String(d.date).slice(0, 10)))
+        if (!dates.length) continue
+        // Cupo del rango = el de la noche más justa. Una noche cerrada invalida la estancia.
+        let minAvail = Infinity, total = 0, closed = false, minStay = 0
+        for (const d of dates) {
+          const av = Number(d.avail); minAvail = Math.min(minAvail, isNaN(av) ? 0 : av)
+          total += Number(d.price) || 0
+          if (Number(d.closed)) closed = true
+          minStay = Math.max(minStay, Number(d.min_stay) || 0)
+        }
+        if (!isFinite(minAvail)) minAvail = 0
+        // El motor rechazaría la reserva igualmente: descartarlo aquí evita que el
+        // asistente ofrezca —y prometa— una estancia que luego no se puede crear.
+        if (closed || dates.length < nights.length) continue
+        if (minStay && nights.length < minStay) continue
+
+        if (!byRoom.has(rtId)) {
+          byRoom.set(rtId, {
+            id: rtId,
+            name: first(rt.name, `Habitación ${rtId}`),
+            capacity: Number(first(rt.max_adults, rt.occupancy, 2)) || 2,
+            description: first(rt.description, '') || '',
+            photos: [], basePrice: 0, rates: [],
+          })
+        }
+        const room = byRoom.get(rtId)
+        if (!room.basePrice && dates[0]) room.basePrice = Number(dates[0].price) || 0
+        room.rates.push({
+          id: `${plan.id}:${rtId}`,
+          name: [plan.name, plan.board].filter(Boolean).join(' · ') || room.name,
+          capacity: room.capacity,
+          total: total || null,
+          perNight: dates.length ? Math.round((total / dates.length) * 100) / 100 : null,
+          available: minAvail,
+          mealType: /break|desayun|bb/i.test(plan.board) ? 'breakfast' : '',
+          policy: plan.policy,
+          _rtId: rtId, _planId: plan.id, _room: rt,
+          _nightPrices: dates.map(d => ({ date: String(d.date).slice(0, 10), price: Number(d.price) || 0 })),
+        })
+      }
+    }
+    return { rooms: [...byRoom.values()].filter(r => r.rates.length) }
   },
 
   // Disponibilidad de todo un rango en UNA sola llamada (para el heatmap del calendario).
@@ -690,25 +843,27 @@ const kunas = {
   },
 
   // Diagnóstico: respuestas crudas para afinar el mapeo cuando algo no cuadra.
+  // Se sondean SOLO endpoints que existen. Antes probaba seis rutas de las que cinco no
+  // existen en el API, así que el diagnóstico salía lleno de errores que no significaban nada.
   async debug(cfg) {
     const out = { properties: _kunasPropInfo.get(cfg.token) || [] }
     const date = new Date().toISOString().slice(0, 10)
     const dto = addDays(date, 7)
+    // Motor de reservas: es lo que usa el asistente, así que es lo primero que interesa ver.
+    try { out.engineSettings = await this._settings(cfg) } catch (e) { out.engineSettingsError = e.message }
+    try { out.enginePlans = await this._pricingPlans(cfg) } catch (e) { out.enginePlansError = e.message }
+    try { out.engineAvail = await this.getAvailability(cfg, { checkin: date, checkout: dto, adults: 2, children: 0 }) } catch (e) { out.engineAvailError = e.message }
+    // Lado de gestión (este sí exige login con token + usuario + contraseña).
     try { out.property = await this._post(cfg, '/api/property/data/property', {}) } catch (e) { out.propertyError = e.message }
     try { out.calendar = await this._calendar(cfg, date) } catch (e) { out.calendarError = e.message }
     try { out.avail = await this._post(cfg, '/api/avail/data/avail', { dfrom: date, dto }) } catch (e) { out.availError = e.message }
-    // Canales / permisos del usuario: para diagnosticar "Missing channel access rights"
-    // al reservar. Sondea los endpoints probables y captura lo que devuelva cada uno.
-    out.channelProbe = {}
-    for (const path of ['/api/channel/data/channels', '/api/channels/data/channels', '/api/channel/data/channel', '/api/user/data/user', '/api/user/data/rights', '/api/user/auth/me']) {
-      try { out.channelProbe[path] = await this._post(cfg, path, {}) } catch (e) { out.channelProbe[path] = `ERROR ${e.status || ''}: ${e.message}` }
-    }
+    try { out.channels = await this.getChannels(cfg) } catch (e) { out.channelsError = e.message }
     return out
   },
 
-  // Canales de reserva de la propiedad (/api/channels/data/channels). Cada reserva debe
-  // imputarse a un canal (id_channels) sobre el que el usuario tenga permisos; si no, el
-  // API responde "Missing channel access rights for this user". Cacheado 10 min.
+  // Canales de reserva de la propiedad (/api/channels/data/channels). Solo informativo: el
+  // asistente ya NO imputa las reservas a un canal (las crea por el motor), que era justo
+  // lo que provocaba el "Missing channel access rights for this user".
   async getChannels(cfg) {
     const propId = await this._propId(cfg)
     const ck = `${cfg.token}:${propId}`
@@ -726,89 +881,149 @@ const kunas = {
     return channels
   },
 
-  // Canal para las reservas que crea el asistente: el de RESERVA DIRECTA (type "private")
-  // por defecto; si no, el motor de reservas; si no, el primero. Configurable con cfg.channelId.
-  async _directChannelId(cfg) {
-    if (cfg.channelId) return String(cfg.channelId)
-    const channels = await this.getChannels(cfg)
-    if (!channels.length) return ''
-    const pick = channels.find(c => /directa?|direct/i.test(c.name) || /private/i.test(c.type)) ||
-      channels.find(c => /motor|engine/i.test(c.name) || /engine/i.test(c.type)) ||
-      channels[0]
-    return pick?.id || ''
+  // "planId:rtId" → sus dos partes. Acepta el formato antiguo (solo rtId) para no romper
+  // una conversación en curso que ya había ofrecido opciones con el id viejo.
+  _splitRate(cfg, rateId) {
+    const s = String(rateId || '')
+    const colon = s.indexOf(':')
+    return {
+      rtId: colon >= 0 ? s.slice(colon + 1) : s,
+      planId: colon >= 0 ? s.slice(0, colon) : (cfg.pricingPlanId || ''),
+    }
   },
 
-  // Crea la reserva. availability = { "plan:rtId": 1 } (o solo "rtId" si no hay plan).
-  // Reconstruye el detalle en vivo. El plan de precios sale del prefijo o de cfg.pricingPlanId.
-  async book(cfg, { checkin, checkout, adults, children, availability, customer }) {
+  _guest(customer = {}) {
+    const parts = String(customer.name || '').trim().split(/\s+/)
+    return {
+      first_name: parts[0] || 'Huésped',
+      last_name: customer.surname || parts.slice(1).join(' ') || '',
+      email: customer.mail || '', phone: customer.phone || '',
+      address: '', city: '', country: '',
+    }
+  },
+
+  // Cotización oficial ANTES de reservar: el motor devuelve el desglose real (habitación,
+  // tasa turística, extras, impuestos). Sirve para no prometerle al cliente un total que
+  // luego no cuadre con lo que le cobra el hotel.
+  async quote(cfg, { checkin, checkout, adults, children, rateId, customer = {} }) {
+    const { rtId, planId } = this._splitRate(cfg, rateId)
+    const cur = await this._currency(cfg)
+    const d = await this._engine(cfg, '/api/engine/data/reservation_preview', {
+      currency: cur,
+      date_arrival: checkin, date_departure: checkout,
+      id_pricing_plans: Number(planId) || planId,
+      adults: String(Math.max(1, Number(adults) || 1)),
+      children_1: String(Number(children) || 0), children_2: '0', children_3: '0',
+      occupancy: Math.max(1, Number(adults) || 1) + (Number(children) || 0),
+      rooms: [{ id_room_types: Number(rtId) || rtId }],
+      guests: [this._guest(customer)],
+      extras: [],
+    })
+    return {
+      total: Number(d?.total_price) || 0,
+      rooms: Number(d?.rooms_price) || 0,
+      cityTax: Number(d?.city_tax_price) || 0,
+      extras: Number(d?.extras_price) || 0,
+      currency: d?.currency || cur,
+      nights: Number(d?.nights) || datesOfStay(checkin, checkout).length,
+      raw: d,
+    }
+  },
+
+  // Crea la reserva por el MOTOR (/api/engine/insert/reservation).
+  // availability = { "planId:rtId": 1 }.
+  //
+  // A diferencia de la API de gestión que se usaba antes, aquí `rooms` es solo
+  // [{ id_room_types }]: el precio lo calcula el motor desde el plan de tarifa. Eso quita
+  // de encima dos problemas reales: no se puede reservar a un precio distinto del que el
+  // hotel tiene publicado, y desaparece el "Missing channel access rights for this user"
+  // (la reserva entra como reserva directa del motor, sin depender de permisos de canal).
+  async book(cfg, { checkin, checkout, adults, children, availability, customer = {}, notes, promoCode }) {
     const rateId = Object.keys(availability || {})[0] || ''
     if (!rateId) throw new Error('Kunas: falta la tarifa/habitación a reservar.')
-    const colon = rateId.indexOf(':')
-    const rtId = colon >= 0 ? rateId.slice(colon + 1) : rateId
-    const plan = colon >= 0 ? rateId.slice(0, colon) : (cfg.pricingPlanId || '')
+    const { rtId, planId } = this._splitRate(cfg, rateId)
     if (!rtId) throw new Error('Kunas: falta la habitación a reservar.')
-    // Re-verifica y toma la opción viva (empareja por id completo o por el rtId subyacente).
+
+    // Se revalida contra el motor: entre que se ofreció la opción y el cliente dijo que sí,
+    // pueden haber vendido la última habitación.
     const { rooms } = await this.getAvailability(cfg, { checkin, checkout, adults, children })
-    const opt = rooms.map(r => r.rates[0]).find(rt => rt.id === rateId || String(rt._rtId) === String(rtId))
+    const allRates = rooms.flatMap(r => r.rates)
+    const opt = allRates.find(rt => rt.id === rateId) || allRates.find(rt => String(rt._rtId) === String(rtId))
     if (!opt) throw new Error('La habitación elegida ya no está disponible para esas fechas.')
-    const nights = opt._nightPrices
-    const total = opt.total || nights.reduce((s, n) => s + (n.price || 0), 0)
-    const avg = nights.length ? total / nights.length : total
-    const room = opt._room || {}
-    const roomName = opt.name
-    const guestNames = String(customer.name || '').trim().split(/\s+/)
-    // Canal al que se imputa la reserva (obligatorio: sin él → "Missing channel access rights").
-    const channelId = await this._directChannelId(cfg)
-    const body = {
-      status: 'confirmed',
-      ...(channelId ? { id_channels: Number(channelId) } : {}),
-      rooms: [{
-        id_room_types: Number(rtId), id_rooms: first(room.id_rooms, room.id, undefined),
-        room_type: roomName, room_number: first(room.name, room.room_number, ''),
-        avg_price: avg, total_price: total,
-        children_1: Number(children) || 0, children_2: 0, children_3: 0,
-        adults: Math.max(1, Number(adults) || 1), seniors: 0,
-        extras: [], payments: [], overbooking: 0,
-        nights: nights.map(n => ({ night_date: n.date, price: n.price, original_price: n.price, breakfast: 0, lunch: 0, dinner: 0 })),
-      }],
-      guests: [{ first_name: guestNames[0] || 'Huésped', last_name: guestNames.slice(1).join(' ') || '', id_guests: 0, guest_type: 'adults', email: customer.mail || '', phone: customer.phone || '' }],
-      extras: [], payments: [],
-      adults: Math.max(1, Number(adults) || 1), children_1: Number(children) || 0, seniors: 0,
-      rooms_price: total, rooms_discounted: total, total_price: total,
-      ...(plan ? { id_pricing_plans: Number(plan) } : {}),
-    }
-    const data = await this._post(cfg, '/api/reservation/insert/reservation', body)
+
+    const cur = await this._currency(cfg)
+    const data = await this._engine(cfg, '/api/engine/insert/reservation', {
+      currency: cur,
+      date_arrival: checkin, date_departure: checkout,
+      id_pricing_plans: Number(planId) || planId,
+      rooms: [{ id_room_types: Number(rtId) || rtId }],
+      guests: [this._guest(customer)],
+      extras: [],
+      adults: String(Math.max(1, Number(adults) || 1)),
+      children_1: String(Number(children) || 0), children_2: '0', children_3: '0',
+      ...(notes ? { note: String(notes).slice(0, 500) } : {}),
+      ...(promoCode ? { id_promocodes: String(promoCode) } : {}),
+    })
     const r = data?.reservation || data || {}
+    // El motor identifica la reserva por CÓDIGO: es lo que el huésped usa después para
+    // consultarla o cancelarla, no el id interno.
+    const code = String(first(r.code, r.reservation_code, data?.code, r.id_reservations, ''))
     return {
-      code: String(first(data?.id_reservations, r.id_reservations, '')),
+      code,
       checkin: first(r.date_arrival, checkin), checkout: first(r.date_departure, checkout),
-      nights: Number(first(r.nights, nights.length)),
-      total: Number(first(r.total_price, total, 0)) || 0,
-      paymentUrl: '',
+      nights: Number(first(r.nights, opt._nightPrices.length)),
+      total: Number(first(r.total_price, opt.total, 0)) || 0,
+      paymentUrl: first(r.payment_url, r.paymentUrl, ''),
       raw: r,
     }
   },
 
   async getBooking(cfg, code) {
-    const data = await this._post(cfg, '/api/reservation/data/reservation', { id_reservations: code })
+    const data = await this._engine(cfg, '/api/engine/data/reservation_by_code', { code: String(code) })
     const r = data?.reservation || data || {}
-    const statusMap = { confirmed: 'confirmada', canceled: 'cancelada', cancelled: 'cancelada' }
+    // El motor responde 200 con cuerpo vacío cuando el código no existe: sin esto, el
+    // asistente le confirmaría al cliente una reserva fantasma con todos los campos vacíos.
+    if (!r || (!r.date_arrival && !r.code && !r.id_reservations)) {
+      throw Object.assign(new Error('Reserva no encontrada'), { status: 404 })
+    }
+    const statusMap = { confirmed: 'confirmada', canceled: 'cancelada', cancelled: 'cancelada', pending: 'pendiente' }
     return {
-      code: String(first(r.id_reservations, code)),
+      code: String(first(r.code, r.id_reservations, code)),
       status: statusMap[String(first(r.status, '')).toLowerCase()] || first(r.status, 'confirmada'),
-      checkin: r.date_arrival, checkout: r.date_departure, nights: r.nights,
-      guestName: first(r.guest_name, [r.first_name, r.last_name].filter(Boolean).join(' '), ''),
+      checkin: r.date_arrival, checkout: r.date_departure,
+      nights: Number(first(r.nights, datesOfStay(r.date_arrival, r.date_departure).length)) || undefined,
+      guestName: first(r.guest_name, [r.first_name, r.last_name].filter(Boolean).join(' ').trim(), ''),
       total: Number(first(r.total_price, 0)) || 0,
       paymentUrl: '',
       raw: r,
     }
   },
 
-  // Cancelación NATIVA (Kunas sí lo soporta).
+  // Cancelación por código, por el mismo motor con el que se creó.
   async cancel(cfg, code) {
-    const data = await this._post(cfg, '/api/reservation/delete/delete', { id_reservations: code })
+    const data = await this._engine(cfg, '/api/engine/insert/reservation_by_code', {
+      code: String(code), status: 'canceled',
+    })
     const r = data?.reservation || data || {}
-    return { ok: true, status: first(r.status, 'canceled'), code: String(first(r.id_reservations, code)) }
+    return { ok: true, status: first(r.status, 'canceled'), code: String(first(r.code, code)) }
+  },
+
+  // Reagendar: cambia las fechas de una reserva existente por su código. Antes comprueba
+  // que las fechas nuevas tengan hueco, para no dejar la reserva a medio cambiar.
+  async reschedule(cfg, code, { checkin, checkout }) {
+    const current = await this.getBooking(cfg, code)
+    const { rooms } = await this.getAvailability(cfg, { checkin, checkout, adults: 1, children: 0 })
+    if (!rooms.length) throw new Error('No hay disponibilidad en las fechas nuevas.')
+    const data = await this._engine(cfg, '/api/engine/insert/reservation_by_code', {
+      code: String(code), date_arrival: checkin, date_departure: checkout,
+      currency: await this._currency(cfg),
+    })
+    const r = data?.reservation || data || {}
+    return {
+      ok: true, code: String(first(r.code, code)),
+      checkin: first(r.date_arrival, checkin), checkout: first(r.date_departure, checkout),
+      total: Number(first(r.total_price, current.total, 0)) || 0,
+    }
   },
 }
 
