@@ -143,7 +143,33 @@ const SPECIAL_DATATABLES_TOOL = {
   special: true,
 }
 const dataTablesSvc = require('../services/dataTables')
-const specialTools = () => [SPECIAL_WOO_TOOL, SPECIAL_AGENDA_TOOL, SPECIAL_PAYMENT_TOOL, SPECIAL_CATALOG_TOOL, SPECIAL_PMS_TOOL, SPECIAL_ORDERS_TOOL, SPECIAL_DATATABLES_TOOL]
+
+// Herramienta IA Especial "recontacto": deja que el asistente respete la voluntad del
+// cliente. Si pide que no le escriban más, marca el chat como NO recontactable y el worker
+// de recontactos lo salta; si cambia de idea, lo reactiva.
+const SPECIAL_RECONTACT_TOOL = {
+  id: 'recontacto',
+  name: 'recontacto',
+  description: 'Permite al asistente marcar la conversación como NO recontactable cuando el cliente pide que no le escriban más (marcar_no_recontactable) o volver a activarla (reactivar_recontacto).',
+  collectFields: [],
+  actionType: 'recontact',
+  special: true,
+}
+
+// Herramienta IA Especial "perfilado": NO es una función que el modelo llame. Actúa como
+// INTERRUPTOR: al asignarla a un prompt se activa el perfilado automático, que corre en
+// segundo plano después de responder (notas, etiquetas, etapa y variables) sin tocar la
+// atención al cliente ni añadir latencia.
+const SPECIAL_PROFILING_TOOL = {
+  id: 'perfilado',
+  name: 'perfilado',
+  description: 'Perfilamiento automático: tras cada respuesta, y en segundo plano, el asistente actualiza las notas del cliente, le aplica etiquetas, lo mueve de etapa y guarda datos en variables. No interviene en la conversación.',
+  collectFields: [],
+  actionType: 'profiling',
+  special: true,
+}
+
+const specialTools = () => [SPECIAL_WOO_TOOL, SPECIAL_AGENDA_TOOL, SPECIAL_PAYMENT_TOOL, SPECIAL_CATALOG_TOOL, SPECIAL_PMS_TOOL, SPECIAL_ORDERS_TOOL, SPECIAL_DATATABLES_TOOL, SPECIAL_RECONTACT_TOOL, SPECIAL_PROFILING_TOOL]
 
 const mapCmsAsset = c => ({
   id: c.id, name: c.name, description: c.description || '', tags: parseJ(c.tags, []),
@@ -307,7 +333,7 @@ const getAccount = async (req, res) => {
       roles:     roles.map(r => ({ id: r.id, name: r.name, isSystem: !!r.is_system, permissions: parseJ(r.permissions, {}) })),
       members:   members.map(m => ({ id: m.id, name: m.name, email: m.email, avatar: m.avatar, roleId: m.role_id, agentAccess: parseJ(m.agent_access, []), status: m.status })),
       agents:    agents.map(a => ({ ...mapAgent(a), createdAt: a.created_at })),
-      labels:    labels.map(l => ({ id: l.id, name: l.name, color: l.color })),
+      labels:    labels.map(l => ({ id: l.id, name: l.name, color: l.color, description: l.description || '' })),
       teams:     teams.map(t => ({ id: t.id, name: t.name, color: t.color || '#7c6fff', memberIds: parseJ(t.member_ids, []) })),
       pipelines: pipelines.map(p => ({ id: p.id, name: p.name, stages: parseJ(p.stages, []), cards: parseJ(p.cards, []) })),
       variables: variables.map(v => ({ id: v.id, name: v.name, type: v.type, defaultValue: v.default_value, description: v.description, isSystem: !!v.is_system })),

@@ -209,12 +209,15 @@ const deleteTeam = async (req, res) => {
 
 // ── Labels ────────────────────────────────────────────────────────────────────
 
+// `description` explica cuándo aplicar la etiqueta: la lee el perfilado automático
+// para etiquetar por su cuenta, así que conviene que sea concreta.
 const createLabel = async (req, res) => {
   const { accId } = req.params
-  const { name, color } = req.body
+  const { name, color, description } = req.body
   const id = 'lbl_' + uid()
   try {
-    await pool.query('INSERT INTO labels (id,account_id,name,color) VALUES (?,?,?,?)', [id, accId, name, color])
+    await pool.query('INSERT INTO labels (id,account_id,name,color,description) VALUES (?,?,?,?,?)',
+      [id, accId, name, color, description || null])
     socket.emit(accId, 'account:updated', { accId })
     res.json({ id })
   } catch (err) { res.status(500).json({ error: 'Error interno' }) }
@@ -222,9 +225,11 @@ const createLabel = async (req, res) => {
 
 const updateLabel = async (req, res) => {
   const { accId, lblId } = req.params
-  const { name, color } = req.body
+  const { name, color, description } = req.body
   try {
-    await pool.query('UPDATE labels SET name=?,color=? WHERE id=? AND account_id=?', [name, color, lblId, accId])
+    const sets = ['name=?', 'color=?']; const vals = [name, color]
+    if (description !== undefined) { sets.push('description=?'); vals.push(description || null) }
+    await pool.query(`UPDATE labels SET ${sets.join(',')} WHERE id=? AND account_id=?`, [...vals, lblId, accId])
     socket.emit(accId, 'account:updated', { accId })
     res.json({ ok: true })
   } catch (err) { res.status(500).json({ error: 'Error interno' }) }

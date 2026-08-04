@@ -20,6 +20,15 @@ function scheduleMemory(ctx) {
   try { require('../../services/conversationMemory').updateMemory(ctx.accId, ctx.agId, ctx.convId).catch(() => {}) } catch {}
 }
 
+// Perfilamiento automático del cliente (notas, etiquetas, etapa y variables). Igual que la
+// memoria: corre DESPUÉS de responder y en segundo plano, así que no añade latencia ni
+// interviene en la conversación. Solo si el prompt tiene asignada la herramienta "perfilado".
+function scheduleProfiling(ctx, assignedTools) {
+  if (ctx?._sandbox || !ctx?.accId || !ctx?.convId) return
+  if (!(assignedTools || []).some(t => t.actionType === 'profiling')) return
+  try { require('../../services/profiling').profileConversation(ctx.accId, ctx.agId, ctx.convId).catch(() => {}) } catch {}
+}
+
 function buildOneToolDef(tool) {
   return {
     type: 'function',
@@ -52,6 +61,10 @@ function buildToolDefs(toolList, account) {
     else if (tool.actionType === 'pms') { if (account?.pms?.connected) defs.push(...buildPmsToolDefs(account)) }
     else if (tool.actionType === 'orders') { if (account?.orders?.connected) defs.push(...buildOrdersToolDefs(account)) }
     else if (tool.actionType === 'data_tables') { if (account?.dataTables?.connected) defs.push(...buildDataTableToolDefs(account)) }
+    else if (tool.actionType === 'recontact') { defs.push(...buildRecontactToolDefs()) }
+    // 'profiling' NO expone ninguna función: es solo el interruptor del perfilado en
+    // segundo plano. Si cayera en el `else` genérico, el modelo vería una función fantasma.
+    else if (tool.actionType === 'profiling') { /* sin funciones */ }
     else { const d = buildOneToolDef(tool); if (d) defs.push(d) }
   }
   return defs
@@ -84,6 +97,9 @@ async function execToolCall(ctx, toolList, toolName, toolArgs) {
     return ordersExec(ctx, normalized, toolArgs)
   }
   // Tablas internas del cliente.
+  if (RECONTACT_FUNCS.has(normalized) && (toolList || []).some(t => t.actionType === 'recontact')) {
+    return recontactExec(ctx, normalized, toolArgs)
+  }
   if (DATATABLE_FUNCS.has(normalized) && (toolList || []).some(t => t.actionType === 'data_tables')) {
     return dataTableExec(ctx, normalized, toolArgs)
   }
@@ -511,6 +527,39 @@ function buildDataTableToolDefs(account) {
     }, required: ['tabla', 'buscar'] } } },
   ]
 }
+// ── Recontacto: respetar la voluntad del cliente ──────────────────────────────
+const RECONTACT_FUNCS = new Set(['marcar_no_recontactable', 'reactivar_recontacto'])
+function buildRecontactToolDefs() {
+  return [
+    { type: 'function', function: {
+      name: 'marcar_no_recontactable',
+      description: 'Marca esta conversación para que NO se le envíen más recontactos automáticos. Úsala cuando el cliente pida explícitamente que no le escriban o no le insistan más.',
+      parameters: { type: 'object', properties: {
+        motivo: { type: 'string', description: 'Motivo breve en palabras del cliente. Opcional.' },
+      }, required: [] },
+    } },
+    { type: 'function', function: {
+      name: 'reactivar_recontacto',
+      description: 'Vuelve a permitir los recontactos automáticos en esta conversación. Úsala si el cliente se retracta y pide que sí le escriban.',
+      parameters: { type: 'object', properties: {}, required: [] },
+    } },
+  ]
+}
+async function recontactExec(ctx, fnName, args) {
+  try {
+    const stop = fnName === 'marcar_no_recontactable'
+    // Se escribe UNA sola clave (setLocalVar), no el objeto entero: updateConvo({localVars})
+    // sustituiría todas las variables de la conversación.
+    // Reactivar guarda cadena vacía a propósito: el worker comprueba truthy, así que '0' NO reactivaría.
+    await store.setLocalVar(ctx.accId, ctx.agId, ctx.convId, '_recontact_stopped', stop ? '1' : '')
+    logDebug(ctx, 'flow_run', stop ? '🛑 Marcado como NO recontactable' : '🔁 Recontactos reactivados',
+      { motivo: args?.motivo || undefined })
+    return stop
+      ? 'Listo: no se le enviarán más recontactos automáticos.'
+      : 'Listo: los recontactos automáticos vuelven a estar activos.'
+  } catch (e) { return `No se pudo cambiar el estado de recontacto: ${e.message}` }
+}
+
 async function dataTableExec(ctx, fnName, args) {
   try {
     const dt = require('../../services/dataTables')
@@ -1205,12 +1254,14 @@ const aiNodes = [
           ctx._suppressDefaultNext = true
         }
         scheduleMemory(ctx)
+        scheduleProfiling(ctx, assignedTools)
         return
       }
 
       if (node.data?.variable_destino) await setVarBoth(ctx, node.data.variable_destino, reply)
       if (node.data?.sendToUser !== false && reply) await sendBotMsg(ctx, reply)
       scheduleMemory(ctx)
+      scheduleProfiling(ctx, assignedTools)
       // El nodo Agente IA es TERMINAL para el flujo de entrada: tras responder, el
       // flujo se corta aquí y no continúa a nodos posteriores. Excepción: si el nodo
       // está configurado para NO responder al usuario (sendToUser:false), se asume

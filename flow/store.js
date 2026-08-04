@@ -94,6 +94,11 @@ async function appendMsg(accId, agId, convId, msg) {
       const [[c]] = await pool.query('SELECT local_vars FROM conversations WHERE id=? AND account_id=?', [convId, accId])
       const lv = parseJ(c?.local_vars, {})
       lv._lastUserMessage = content
+      // El cliente volvió a escribir → se reabre la conversación y se reanudan los recontactos.
+      // Esta ruta es la de WhatsApp/Messenger/Instagram; antes solo lo hacía appendMessageCore
+      // (webchat/prueba), así que en los canales de Meta un chat detenido lo quedaba PARA SIEMPRE.
+      delete lv._recontact_stopped
+      if (lv._case_status === 'closed') delete lv._case_status
       await pool.query('UPDATE conversations SET local_vars=? WHERE id=? AND account_id=?', [JSON.stringify(lv), convId, accId])
       // Métrica de facturación por contactos: contacto distinto con actividad en el ciclo.
       if (lv.contact_id) { try { require('../services/subscriptions').markContactActive(accId, lv.contact_id) } catch {} }
