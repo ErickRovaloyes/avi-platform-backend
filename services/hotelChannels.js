@@ -66,7 +66,7 @@ async function buildIcal(accId, calId, roomTypeId) {
     "SELECT b.id, b.date AS checkin, b.checkout, b.channel, b.client_name FROM calendar_bookings b WHERE b.account_id=? AND b.calendar_id=? AND b.status NOT IN ('cancelled','noshow') AND b.id IN (SELECT booking_id FROM booking_allocations WHERE account_id=? AND resource_id=?)",
     [accId, calId, accId, roomTypeId]
   )
-  const lines = ['BEGIN:VCALENDAR', 'VERSION:2.0', 'PRODID:-//AVI Platform//Hotel//ES', 'CALSCALE:GREGORIAN']
+  const lines = ['BEGIN:VCALENDAR', 'VERSION:2.0', 'PRODID:-//AVI Asistente//Hotel//ES', 'CALSCALE:GREGORIAN']
   for (const r of rows) {
     if (!r.checkin || !r.checkout) continue
     lines.push('BEGIN:VEVENT')
