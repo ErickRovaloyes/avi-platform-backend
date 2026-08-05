@@ -698,7 +698,49 @@ const listStarred = async (req, res) => {
   } catch { res.status(500).json({ error: 'Error interno' }) }
 }
 
+/**
+ * Ejecuta un flujo A MANO sobre una conversación (POST …/:convId/run-flow).
+ *
+ * La web hace esto con su motor del NAVEGADOR (`lib/flowEngine`), que la app móvil no tiene
+ * ni puede tener. Con este endpoint el flujo corre en el servidor, así que sirve igual para
+ * el móvil y para cualquier otro cliente futuro; el resultado (mensajes, etiquetas, tickets…)
+ * aparece en los dos sitios por socket, como con cualquier flujo automático.
+ *
+ * Se lanza SIN esperar a que termine: un flujo con nodos de IA puede tardar bastante y la
+ * app se quedaría con la petición colgada. Quien lo dispara recibe el "ok" y ve la respuesta
+ * llegar al chat como cualquier otro mensaje.
+ */
+const runFlowManually = async (req, res) => {
+  const { accId, agId, convId } = req.params
+  const flowId = String(req.body?.flowId || '').trim()
+  if (!flowId) return res.status(400).json({ error: 'Falta el flujo a ejecutar' })
+  try {
+    // La conversación tiene que ser de esta cuenta: el id viene del cliente.
+    const [[conv]] = await pool.query('SELECT id FROM conversations WHERE id=? AND account_id=?', [convId, accId])
+    if (!conv) return res.status(404).json({ error: 'Conversación no encontrada' })
+    const [[flow]] = await pool.query('SELECT id, name, nodes FROM flows WHERE id=? AND account_id=?', [flowId, accId])
+    if (!flow) return res.status(404).json({ error: 'Flujo no encontrado en esta cuenta' })
+    if (!(parseJ(flow.nodes, []) || []).length) return res.status(400).json({ error: 'Ese flujo no tiene nodos' })
+
+    const engine = require('../flow/engine')
+    if (engine.isRunning && engine.isRunning(convId)) {
+      return res.status(409).json({ error: 'Ya hay un flujo en curso en esta conversación. Espera a que termine.' })
+    }
+    // `triggeredBy` deja constancia de QUIÉN lo lanzó en el historial de ejecuciones.
+    engine.executeFlow({
+      flowId, accId, agId, convId,
+      triggeredBy: { type: 'manual', id: req.user?.id || null, name: req.user?.name || req.user?.email || 'Asesor' },
+    }).catch(e => console.warn('[run-flow]', flowId, e.message))
+
+    res.json({ ok: true, flowId, name: flow.name })
+  } catch (err) {
+    console.error('[RUN FLOW]', err)
+    res.status(500).json({ error: 'Error interno' })
+  }
+}
+
 module.exports = {
+  runFlowManually,
   listConvos, getConvo, createConvo, updateConvo, deleteConvo, markRead,
   appendMessage, sendManual, appendDebug, patchVars, getGuest, updateMemory,
   createWhatsApp, createMessenger, createInstagram, createSocial, suggestReply,

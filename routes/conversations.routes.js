@@ -9,6 +9,9 @@ router.get('/:accId/:agId/:convId',                     optionalAuth, ctrl.getCo
 router.post('/:accId/:agId',                            optionalAuth, ctrl.createConvo)
 router.put('/:accId/:agId/:convId',                     optionalAuth, ctrl.updateConvo)
 router.put('/:accId/:agId/:convId/read',                optionalAuth, ctrl.markRead)
+// Ejecutar un flujo a mano sobre la conversación. Exige sesión: dispara acciones reales
+// (mensajes al cliente, tickets, cobros), así que no puede quedar abierto como el webchat.
+router.post('/:accId/:agId/:convId/run-flow',           authMiddleware, ctrl.runFlowManually)
 router.post('/:accId/:agId/:convId/messages',           optionalAuth, ctrl.appendMessage)
 router.post('/:accId/:agId/:convId/send-manual',        optionalAuth, ctrl.sendManual)
 router.post('/:accId/:agId/:convId/suggest-reply',      optionalAuth, ctrl.suggestReply)
