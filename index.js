@@ -194,6 +194,14 @@ app.use('/api',                flowTemplatesRoutes)
   const pool = require('./db')
   // ADD COLUMN IF NOT EXISTS only works in MySQL 8.0.29+ — use ADD COLUMN and swallow "duplicate column" errors
   const migrations = [
+    // Freno a la fuerza bruta en el login: intentos fallidos y bloqueo temporal por correo.
+    // Va como CREATE TABLE IF NOT EXISTS, así que es idempotente igual que los ALTER.
+    `CREATE TABLE IF NOT EXISTS login_attempts (
+       email        VARCHAR(100) PRIMARY KEY,
+       fails        INT    NOT NULL DEFAULT 0,
+       locked_until BIGINT NOT NULL DEFAULT 0,
+       updated_at   BIGINT NOT NULL DEFAULT 0
+     )`,
     // Perfil de usuario: foto propia (data URL o enlace) por miembro y super admin.
     "ALTER TABLE members ADD COLUMN photo MEDIUMTEXT",
     "ALTER TABLE super_admins ADD COLUMN photo MEDIUMTEXT",

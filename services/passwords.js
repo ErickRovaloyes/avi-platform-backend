@@ -61,4 +61,22 @@ async function verify(plain, stored) {
   return { ok, legacy: true }
 }
 
-module.exports = { hash, toStored, verify, isHash, ROUNDS }
+// ── Requisitos de una contraseña NUEVA ────────────────────────────────────────
+// Solo se aplican al crear o al cambiar. En el login NO se valida: ahí la contraseña ya
+// existe, y comprobarla dejaría fuera a todos los usuarios que se registraron antes.
+// Se usan clases Unicode y no [A-Z]/[^A-Za-z0-9]: con rangos ASCII, una "Ñ" no contaría
+// como mayúscula y una "á" sí contaría como carácter especial. Con \p{Lu} y \p{L}\p{N} el
+// criterio es el mismo escriba la persona en el idioma que escriba.
+const MIN_LEN = 8
+const UPPER_RE = /\p{Lu}/u
+const SPECIAL_RE = /[^\p{L}\p{N}]/u
+const RULES_TEXT = 'La contraseña debe tener al menos 8 caracteres, una mayúscula y un carácter especial.'
+
+/** `{ ok, error }`. El texto es el mismo en todas partes para no dar mensajes distintos. */
+function validate(plain) {
+  const s = String(plain ?? '')
+  if (s.length < MIN_LEN || !UPPER_RE.test(s) || !SPECIAL_RE.test(s)) return { ok: false, error: RULES_TEXT }
+  return { ok: true }
+}
+
+module.exports = { hash, toStored, verify, isHash, validate, ROUNDS, MIN_LEN, RULES_TEXT }

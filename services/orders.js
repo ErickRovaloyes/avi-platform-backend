@@ -336,31 +336,57 @@ async function toolCall(accId, fn, args = {}, { convId, agId } = {}) {
   // ── Agregar al pedido ─────────────────────────────────────────────────────
   if (fn === 'agregar_al_pedido') {
     const products = await listProducts(accId, { onlyAvailable: true })
-    const prod = findProduct(products, args.producto)
-    if (!prod) return { text: `No encontré "${args.producto}" en el menú. Productos: ${products.map(p => p.name).slice(0, 20).join(', ')}.` }
-    const qty = Math.max(1, Number(args.cantidad) || 1)
-    // Resolver adiciones/modificadores solicitados contra los grupos del producto.
-    let modifiers = [], modTotal = 0
-    if (prod.modifierGroupIds.length && (args.adiciones || args.modificadores)) {
-      const groups = (await listGroups(accId)).filter(g => prod.modifierGroupIds.includes(g.id))
-      const wanted = String(args.adiciones || args.modificadores || '').split(/[,;]+/).map(norm).filter(Boolean)
-      for (const g of groups) for (const m of g.modifiers) {
-        if (!m.available) continue
-        if (wanted.some(w => norm(m.name).includes(w) || w.includes(norm(m.name)))) { modifiers.push({ groupId: g.id, id: m.id, name: m.name, priceDelta: m.priceDelta }); modTotal += m.priceDelta }
-      }
-    }
-    const unitPrice = (prod.effPrice || prod.price) + modTotal
-    const lineTotal = unitPrice * qty
+    // Acepta una LISTA de productos. Antes solo cabía uno por llamada, así que un pedido de
+    // varios artículos gastaba una ronda del bucle de herramientas por cada uno y, al
+    // agotarse las rondas, los últimos se perdían sin que nada fallara.
+    const list = Array.isArray(args.productos) && args.productos.length
+      ? args.productos
+      : (args.producto ? [{ producto: args.producto, cantidad: args.cantidad, adiciones: args.adiciones || args.modificadores, nota: args.nota }] : [])
+    if (!list.length) return { text: 'Dime qué productos agrego al pedido.' }
+
     const draft = await getDraft(accId, convId, { create: true })
     if (!draft) return { text: 'No pude iniciar el pedido (conversación no válida).' }
     draft.items = draft.items || []
-    const combo = prod.isCombo ? prod.comboItems.map(ci => ({ name: ci.name, qty: Number(ci.qty) || 1 })) : []
-    draft.items.push({ productId: prod.id, name: prod.name, qty, unitPrice, modifiers, combo, isCombo: prod.isCombo, note: String(args.nota || '').slice(0, 140), lineTotal })
+
+    const added = [], missing = []
+    let groupsCache = null
+    for (const raw of list) {
+      const name = String(raw?.producto || '').trim()
+      if (!name) continue
+      const prod = findProduct(products, name)
+      if (!prod) { missing.push(name); continue }
+      const qty = Math.max(1, Number(raw.cantidad) || 1)
+      // Resolver adiciones/modificadores solicitados contra los grupos del producto.
+      let modifiers = [], modTotal = 0
+      const adiciones = raw.adiciones || raw.modificadores
+      if (prod.modifierGroupIds.length && adiciones) {
+        if (!groupsCache) groupsCache = await listGroups(accId)   // una sola consulta para toda la lista
+        const groups = groupsCache.filter(g => prod.modifierGroupIds.includes(g.id))
+        const wanted = String(adiciones).split(/[,;]+/).map(norm).filter(Boolean)
+        for (const g of groups) for (const m of g.modifiers) {
+          if (!m.available) continue
+          if (wanted.some(w => norm(m.name).includes(w) || w.includes(norm(m.name)))) { modifiers.push({ groupId: g.id, id: m.id, name: m.name, priceDelta: m.priceDelta }); modTotal += m.priceDelta }
+        }
+      }
+      const unitPrice = (prod.effPrice || prod.price) + modTotal
+      const combo = prod.isCombo ? prod.comboItems.map(ci => ({ name: ci.name, qty: Number(ci.qty) || 1 })) : []
+      draft.items.push({ productId: prod.id, name: prod.name, qty, unitPrice, modifiers, combo, isCombo: prod.isCombo, note: String(raw.nota || '').slice(0, 140), lineTotal: unitPrice * qty })
+      const modTxt = modifiers.length ? ` (${modifiers.map(m => m.name).join(', ')})` : ''
+      const comboTxt = combo.length ? ` — incluye ${combo.map(c => `${c.qty > 1 ? `${c.qty}× ` : ''}${c.name}`).join(', ')}` : ''
+      added.push(`${qty}× ${prod.isCombo ? '🍱 ' : ''}${prod.name}${modTxt}${comboTxt}`)
+    }
+
+    if (!added.length) {
+      return { text: `No encontré ${missing.map(m => `"${m}"`).join(', ')} en el menú. Productos: ${products.map(p => p.name).slice(0, 20).join(', ')}.` }
+    }
     await saveDraft(accId, draft)
     const t = cartTotals(draft, cfg)
-    const modTxt = modifiers.length ? ` (${modifiers.map(m => m.name).join(', ')})` : ''
-    const comboTxt = combo.length ? ` — incluye ${combo.map(c => `${c.qty > 1 ? `${c.qty}× ` : ''}${c.name}`).join(', ')}` : ''
-    return { text: `Agregué ${qty}× ${prod.isCombo ? '🍱 ' : ''}${prod.name}${modTxt}${comboTxt}. Subtotal del pedido: ${fmtMoney(t.subtotal, currency)}. ¿Algo más o cerramos el pedido?` }
+    // Lo que NO se pudo agregar se dice explícitamente: si se callara, el asistente daría
+    // por hecho que el pedido está completo y el cliente recibiría menos de lo que pidió.
+    const missTxt = missing.length
+      ? ` NO encontré en el menú: ${missing.map(m => `"${m}"`).join(', ')} — díselo al cliente y ofrécele alternativas.`
+      : ''
+    return { text: `Agregué ${added.join(', ')}. Subtotal del pedido: ${fmtMoney(t.subtotal, currency)}.${missTxt} ¿Algo más o cerramos el pedido?` }
   }
 
   // ── Ver carrito ───────────────────────────────────────────────────────────
@@ -630,9 +656,24 @@ async function markPaidByRef(accId, reference) {
   } catch (e) { /* no crítico */ }
 }
 
+/**
+ * Total del carrito ABIERTO de una conversación, o null si no hay ninguno.
+ * Lo usa la herramienta de pago para cobrar el total REAL del pedido en vez del monto que
+ * calcula el modelo de cabeza, que es donde se colaban los cobros por menos de la cuenta.
+ */
+async function cartTotalFor(accId, convId) {
+  try {
+    if (!convId) return null
+    const draft = await getDraft(accId, convId)
+    if (!draft || !Array.isArray(draft.items) || !draft.items.length) return null
+    const t = cartTotals(draft, await loadConfig(accId))
+    return { total: Number(t.total) || 0, subtotal: Number(t.subtotal) || 0, items: draft.items.length }
+  } catch { return null }
+}
+
 module.exports = {
   ORDER_TYPES, TYPE_LABEL, STATUSES,
   loadConfig, saveConfig, publicConfig, publicConfigAsync, normConfig,
   listProducts, listGroups, listZones, listCouriers, listCoupons, mapOrder,
-  toolCall, notifyCustomerStatus, markPaidByRef,
+  toolCall, notifyCustomerStatus, markPaidByRef, cartTotalFor,
 }

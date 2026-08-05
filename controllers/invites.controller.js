@@ -42,6 +42,9 @@ const acceptInvite = async (req, res) => {
   const password = req.body.password
 
   if (!email) return res.status(400).json({ error: 'Email requerido' })
+  // Solo cuando la persona escribe una contraseña: si se reutiliza la de otra cuenta suya,
+  // ya está hasheada y no hay nada que validar (además de que sería rechazarla sin remedio).
+  if (password && password.trim()) { const v = pw.validate(password.trim()); if (!v.ok) return res.status(400).json({ error: v.error }) }
 
   try {
     const [[inv]] = await pool.query('SELECT * FROM invites WHERE token=? AND used_at IS NULL', [token])

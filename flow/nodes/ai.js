@@ -784,14 +784,29 @@ async function paymentExec(ctx, fnName, args) {
   const accId = ctx.accId
   try {
     if (fnName === 'generar_link_pago') {
-      const amount = parseFloat(String(args?.monto || '').replace(/[^\d.]/g, ''))
+      let amount = parseFloat(String(args?.monto || '').replace(/[^\d.]/g, ''))
+      let note = ''
+      // Si hay un carrito de pedidos ABIERTO, manda el total del carrito y no el que calculó
+      // el modelo: el monto lo sumaba la IA de cabeza, así que un producto que no se agregó
+      // —o una suma mal hecha— generaba un cobro por menos sin que nadie se enterara.
+      try {
+        const cart = await require('../../services/orders').cartTotalFor(accId, ctx.convId)
+        if (cart && cart.items > 0 && cart.total > 0) {
+          if (Math.round(cart.total) !== Math.round(amount || 0)) {
+            note = ` (se usó el total real del pedido, ${cart.items} producto(s); el monto indicado no coincidía)`
+            logDebug(ctx, 'flow_run', `💳 Monto corregido con el carrito: ${amount || 0} → ${cart.total}`, { items: cart.items })
+          }
+          amount = cart.total
+        }
+      } catch { /* sin módulo de pedidos: se cobra el monto indicado, como siempre */ }
+
       if (!amount || amount <= 0) return 'Indica un monto válido para generar el link de pago.'
       const r = await payments.createPaymentLink(accId, {
         amount, description: args?.concepto || 'Pago', convId: ctx.convId, agId: ctx.agId,
       })
       await sendBotMsg(ctx, `💳 Aquí está tu link de pago por ${r.amount} ${r.currency}:\n${r.url}\n\nApenas completes el pago te confirmo automáticamente.`)
       logDebug(ctx, 'tool_result', `💳 Link de pago ${r.amount} ${r.currency}`, {})
-      return `Link de pago generado por ${r.amount} ${r.currency} y enviado al usuario.`
+      return `Link de pago generado por ${r.amount} ${r.currency} y enviado al usuario${note}.`
     }
     if (fnName === 'verificar_pago') {
       // Consulta el estado EN VIVO del proveedor (no depende del webhook). Si el pago se
@@ -931,13 +946,23 @@ function buildOrdersToolDefs(account) {
         categoria: { type: 'string', description: 'Categoría concreta para filtrar y enviar fotos (vacío = panorama de todo el menú)' },
       } } } },
     { type: 'function', function: { name: 'agregar_al_pedido',
-      description: 'Agrega un producto al pedido (carrito) del cliente. Úsalo cada vez que el cliente pida algo. Puedes incluir adiciones/modificadores y una nota.',
+      description: 'Agrega productos al pedido (carrito) del cliente. IMPORTANTE: si el cliente pide varias cosas de una vez, mándalas TODAS juntas en `productos` en UNA sola llamada — no hagas una llamada por producto.',
       parameters: { type: 'object', properties: {
-        producto: { type: 'string', description: 'Nombre del producto tal como aparece en el menú' },
-        cantidad: { type: 'number', description: 'Cantidad (mínimo 1)' },
-        adiciones: { type: 'string', description: 'Adiciones/modificadores separados por coma (ej. "extra queso, sin cebolla")' },
-        nota: { type: 'string', description: 'Nota para la cocina sobre este producto (opcional)' },
-      }, required: ['producto'] } } },
+        productos: {
+          type: 'array',
+          description: 'Lista completa de lo que pide el cliente. Úsala siempre que sean 2 o más productos.',
+          items: { type: 'object', properties: {
+            producto: { type: 'string', description: 'Nombre del producto tal como aparece en el menú' },
+            cantidad: { type: 'number', description: 'Cantidad (mínimo 1)' },
+            adiciones: { type: 'string', description: 'Adiciones/modificadores separados por coma (ej. "extra queso, sin cebolla")' },
+            nota: { type: 'string', description: 'Nota para la cocina sobre este producto (opcional)' },
+          }, required: ['producto'] },
+        },
+        producto: { type: 'string', description: 'Atajo para UN solo producto (equivale a productos con un elemento)' },
+        cantidad: { type: 'number', description: 'Cantidad del producto único (mínimo 1)' },
+        adiciones: { type: 'string', description: 'Adiciones del producto único' },
+        nota: { type: 'string', description: 'Nota para la cocina del producto único' },
+      } } } },
     { type: 'function', function: { name: 'ver_carrito',
       description: 'Muestra el resumen del pedido actual con los productos y el total. Úsalo cuando el cliente quiera revisar su pedido antes de confirmar.',
       parameters: { type: 'object', properties: {} } } },
@@ -1152,7 +1177,11 @@ async function callAI(ctx, { systemPrompt, userPrompt, model, provider, maxToken
   // (DeepSeek) y hace que la herramienta "se active solo una vez". Anthropic no
   // soporta este hilo en nuestro builder → mantiene una sola ronda.
   if (tools.length > 0) {
-    const canThread = prov !== 'anthropic'
+    // Anthropic también encadena rondas: `aiClient.anthropicMessages` traduce los
+    // `tool_calls` y los resultados a bloques `tool_use`/`tool_result`. Antes se excluía, y
+    // por eso con Claude se ejecutaba UNA ronda y se devolvía vacío — cualquier gestión de
+    // dos pasos (agregar productos y luego confirmar el pedido) quedaba a medias.
+    const canThread = true
     const convo = messages.slice()
     const executed = []
     // Mensajes ya enviados antes de ejecutar herramientas: si alguna herramienta responde
@@ -1160,7 +1189,10 @@ async function callAI(ctx, { systemPrompt, userPrompt, model, provider, maxToken
     const sentAtStart = ctx._sentCount || 0
     // Headroom para varios triggers consecutivos (cada uno consume una ronda)
     // + la respuesta final del modelo.
-    const MAX_ROUNDS = 6
+    // 10 y no 6: una conversación de pedido gasta rondas en ver el menú, agregar, fijar la
+    // entrega, aplicar cupón y confirmar. Con 6 se agotaban antes de terminar y el pedido
+    // quedaba incompleto sin que nada diera error.
+    const MAX_ROUNDS = 10
 
     // Ejecuta herramientas que el modelo haya ESCRITO en el texto (red de
     // seguridad) y devuelve el texto ya limpio de esas llamadas.
@@ -1224,7 +1256,13 @@ async function callAI(ctx, { systemPrompt, userPrompt, model, provider, maxToken
       }
       // openai/deepseek → siguiente ronda con los resultados en contexto
     }
-    // Se agotaron las rondas: redacta una respuesta final con los resultados.
+    // Se agotaron las rondas. Antes se redactaba la respuesta final sin más, así que el
+    // modelo confirmaba tan tranquilo un pedido al que le faltaban productos. Ahora se le
+    // dice, para que avise al cliente en vez de dar por hecho que terminó.
+    if (canThread) {
+      convo.push({ role: 'system', content: 'AVISO INTERNO: se alcanzó el límite de llamadas a herramientas de este turno, así que puede que alguna acción quede sin ejecutar. NO afirmes que algo se completó si no viste su resultado. Si quedaba trabajo pendiente (por ejemplo productos por agregar o un pedido por confirmar), dilo con naturalidad y pide al cliente que confirme para continuar.' })
+      logDebug(ctx, 'flow_run', `⚠ Límite de ${MAX_ROUNDS} rondas de herramientas alcanzado`, { ejecutadas: executed })
+    }
     return await finishText('')
   }
 

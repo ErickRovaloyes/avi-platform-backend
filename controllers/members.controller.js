@@ -12,6 +12,8 @@ const createMember = async (req, res) => {
   const { accId } = req.params
   const { id: gId, name, email, password, roleId, agentAccess = [], avatar } = req.body
   const cleanEmail = String(email || '').trim()
+  // Solo si viene contraseña: el alta puede crearse sin ella (se copia de otra cuenta).
+  if (password) { const v = pw.validate(password); if (!v.ok) return res.status(400).json({ error: v.error }) }
   try {
     // Idempotencia: una identidad (email) solo puede tener UNA membresía por cuenta.
     // Si ya existe, se actualiza (fusiona accesos a agentes) en vez de crear un duplicado.
@@ -46,6 +48,7 @@ const updateMember = async (req, res) => {
   const { accId, memId } = req.params
   const { name, email, roleId, agentAccess, status, password, avatar } = req.body
   try {
+    if (password) { const v = pw.validate(password); if (!v.ok) return res.status(400).json({ error: v.error }) }
     const sets = []; const vals = []
     if (name        !== undefined) { sets.push('name=?');         vals.push(name) }
     if (email       !== undefined) { sets.push('email=?');        vals.push(email) }

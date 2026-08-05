@@ -40,6 +40,7 @@ const signup = async (req, res) => {
   const ip = clientIp(req)
   if (!await registrationEnabled()) return res.status(403).json({ error: 'El registro de cuentas Demo está deshabilitado temporalmente.' })
   if (!name || !email || !password) return res.status(400).json({ error: 'Nombre, correo y contraseña son obligatorios' })
+  const _pv = pw.validate(password); if (!_pv.ok) return res.status(400).json({ error: _pv.error })
   // Datos del onboarding (todo lo del diagnóstico) para generar la IA y métricas.
   const onboarding = {
     iaName, industry, businessType: b.businessType, objective: b.objective,

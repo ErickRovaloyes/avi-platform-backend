@@ -315,6 +315,7 @@ const createSuperAdmin = async (req, res) => {
   if (req.user.type !== 'superadmin') return res.status(403).json({ error: 'Solo super admin' })
   const { name, email, password } = req.body
   if (!name || !email || !password) return res.status(400).json({ error: 'Nombre, email y contraseña son requeridos' })
+  const _pv = pw.validate(password); if (!_pv.ok) return res.status(400).json({ error: _pv.error })
   const id = 'sa_' + uid()
   try {
     await pool.query('INSERT INTO super_admins (id, name, email, password) VALUES (?, ?, ?, ?)', [id, name, email, await pw.toStored(password)])
@@ -334,6 +335,7 @@ const updateSuperAdmin = async (req, res) => {
     const sets = []; const vals = []
     if (name  !== undefined) { sets.push('name=?');  vals.push(name) }
     if (email !== undefined) { sets.push('email=?'); vals.push(email) }
+    if (password) { const v = pw.validate(password); if (!v.ok) return res.status(400).json({ error: v.error }) }
     if (password)            { sets.push('password=?'); vals.push(await pw.toStored(password)) }
     if (!sets.length) return res.json({ ok: true })
     vals.push(saId)

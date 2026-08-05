@@ -5,6 +5,7 @@ const { parseJ } = require('../utils')
 const { loadEmailConfig, isConfigured, sendEmail } = require('../services/email')
 const { issueCode, verifyCode } = require('../services/verifyCodes')
 const pw = require('../services/passwords')
+const guard = require('../services/loginGuard')
 
 // Valida credenciales y arma la sesión (super admin o miembro). Devuelve la
 // sesión o null si las credenciales no son válidas. Reutilizado por login + 2FA.
@@ -97,8 +98,18 @@ const login = async (req, res) => {
   const { email, password } = req.body
   if (!email || !password) return res.status(400).json({ error: 'Email y contraseña requeridos' })
   try {
+    // Freno a la fuerza bruta ANTES de verificar: si no, cada intento seguiría costando un
+    // bcrypt y el bloqueo no ahorraría el trabajo que un atacante quiere provocar.
+    const lock = await guard.check(email)
+    if (lock.locked) return res.status(429).json({ error: guard.lockedMessage(lock.minutes), locked: true, minutes: lock.minutes })
+
     const session = await buildSessionFor(email, password)
-    if (!session) return res.status(401).json({ error: 'Credenciales inválidas' })
+    if (!session) {
+      const f = await guard.fail(email)
+      if (f.locked) return res.status(429).json({ error: guard.lockedMessage(f.minutes), locked: true, minutes: f.minutes })
+      return res.status(401).json({ error: 'Credenciales inválidas', remaining: Math.max(0, guard.MAX_FAILS - f.fails) })
+    }
+    await guard.clear(email)
 
     // 2FA opt-in: si está activo y la identidad tiene correo, se envía un código y
     // NO se entrega el token hasta verificarlo. Si el envío falla, se hace fail-open
@@ -120,10 +131,19 @@ const verify2fa = async (req, res) => {
   const { email, password, code } = req.body
   if (!email || !password || !code) return res.status(400).json({ error: 'Faltan datos' })
   try {
+    // El 2FA también valida credenciales: contar solo en `login` dejaría esta puerta abierta.
+    const lock = await guard.check(email)
+    if (lock.locked) return res.status(429).json({ error: guard.lockedMessage(lock.minutes), locked: true, minutes: lock.minutes })
+
     const session = await buildSessionFor(email, password)
-    if (!session) return res.status(401).json({ error: 'Credenciales inválidas' })
+    if (!session) {
+      const f = await guard.fail(email)
+      if (f.locked) return res.status(429).json({ error: guard.lockedMessage(f.minutes), locked: true, minutes: f.minutes })
+      return res.status(401).json({ error: 'Credenciales inválidas' })
+    }
     const v = await verifyCode(session.email, 'login', code)
     if (!v.ok) return res.status(401).json({ error: v.error })
+    await guard.clear(email)
     res.json({ token: sign(session), session })
   } catch (err) {
     console.error('[VERIFY 2FA]', err)
@@ -136,8 +156,16 @@ const resend2fa = async (req, res) => {
   const { email, password } = req.body
   if (!email || !password) return res.status(400).json({ error: 'Faltan datos' })
   try {
+    // Tercera puerta que valida credenciales: sin el freno aquí, bastaría con reenviar el
+    // código una y otra vez para probar contraseñas sin límite.
+    const lock = await guard.check(email)
+    if (lock.locked) return res.status(429).json({ error: guard.lockedMessage(lock.minutes), locked: true, minutes: lock.minutes })
     const session = await buildSessionFor(email, password)
-    if (!session) return res.status(401).json({ error: 'Credenciales inválidas' })
+    if (!session) {
+      const f = await guard.fail(email)
+      if (f.locked) return res.status(429).json({ error: guard.lockedMessage(f.minutes), locked: true, minutes: f.minutes })
+      return res.status(401).json({ error: 'Credenciales inválidas' })
+    }
     const r = await issueCode(session.email, 'login')
     if (!r.ok) return res.status(503).json({ error: r.error })
     res.json({ ok: true })
@@ -184,7 +212,8 @@ const resetPassword = async (req, res) => {
   const code = String(req.body?.code || '').trim()
   const newPassword = String(req.body?.newPassword || '')
   if (!email || !code || !newPassword) return res.status(400).json({ error: 'Faltan datos' })
-  if (newPassword.length < 6) return res.status(400).json({ error: 'La contraseña debe tener al menos 6 caracteres' })
+  const pv = pw.validate(newPassword)
+  if (!pv.ok) return res.status(400).json({ error: pv.error })
   try {
     const v = await verifyCode(email, 'reset', code)
     if (!v.ok) return res.status(401).json({ error: v.error })
@@ -192,6 +221,10 @@ const resetPassword = async (req, res) => {
     const [r1] = await pool.query('UPDATE members SET password=? WHERE email=?', [hashed, email])
     const [r2] = await pool.query('UPDATE super_admins SET password=? WHERE email=?', [hashed, email])
     if (!r1.affectedRows && !r2.affectedRows) return res.status(404).json({ error: 'No hay ninguna cuenta con ese correo' })
+    // Levanta el bloqueo por intentos fallidos: quien recibió el código en su buzón ha
+    // demostrado que la cuenta es suya. Es la salida que evita que un tercero pueda dejar
+    // a alguien fuera 12 horas fallando el login a propósito.
+    await guard.clear(email)
     res.json({ ok: true })
   } catch (err) {
     console.error('[RESET PASSWORD]', err)
@@ -327,6 +360,7 @@ const updateMyProfile = async (req, res) => {
       if ((dupM && !isSA) || (dupS && isSA) || (dupM && isSA) || (dupS && !isSA)) return res.status(409).json({ error: 'Ese correo ya está en uso' })
     }
 
+    if (newPassword) { const v = pw.validate(newPassword); if (!v.ok) return res.status(400).json({ error: v.error }) }
     const sets = [], vals = []
     if (name !== undefined) { sets.push('name=?'); vals.push(name) }
     if (photo !== undefined) { sets.push('photo=?'); vals.push(photo || null) }

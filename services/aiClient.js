@@ -106,11 +106,61 @@ function buildOpenAIBody({ model, messages, tools, modelConfig, advanced = {}, p
   return body
 }
 
+/**
+ * Traduce el historial al formato de Anthropic conservando el HILO DE HERRAMIENTAS.
+ *
+ * Antes se aplastaba todo a `content: string`, así que un mensaje con `tool_calls` y los
+ * `role:'tool'` con sus resultados llegaban como JSON pegado dentro del texto: Claude no los
+ * reconocía como herramientas y no podía continuar. Por eso el motor se rendía tras una sola
+ * ronda con Anthropic y los pedidos de varios pasos quedaban a medias.
+ *
+ * Reglas del formato: un `tool_use` va en el turno del asistente y su `tool_result` tiene que
+ * ir en el turno de usuario INMEDIATAMENTE siguiente. Varios resultados seguidos se agrupan
+ * en un único mensaje de usuario, que es lo que espera la API.
+ */
+function anthropicMessages(history) {
+  const out = []
+  for (const m of (history || [])) {
+    // Un `system` a mitad de conversación no existe en Anthropic (solo el de cabecera):
+    // se convierte en un turno de usuario para que la instrucción no se pierda.
+    if (m.role === 'system') {
+      out.push({ role: 'user', content: String(m.content ?? '') })
+      continue
+    }
+    if (m.role === 'tool') {
+      const block = {
+        type: 'tool_result',
+        tool_use_id: m.tool_call_id,
+        content: typeof m.content === 'string' ? m.content : JSON.stringify(m.content ?? ''),
+      }
+      const last = out[out.length - 1]
+      // Se agrupa con el resultado anterior si ya estábamos en un turno de resultados.
+      if (last && last.role === 'user' && Array.isArray(last.content) && last.content[0]?.type === 'tool_result') last.content.push(block)
+      else out.push({ role: 'user', content: [block] })
+      continue
+    }
+    if (m.role === 'assistant' && Array.isArray(m.tool_calls) && m.tool_calls.length) {
+      const blocks = []
+      const txt = typeof m.content === 'string' ? m.content.trim() : ''
+      if (txt) blocks.push({ type: 'text', text: txt })
+      for (const tc of m.tool_calls) {
+        let input = {}
+        try { input = JSON.parse(tc.function?.arguments || '{}') } catch {}
+        blocks.push({ type: 'tool_use', id: tc.id, name: tc.function?.name, input })
+      }
+      out.push({ role: 'assistant', content: blocks })
+      continue
+    }
+    out.push({
+      role: m.role === 'assistant' ? 'assistant' : 'user',
+      content: typeof m.content === 'string' ? m.content : JSON.stringify(m.content ?? ''),
+    })
+  }
+  return out
+}
+
 function buildAnthropicBody({ model, systemPrompt, history, tools, advanced = {} }) {
-  const inlineMessages = (history || []).filter(m => m.role !== 'system').map(m => ({
-    role: m.role === 'assistant' ? 'assistant' : 'user',
-    content: typeof m.content === 'string' ? m.content : JSON.stringify(m.content),
-  }))
+  const inlineMessages = anthropicMessages(history)
   const body = {
     model,
     max_tokens: advanced.maxTokens ?? DEFAULT_ADVANCED.maxTokens,
@@ -156,8 +206,12 @@ async function chat({ provider = 'openai', model, apiKey, messages, tools = [], 
 
   // ── Anthropic branch ───────────────────────────────────────────────────
   if (provider === 'anthropic') {
-    const systemPrompt = messages.find(m => m.role === 'system')?.content || ''
-    const history = messages.filter(m => m.role !== 'system')
+    // Solo el PRIMER system es la cabecera (`system:` de Anthropic). Los que aparecen a
+    // mitad de conversación son instrucciones puntuales y deben conservarse:
+    // `anthropicMessages` los convierte en turno de usuario.
+    const sysIdx = messages.findIndex(m => m.role === 'system')
+    const systemPrompt = (sysIdx >= 0 ? messages[sysIdx].content : '') || ''
+    const history = messages.filter((m, i) => i !== sysIdx)
     const body = buildAnthropicBody({ model: apiModel, systemPrompt, history, tools: useTools ? tools : [], advanced: adv })
     const res = await fetch(`${providerConfig.baseUrl}/messages`, {
       method: 'POST',
