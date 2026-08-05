@@ -1354,17 +1354,23 @@ const aiNodes = [
         systemPrompt = interpolate(node.data?.prompt || '', ctx.variables)
       }
 
-      // Regla Google: si la cuenta tiene Google conectado, el asistente NO responde con
-      // DeepSeek (Sheets/Calendar no funcionan con DeepSeek). Se BLOQUEA la respuesta hasta
-      // que se cambie el prompt a un modelo GPT (OpenAI). No se sustituye por otro modelo.
+      // Regla Google: Sheets y Calendario no funcionan con DeepSeek, así que con Google
+      // conectado se responde con GPT-5 mini aunque el prompt diga DeepSeek.
+      //
+      // Antes esto era un bloqueo — el asistente se quedaba mudo hasta que alguien entrara a
+      // cambiar el modelo a mano. La política ya escribe el cambio al conectar Google
+      // (services/aiModelPolicy.js); esto es la red por si esa escritura no llegó: cuentas
+      // que ya tenían Google conectado antes de que la política existiera, prompts
+      // restaurados de un backup antiguo, o el modelo heredado del default de plataforma.
       const effProvider = provider || platProvider || detectProvider(model || 'gpt-4o-mini')
       if (effProvider === 'deepseek') {
         let gConn = false
         try { gConn = await require('../../services/google').isGoogleConnected(ctx.accId) } catch {}
         if (gConn) {
-          logDebug(ctx, 'error', '⛔ Google conectado: el asistente NO responde con DeepSeek. Cambia el prompt activo a un modelo GPT (OpenAI) para reactivar el asistente y usar Sheets/Calendar.', { provider: effProvider, model, prompt: promptLabel })
-          ctx._suppressDefaultNext = true
-          return
+          const target = require('../../services/aiModelPolicy').GOOGLE_TARGET
+          logDebug(ctx, 'flow_run', `🔗 Google conectado: se usa ${target.label} en lugar de ${model || 'DeepSeek'} (DeepSeek no soporta Sheets/Calendario).`, { from: { provider: effProvider, model }, to: { provider: target.provider, model: target.model }, prompt: promptLabel })
+          provider = target.provider
+          model    = target.model
         }
       }
 

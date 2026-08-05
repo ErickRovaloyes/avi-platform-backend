@@ -2,6 +2,7 @@
 const pool = require('../db')
 const { uid } = require('../utils')
 const g = require('../services/google')
+const modelPolicy = require('../services/aiModelPolicy')
 
 // GET /api/accounts/:accId/google/status → { configured, connected, email, connections[] }
 const status = async (req, res) => {
@@ -34,7 +35,14 @@ const callback = async (req, res) => {
     const tokens = await g.exchangeCode(code)
     const email = await g.getUserEmail(tokens.access_token)
     await g.saveIntegration(accId, tokens, email)
-    close(`Google conectado${email ? ' como ' + email : ''}`, true)
+    // Con Google conectado el asistente pasa a GPT-5 mini: DeepSeek no puede usar Sheets ni
+    // Calendario. Va en try/catch porque un fallo aquí no debe tumbar el OAuth ya completado
+    // (y el nodo IA vuelve a aplicar la regla al ejecutarse, así que no se pierde).
+    let switched = null
+    try { switched = await modelPolicy.applyToAccount(accId, true) }
+    catch (e) { console.warn('[google callback] modelPolicy:', e.message) }
+    const note = switched?.changed ? ` · Modelo del asistente: ${switched.label}` : ''
+    close(`Google conectado${email ? ' como ' + email : ''}${note}`, true)
   } catch (e) {
     console.error('[google callback]', e.message)
     close('Error al conectar: ' + e.message, false)
@@ -48,7 +56,14 @@ const disconnect = async (req, res) => {
   const { connectionId } = req.query
   try {
     await g.disconnectConnection(accId, connectionId || null)
-    res.json({ ok: true })
+    // Se vuelve a DeepSeek V4 Flash SOLO si no queda ninguna cuenta de Google. Con varias
+    // conectadas, quitar una no debe devolver el asistente a DeepSeek: las que quedan
+    // siguen necesitando GPT. disconnectConnection ya invalidó la caché de conexiones.
+    const stillConnected = await g.isGoogleConnected(accId)
+    let switched = null
+    try { switched = await modelPolicy.applyToAccount(accId, stillConnected) }
+    catch (e) { console.warn('[google disconnect] modelPolicy:', e.message) }
+    res.json({ ok: true, googleConnected: stillConnected, model: switched?.model || null })
   } catch (err) { res.status(500).json({ error: 'Error interno' }) }
 }
 
