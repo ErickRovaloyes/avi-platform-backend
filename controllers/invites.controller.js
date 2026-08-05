@@ -1,6 +1,7 @@
 'use strict'
 const pool = require('../db')
 const { uid, parseJ } = require('../utils')
+const pw = require('../services/passwords')
 
 const getByToken = async (req, res) => {
   try {
@@ -72,7 +73,10 @@ const acceptInvite = async (req, res) => {
          LIMIT 1`,
         [email]
       )
-      const finalPassword = (password && password.trim()) || siblingMember?.password || ''
+      // `siblingMember.password` ya viene HASHEADO de la otra cuenta: se copia tal cual
+      // (es la misma contraseña). `toStored` respeta un hash y solo cifra lo que llega en
+      // claro, que es el caso de la contraseña que escribe quien acepta la invitación.
+      const finalPassword = await pw.toStored((password && password.trim()) || siblingMember?.password || '')
       const finalName     = (name && name.trim())         || siblingMember?.name     || email
       if (!finalPassword) {
         return res.status(400).json({

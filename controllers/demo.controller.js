@@ -7,6 +7,7 @@ const subs = require('../services/subscriptions')
 const provision = require('../services/demoProvision')
 const { loadEmailConfig, isConfigured } = require('../services/email')
 const { issueCode, verifyCode } = require('../services/verifyCodes')
+const pw = require('../services/passwords')
 
 // ¿Verificación de correo activa en el registro? Solo si el super admin la activó Y hay correo configurado.
 async function signupVerifyActive() {
@@ -83,7 +84,7 @@ const signup = async (req, res) => {
     const memId = 'mem_' + uid()
     await pool.query(
       'INSERT INTO members (id,account_id,name,email,password,avatar,role_id,agent_access,status) VALUES (?,?,?,?,?,?,?,?,?)',
-      [memId, accId, name.trim(), email.trim().toLowerCase(), password, (name || '').slice(0, 2).toUpperCase(), ownerRoleId, '[]', 'active']
+      [memId, accId, name.trim(), email.trim().toLowerCase(), await pw.toStored(password), (name || '').slice(0, 2).toUpperCase(), ownerRoleId, '[]', 'active']
     )
 
     // Asignar el Plan GRATUITO (familia 'free'): acceso a TODO, con una única limitación de

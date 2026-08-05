@@ -4,23 +4,62 @@ const { sign } = require('../auth')
 const { parseJ } = require('../utils')
 const { loadEmailConfig, isConfigured, sendEmail } = require('../services/email')
 const { issueCode, verifyCode } = require('../services/verifyCodes')
+const pw = require('../services/passwords')
 
 // Valida credenciales y arma la sesión (super admin o miembro). Devuelve la
 // sesión o null si las credenciales no son válidas. Reutilizado por login + 2FA.
+//
+// La contraseña ya NO se compara dentro del SQL: se trae la fila por correo y se verifica
+// con bcrypt en JS. Un hash no se puede comparar con `=`, y meterlo en el WHERE haría que
+// nadie pudiera entrar.
 async function buildSessionFor(email, password) {
-  const [sas] = await pool.query('SELECT * FROM super_admins WHERE email=? AND password=?', [email, password])
-  if (sas.length) {
-    const sa = sas[0]
+  // Verificación con memoria: una persona puede ser miembro de varias cuentas, y todas
+  // suelen compartir contraseña. bcrypt cuesta ~100 ms, así que se comprueba cada valor
+  // distinto una sola vez en lugar de una por fila.
+  const seen = new Map()
+  const check = async stored => {
+    const k = String(stored ?? '')
+    if (!seen.has(k)) seen.set(k, await pw.verify(password, k))
+    return seen.get(k)
+  }
+
+  const [sas] = await pool.query('SELECT * FROM super_admins WHERE email=?', [email])
+  for (const sa of sas) {
+    const v = await check(sa.password)
+    if (!v.ok) continue
+    // La fila seguía en texto plano: se convierte ahora, aprovechando que aquí sí
+    // conocemos la contraseña. Si falla el UPDATE no se bloquea el login.
+    if (v.legacy) {
+      try { await pool.query('UPDATE super_admins SET password=? WHERE id=?', [await pw.hash(password), sa.id]) }
+      catch (e) { console.warn('[login] no se pudo hashear el super admin:', e.message) }
+    }
     return { type: 'superadmin', id: sa.id, name: sa.name, email: sa.email, photo: sa.photo || null }
   }
-  // 1) Verifica la credencial: al menos una fila de miembro activa con email+password.
-  const [authRows] = await pool.query(
+
+  // 1) Verifica la credencial: al menos una fila de miembro activa con este correo.
+  const [candidates] = await pool.query(
     `SELECT m.*, a.name AS accountName, a.id AS accId
      FROM members m JOIN accounts a ON m.account_id = a.id
-     WHERE m.email=? AND m.password=? AND m.status='active'`,
-    [email, password]
+     WHERE m.email=? AND m.status='active'`,
+    [email]
   )
+  const authRows = []
+  let legacyHit = false
+  for (const r of candidates) {
+    const v = await check(r.password)
+    if (v.ok) { authRows.push(r); if (v.legacy) legacyHit = true }
+  }
   if (!authRows.length) return null
+  if (legacyHit) {
+    // Se hashean TODAS las filas de este correo cuya contraseña era esta misma, no solo
+    // la que sirvió para entrar: si no, quedarían membresías en texto plano en otras cuentas.
+    try {
+      const hashed = await pw.hash(password)
+      for (const r of authRows) {
+        if (!pw.isHash(r.password)) await pool.query('UPDATE members SET password=? WHERE id=?', [hashed, r.id])
+      }
+    } catch (e) { console.warn('[login] no se pudieron hashear las filas de miembro:', e.message) }
+  }
   // 2) La identidad de un miembro es su EMAIL (puede pertenecer a varias cuentas, y las
   //    contraseñas entre filas pueden haber quedado desincronizadas por datos legados).
   //    Una vez verificada la credencial, reunimos TODAS las cuentas activas de ese email
@@ -149,8 +188,9 @@ const resetPassword = async (req, res) => {
   try {
     const v = await verifyCode(email, 'reset', code)
     if (!v.ok) return res.status(401).json({ error: v.error })
-    const [r1] = await pool.query('UPDATE members SET password=? WHERE email=?', [newPassword, email])
-    const [r2] = await pool.query('UPDATE super_admins SET password=? WHERE email=?', [newPassword, email])
+    const hashed = await pw.hash(newPassword)
+    const [r1] = await pool.query('UPDATE members SET password=? WHERE email=?', [hashed, email])
+    const [r2] = await pool.query('UPDATE super_admins SET password=? WHERE email=?', [hashed, email])
     if (!r1.affectedRows && !r2.affectedRows) return res.status(404).json({ error: 'No hay ninguna cuenta con ese correo' })
     res.json({ ok: true })
   } catch (err) {
@@ -291,7 +331,7 @@ const updateMyProfile = async (req, res) => {
     if (name !== undefined) { sets.push('name=?'); vals.push(name) }
     if (photo !== undefined) { sets.push('photo=?'); vals.push(photo || null) }
     if (newEmail) { sets.push('email=?'); vals.push(newEmail) }
-    if (newPassword) { sets.push('password=?'); vals.push(newPassword) }
+    if (newPassword) { sets.push('password=?'); vals.push(await pw.hash(newPassword)) }
     if (sets.length) {
       if (isSA) await pool.query(`UPDATE super_admins SET ${sets.join(',')} WHERE id=?`, [...vals, req.user.id])
       else await pool.query(`UPDATE members SET ${sets.join(',')} WHERE email=?`, [...vals, req.user.email])

@@ -4,6 +4,7 @@ const { uid, parseJ } = require('../utils')
 const { provisionDefaultAgent, provisionStarterAgent } = require('../services/accountProvision')
 const { extractFileText } = require('./promptGenerator.controller')
 const { sendEmail, renderCodeEmail, DEFAULT_EMAIL_TEMPLATES } = require('../services/email')
+const pw = require('../services/passwords')
 
 // ── Platform settings ─────────────────────────────────────────────────────────
 
@@ -316,7 +317,7 @@ const createSuperAdmin = async (req, res) => {
   if (!name || !email || !password) return res.status(400).json({ error: 'Nombre, email y contraseña son requeridos' })
   const id = 'sa_' + uid()
   try {
-    await pool.query('INSERT INTO super_admins (id, name, email, password) VALUES (?, ?, ?, ?)', [id, name, email, password])
+    await pool.query('INSERT INTO super_admins (id, name, email, password) VALUES (?, ?, ?, ?)', [id, name, email, await pw.toStored(password)])
     res.json({ id, name, email })
   } catch (err) {
     if (err.code === 'ER_DUP_ENTRY') return res.status(409).json({ error: 'Ya existe un Super Admin con ese email' })
@@ -333,7 +334,7 @@ const updateSuperAdmin = async (req, res) => {
     const sets = []; const vals = []
     if (name  !== undefined) { sets.push('name=?');  vals.push(name) }
     if (email !== undefined) { sets.push('email=?'); vals.push(email) }
-    if (password)            { sets.push('password=?'); vals.push(password) }
+    if (password)            { sets.push('password=?'); vals.push(await pw.toStored(password)) }
     if (!sets.length) return res.json({ ok: true })
     vals.push(saId)
     await pool.query(`UPDATE super_admins SET ${sets.join(',')} WHERE id=?`, vals)

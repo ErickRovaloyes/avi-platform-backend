@@ -1631,6 +1631,9 @@ app.use('/api',                flowTemplatesRoutes)
   // Repara en segundo plano el texto que quedó corrupto (ñ → Ã±) mientras el frontend
   // leía mal el nombre del token. Idempotente: cuando no queda nada roto, no hace nada.
   try { require('./services/repairMojibake').start() } catch (e) { console.warn('[repair] no iniciado:', e.message) }
+  // Convierte a hash las contraseñas que quedaron en texto plano. El login acepta los dos
+  // formatos mientras tanto, así que nadie se queda fuera durante la migración.
+  try { require('./services/hashPasswords').start() } catch (e) { console.warn('[passwords] migración no iniciada:', e.message) }
 
   try { require('./services/platformBilling').startWorker() } catch (e) { console.warn('[platform billing] worker no iniciado:', e.message) }
   // Procesador del outbox de eventos de dominio (Core Booking Engine, Fase 0)

@@ -2,6 +2,7 @@
 const pool   = require('../db')
 const socket = require('../services/socket')
 const { uid, parseJ } = require('../utils')
+const pw = require('../services/passwords')
 
 const OWNER_PERMS = { inbox: true, agents: true, channels: true, crm: true, pipeline: true, config: true, admins: true, flows: true, variables: true, tools: true, knowledge: true }
 
@@ -21,7 +22,7 @@ const createMember = async (req, res) => {
         const sets = ['agent_access=?', 'status=?']; const vals = [JSON.stringify(mergedAccess), 'active']
         if (name)     { sets.push('name=?');    vals.push(name) }
         if (roleId)   { sets.push('role_id=?'); vals.push(roleId) }
-        if (password) { sets.push('password=?'); vals.push(password) }
+        if (password) { sets.push('password=?'); vals.push(await pw.toStored(password)) }
         vals.push(existing.id, accId)
         await pool.query(`UPDATE members SET ${sets.join(',')} WHERE id=? AND account_id=?`, vals)
         socket.emit(accId, 'account:updated', { accId })
@@ -31,7 +32,7 @@ const createMember = async (req, res) => {
     const id = gId || ('mem_' + uid())
     await pool.query(
       'INSERT INTO members (id,account_id,name,email,password,avatar,role_id,agent_access,status) VALUES (?,?,?,?,?,?,?,?,?)',
-      [id, accId, name, cleanEmail, password || '', avatar || (name || '').slice(0, 2).toUpperCase(), roleId, JSON.stringify(agentAccess), 'active']
+      [id, accId, name, cleanEmail, await pw.toStored(password), avatar || (name || '').slice(0, 2).toUpperCase(), roleId, JSON.stringify(agentAccess), 'active']
     )
     socket.emit(accId, 'account:updated', { accId })
     res.json({ id })
@@ -53,7 +54,7 @@ const updateMember = async (req, res) => {
     if (status      !== undefined) { sets.push('status=?');       vals.push(status) }
     if (avatar      !== undefined) { sets.push('avatar=?');       vals.push(avatar) }
     // Only update the password when a non-empty value is provided
-    if (password)                  { sets.push('password=?');     vals.push(password) }
+    if (password)                  { sets.push('password=?');     vals.push(await pw.toStored(password)) }
     if (!sets.length) return res.json({ ok: true })
     vals.push(memId, accId)
     await pool.query(`UPDATE members SET ${sets.join(',')} WHERE id=? AND account_id=?`, vals)
@@ -103,7 +104,9 @@ const joinAsOwner = async (req, res) => {
       await pool.query('UPDATE members SET role_id=?, status=? WHERE id=? AND account_id=?', [ownerRole.id, 'active', existing.id, accId])
     } else {
       const [[sibling]] = await pool.query("SELECT password FROM members WHERE email=? AND password IS NOT NULL AND password<>'' LIMIT 1", [email])
-      const password = sibling?.password || sa?.password || ''
+      // Se copia el valor GUARDADO de otra fila del mismo usuario: ya es un hash, así que
+      // toStored lo respeta tal cual (re-hashearlo dejaría a esa persona sin poder entrar).
+      const password = await pw.toStored(sibling?.password || sa?.password || '')
       memberId = 'mem_' + uid()
       await pool.query('INSERT INTO members (id,account_id,name,email,password,avatar,role_id,agent_access,status) VALUES (?,?,?,?,?,?,?,?,?)',
         [memberId, accId, name, email, password, String(name || email).slice(0, 2).toUpperCase(), ownerRole.id, '[]', 'active'])
