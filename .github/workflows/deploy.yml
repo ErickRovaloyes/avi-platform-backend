@@ -3,6 +3,9 @@ name: Deploy Backend
 on:
   push:
     branches: [main]
+  # Permite relanzar el despliegue a mano desde la pestana Actions, sin tener que
+  # inventar un commit. Hizo falta durante la caida de Actions del 2026-08-06.
+  workflow_dispatch:
 
 jobs:
   deploy:
