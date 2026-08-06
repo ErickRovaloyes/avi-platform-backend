@@ -369,6 +369,10 @@ const getAccount = async (req, res) => {
       openaiKeySource:    (acc.openai_key    && acc.openai_key.trim())    ? 'account' : (pf?.openai_key    ? 'platform' : 'none'),
       deepseekKeySource:  (acc.deepseek_key  && acc.deepseek_key.trim())  ? 'account' : (pf?.deepseek_key  ? 'platform' : 'none'),
       channelLimitsOverride: parseJ(acc.channel_limits_override, {}),
+      // Límites de canales YA RESUELTOS (override → tipo de cuenta → Gratuito). El frontend
+      // solo los lee: antes los recalculaba por su cuenta desde el campo legado `plan` y
+      // acababa contradiciendo al servidor — asignar un tipo no actualizaba nada.
+      channelLimits: await subs.channelLimitsFor(accId),
       changeAgentLimitOverride: acc.change_agent_limit_override,
       changeAgentTokenLimitsOverride: parseJ(acc.change_agent_token_limits_override, null),
       changeAgentTokenQuota: acc.change_agent_token_quota ?? null,

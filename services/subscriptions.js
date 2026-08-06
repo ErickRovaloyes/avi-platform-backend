@@ -463,18 +463,69 @@ async function applyContactGrace(sub, now) {
 
 // ── Gate de canales ───────────────────────────────────────────────────────────
 // `used` = canales de ese tipo ya configurados en la cuenta.
-async function channelGate(accId, channelType, used = 0) {
-  const sub = await getSubscription(accId)
-  if (!sub?.type) return { allowed: true } // sin tipo asignado → sin restricción
-  const map = {
-    webchat: 'maxWebchatChannels', whatsapp: 'maxWhatsappChannels', test: 'maxTestChannels',
-    messenger: 'maxMessengerChannels', instagram: 'maxInstagramChannels',
+const CHANNEL_TYPES = ['webchat', 'test', 'whatsapp', 'messenger', 'instagram']
+const TYPE_COLUMN = {
+  webchat: 'maxWebchatChannels', test: 'maxTestChannels', whatsapp: 'maxWhatsappChannels',
+  messenger: 'maxMessengerChannels', instagram: 'maxInstagramChannels',
+}
+// Límites de una cuenta SIN tipo asignado. Espejo del `free` de frontend/src/lib/storage.js.
+const FREE_CHANNEL_LIMITS = { webchat: 1, test: 1, whatsapp: 0, messenger: 0, instagram: 0 }
+
+/**
+ * Límites de canales efectivos de una cuenta: { webchat, test, whatsapp, messenger, instagram }.
+ * -1 = ilimitado.
+ *
+ * ES LA ÚNICA FUENTE DE VERDAD. Antes había dos que no se hablaban: la interfaz los calculaba
+ * del campo legado `accounts.plan` y el servidor del tipo de cuenta. Como asignar un tipo NO
+ * toca `accounts.plan` (que en una cuenta nueva vale 'free', con 0 de WhatsApp), la interfaz
+ * bloqueaba canales que el tipo sí permitía. Ahora se resuelve aquí y el frontend solo lee.
+ *
+ * Orden de precedencia:
+ *   1. `accounts.channel_limits_override` — escotilla por cuenta del superadmin. Antes se
+ *      guardaba, se mostraba y el servidor NO la miraba: un override no hacía nada aquí.
+ *   2. El tipo de cuenta asignado (account_types.max_*_channels).
+ *   3. Sin tipo → los del plan Gratuito de platform_settings (o FREE_CHANNEL_LIMITS).
+ */
+async function channelLimitsFor(accId) {
+  let base = null
+  try {
+    const sub = await getSubscription(accId)
+    if (sub?.type) {
+      base = {}
+      for (const t of CHANNEL_TYPES) base[t] = sub.type[TYPE_COLUMN[t]] ?? 0
+    }
+  } catch { /* sin suscripción → se cae al Gratuito */ }
+
+  if (!base) {
+    let pf = null
+    try { const [[r]] = await pool.query('SELECT channel_limits FROM platform_settings WHERE id=1'); pf = parseJ(r?.channel_limits, null) } catch {}
+    base = { ...FREE_CHANNEL_LIMITS, ...(pf?.free || {}) }
   }
-  const key = map[channelType]
-  if (!key) return { allowed: true }
-  const max = sub.type[key] ?? 0
+
+  let override = {}
+  try {
+    const [[a]] = await pool.query('SELECT channel_limits_override FROM accounts WHERE id=?', [accId])
+    override = parseJ(a?.channel_limits_override, {}) || {}
+  } catch {}
+
+  const out = {}
+  // `??` y no `||`: un override en 0 significa "ninguno permitido", no "sin definir".
+  for (const t of CHANNEL_TYPES) out[t] = override[t] ?? base[t] ?? 0
+  return out
+}
+
+async function channelGate(accId, channelType, used = 0) {
+  if (!CHANNEL_TYPES.includes(channelType)) return { allowed: true }
+  const limits = await channelLimitsFor(accId)
+  const max = limits[channelType] ?? 0
+  if (max === -1) return { allowed: true, max, used }   // ilimitado
   if (used >= max) {
-    return { allowed: false, max, used, message: `Tu tipo de cuenta (${sub.type.name}) permite ${max} canal(es) de ${channelType}.` }
+    return {
+      allowed: false, max, used,
+      message: max === 0
+        ? `Tu plan no incluye canales de ${channelType}. Contacta con el equipo comercial para habilitarlo.`
+        : `Tu plan permite ${max} canal(es) de ${channelType} y ya tienes ${used}.`,
+    }
   }
   return { allowed: true, max, used }
 }
@@ -753,4 +804,6 @@ module.exports = {
   MODULE_SETS, FREE_CONVERSATION_LIMIT,
   // Los dos topes de contactos: escribir (CRM) vs. responder con IA.
   sendGate, claimAiContact, AI_CONTACT_LIMIT, AI_MSGS_PER_CONV,
+  // Fuente única de los límites de canales (la usan el gate y el payload de la cuenta).
+  channelLimitsFor, CHANNEL_TYPES, FREE_CHANNEL_LIMITS,
 }
