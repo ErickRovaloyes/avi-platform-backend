@@ -21,11 +21,21 @@ const list = async (req, res) => {
   } catch (err) { console.error('[campaigns list]', err); res.status(500).json({ error: 'Error interno' }) }
 }
 
-// Vista previa del tamaño de la audiencia para un filtro dado.
+// Vista previa de la audiencia: cuántos y QUIÉNES. La lista es lo que permite revisar y
+// desmarcar antes de enviar; antes solo se devolvía un número y se enviaba a ciegas.
+// Se acota la respuesta: una cuenta con 20.000 contactos no debe volcarlos todos en un JSON.
+const PREVIEW_LIMIT = 500
 const preview = async (req, res) => {
   const { accId } = req.params
-  try { res.json({ count: await campaigns.audienceCount(accId, req.body?.audience || {}) }) }
-  catch (err) { res.status(500).json({ error: 'Error interno' }) }
+  try {
+    const list = await campaigns.resolveAudience(accId, req.body?.audience || {})
+    res.json({
+      count: list.length,
+      contacts: list.slice(0, PREVIEW_LIMIT),
+      truncated: list.length > PREVIEW_LIMIT,
+      limit: PREVIEW_LIMIT,
+    })
+  } catch (err) { res.status(500).json({ error: 'Error interno' }) }
 }
 
 const create = async (req, res) => {

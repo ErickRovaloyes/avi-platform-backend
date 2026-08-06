@@ -11,30 +11,49 @@ const store = require('../flow/store')
 const engine = require('../flow/engine')
 const { resolveWhatsAppChannel, buildOutbound } = require('./calendarNotify')
 
-// Audiencia: contactos con teléfono, opcionalmente filtrados por etiquetas (any-of) o por
-// un SEGMENTO guardado (audience.segmentId). SIEMPRE se excluyen los que se dieron de baja.
+/**
+ * Audiencia de una campaña.
+ *
+ *   { segmentId }   → segmento guardado del CRM
+ *   { rules }       → filtro a medida, con el MISMO vocabulario que un segmento
+ *   { tags }        → legado: se traduce a `rules.tagsAny`
+ *   { contactIds }  → lista FIJA elegida a mano; manda sobre todo lo anterior
+ *   { excludeIds }  → contactos desmarcados; se restan SIEMPRE, sea cual sea la base
+ *
+ * Todo el filtrado lo hace `segments.resolveSegment`. Antes esta función tenía su propio
+ * filtro de etiquetas, con un código distinto al del CRM: dos motores sobre los mismos datos
+ * acaban divergiendo, y entonces la campaña envía a una lista que no es la que el CRM enseña.
+ *
+ * `requirePhone` y `subscribedOnly` se fuerzan SIEMPRE, incluso con `contactIds`: que alguien
+ * haya marcado un contacto a mano no puede saltarse una baja — eso es cumplimiento, no una
+ * preferencia de la interfaz.
+ */
 async function resolveAudience(accId, audience) {
-  // Segmento dinámico: resuelve por sus reglas (forzando teléfono + suscritos).
-  if (audience?.segmentId) {
+  const a = audience || {}
+  let rules = null
+
+  if (a.segmentId) {
     try {
-      const [[seg]] = await pool.query('SELECT rules FROM contact_segments WHERE id=? AND account_id=?', [audience.segmentId, accId])
-      if (seg) {
-        const rules = { ...parseJ(seg.rules, {}), requirePhone: true, subscribedOnly: true }
-        return (await require('./segments').resolveSegment(accId, rules)).map(c => ({ id: c.id, name: c.name, phone: c.phone, tags: c.tags }))
-      }
+      const [[seg]] = await pool.query('SELECT rules FROM contact_segments WHERE id=? AND account_id=?', [a.segmentId, accId])
+      if (seg) rules = parseJ(seg.rules, {})
     } catch {}
   }
-  const [rows] = await pool.query('SELECT id, name, phone, extra FROM contacts WHERE account_id=?', [accId])
-  const tags = (audience?.tags || []).map(t => String(t).trim().toLowerCase()).filter(Boolean)
-  return rows
-    .map(r => { const ex = parseJ(r.extra, {}); return {
-      id: r.id, name: r.name || '',
-      phone: String(r.phone || '').replace(/[^\d]/g, ''),
-      tags: (ex.tags || []).map(x => String(x).toLowerCase()),
-      optOut: ex.optOut === true || ex.optOut === 1,
-    } })
-    .filter(r => r.phone && !r.optOut)
-    .filter(r => !tags.length || r.tags.some(t => tags.includes(t)))
+  if (!rules && a.rules && typeof a.rules === 'object') rules = { ...a.rules }
+  if (!rules) rules = {}
+  // Compatibilidad con las campañas ya guardadas, que llevan `tags` sueltas.
+  const legacyTags = (a.tags || []).map(t => String(t).trim().toLowerCase()).filter(Boolean)
+  if (legacyTags.length && !(rules.tagsAny || []).length) rules.tagsAny = legacyTags
+
+  const list = await require('./segments').resolveSegment(accId, { ...rules, requirePhone: true, subscribedOnly: true })
+
+  // La lista fija acota; no amplía. Un id inventado, de otra cuenta o de alguien dado de baja
+  // no entra, porque solo puede seleccionar dentro de lo que ya pasó el filtro.
+  const only = (a.contactIds || []).length ? new Set(a.contactIds.map(String)) : null
+  const out  = new Set((a.excludeIds || []).map(String))
+
+  return list
+    .filter(c => (!only || only.has(String(c.id))) && !out.has(String(c.id)))
+    .map(c => ({ id: c.id, name: c.name, phone: c.phone, tags: c.tags }))
 }
 
 async function audienceCount(accId, audience) {
