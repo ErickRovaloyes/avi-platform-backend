@@ -546,6 +546,8 @@ app.use('/api',                flowTemplatesRoutes)
     "ALTER TABLE change_agent_usage ADD COLUMN basic_used INT DEFAULT 0",
     "ALTER TABLE change_agent_usage ADD COLUMN medium_used INT DEFAULT 0",
     "ALTER TABLE change_agent_usage ADD COLUMN complex_used INT DEFAULT 0",
+    // Claude se retiró de la plataforma. La columna se CONSERVA a propósito: borrarla es
+    // irreversible y no aporta nada. Deja de leerse y de exponerse en la API.
     "ALTER TABLE accounts          ADD COLUMN anthropic_key TEXT",
     "ALTER TABLE platform_settings ADD COLUMN media_max_size_mb INT DEFAULT 30",
     "ALTER TABLE platform_settings ADD COLUMN prompt_generator_max_file_mb INT DEFAULT 30",
@@ -804,6 +806,7 @@ app.use('/api',                flowTemplatesRoutes)
     "ALTER TABLE platform_settings ADD COLUMN prompt_generator_max_doc_chars INT DEFAULT 200000",
     "ALTER TABLE platform_settings ADD COLUMN openai_key TEXT",
     "ALTER TABLE platform_settings ADD COLUMN deepseek_key TEXT",
+    // Conservada igual que la de `accounts`: ya no se lee.
     "ALTER TABLE platform_settings ADD COLUMN anthropic_key TEXT",
     "ALTER TABLE backups ADD COLUMN type VARCHAR(10) DEFAULT 'master'",
     // Modelo por defecto para PROMPTS nuevos (solo lo cambia el super admin).
@@ -1490,6 +1493,22 @@ app.use('/api',                flowTemplatesRoutes)
        PRIMARY KEY (account_id, contact_id, period_start),
        INDEX idx_sca_period (account_id, period_start)
      )`,
+    // Contactos ATENDIDOS POR LA IA en el ciclo. Tabla aparte de la de arriba a propósito:
+    // son dos topes distintos que se agotan a ritmos distintos (un plan CRM tiene miles de
+    // contactos de CRM pero solo 100 con IA), así que un contacto puede estar en una y no
+    // en la otra. La PK compuesta da la idempotencia por ciclo sin necesidad de lógica.
+    `CREATE TABLE IF NOT EXISTS subscription_ai_contact_activity (
+       account_id   VARCHAR(50) NOT NULL,
+       contact_id   VARCHAR(50) NOT NULL,
+       period_start BIGINT NOT NULL,
+       created_at   BIGINT,
+       PRIMARY KEY (account_id, contact_id, period_start),
+       INDEX idx_saca_period (account_id, period_start)
+     )`,
+    "ALTER TABLE account_subscriptions ADD COLUMN ai_contact_count_current_period INT DEFAULT 0",
+    // Tope de contactos con IA del plan. 0 = sin tope propio (los planes CRM/Gratuito caen
+    // en la constante AI_CONTACT_LIMIT; los Agente usan su contact_limit como tope de IA).
+    "ALTER TABLE subscription_plans ADD COLUMN ai_contact_limit INT DEFAULT 0",
     // Credenciales de pasarela A NIVEL PLATAFORMA (cobro de AVI al dueño) + tasa FX cacheada.
     "ALTER TABLE platform_settings ADD COLUMN wompi_public_key VARCHAR(200)",
     "ALTER TABLE platform_settings ADD COLUMN wompi_private_key VARCHAR(200)",
@@ -1577,6 +1596,75 @@ app.use('/api',                flowTemplatesRoutes)
     }
     if (fixed) console.log(`[migración] maxTokens 600 → 4096 en ${fixed} agente(s) (respuestas cortadas)`)
   } catch (e) { console.warn('[migración maxTokens]', e.message) }
+
+  // Claude fuera: los prompts y ajustes que apunten a `claude-*` pasan a GPT-5 mini.
+  // Sin esto, una cuenta que hoy responde con Claude se quedaría con un modelo que el
+  // cliente ya no sabe resolver. `normalizeModel` lo reconduce en caliente, pero eso no
+  // arregla lo que la UI enseña: aquí se corrige el dato guardado.
+  // Idempotente: tras el primer pase ya no queda ningún `claude` que buscar.
+  try {
+    const { OPENAI_DEFAULT } = require('./services/aiClient')
+    const [ags] = await pool.query("SELECT id, prompts, model FROM agents WHERE prompts LIKE '%claude%' OR model LIKE 'claude%'")
+    let fixed = 0
+    for (const a of ags) {
+      let list; try { list = JSON.parse(a.prompts || '[]') } catch { continue }
+      let touched = false
+      if (Array.isArray(list)) {
+        for (const p of list) {
+          if (!p) continue
+          if (p.provider === 'anthropic' || String(p.model || '').toLowerCase().startsWith('claude')) {
+            p.provider = 'openai'; p.model = OPENAI_DEFAULT; touched = true
+          }
+        }
+      }
+      // La columna `model` espeja el modelo del prompt activo.
+      const colClaude = String(a.model || '').toLowerCase().startsWith('claude')
+      if (touched || colClaude) {
+        await pool.query('UPDATE agents SET prompts=?, model=? WHERE id=?',
+          [JSON.stringify(list), colClaude ? OPENAI_DEFAULT : a.model, a.id])
+        fixed++
+      }
+    }
+    // Los tres ajustes de modelo del Super Panel pueden seguir apuntando a Claude.
+    const [r] = await pool.query(
+      `UPDATE platform_settings SET
+         default_prompt_model    = IF(default_prompt_model    LIKE 'claude%', ?, default_prompt_model),
+         default_prompt_provider = IF(default_prompt_provider = 'anthropic',  'openai', default_prompt_provider),
+         prompt_generator_model  = IF(prompt_generator_model  LIKE 'claude%', ?, prompt_generator_model),
+         change_agent_model      = IF(change_agent_model      LIKE 'claude%', ?, change_agent_model)
+       WHERE id=1`,
+      [OPENAI_DEFAULT, OPENAI_DEFAULT, OPENAI_DEFAULT]
+    )
+    if (fixed) console.log(`[migración] Claude → ${OPENAI_DEFAULT} en ${fixed} agente(s)`)
+    if (r?.changedRows) console.log(`[migración] Claude → ${OPENAI_DEFAULT} en los ajustes de plataforma`)
+  } catch (e) { console.warn('[migración Claude]', e.message) }
+
+  // Los dos topes de contactos. El seed de planes solo corre con la tabla vacía, así que
+  // las instalaciones ya en marcha se reajustan aquí.
+  try {
+    const { AI_CONTACT_LIMIT } = require('./services/subscriptions')
+
+    // 1) Los planes CRM pasan a tener IA (muestra de 100 contactos al mes). Antes venían
+    //    con ai_enabled=0 porque la IA no era parte del plan.
+    const [a] = await pool.query(
+      "UPDATE subscription_plans SET ai_enabled=1, ai_contact_limit=? WHERE family IN ('crm','free') AND (ai_contact_limit IS NULL OR ai_contact_limit=0)",
+      [AI_CONTACT_LIMIT]
+    )
+
+    // 2) En los planes Agente, el número del plan pasa a significar CHATS DE IA, y sus
+    //    contactos de CRM quedan ilimitados.
+    //
+    //    🔴 La condición `ai_contact_limit=0` NO es decorativa: sin ella, un segundo
+    //    arranque copiaría el contact_limit ya puesto a 0 sobre ai_contact_limit y dejaría
+    //    a todos los planes Agente con IA ilimitada. Con ella, la segunda pasada no
+    //    encuentra filas y no hace nada.
+    const [b] = await pool.query(
+      "UPDATE subscription_plans SET ai_contact_limit=contact_limit, contact_limit=0 WHERE family='agente' AND contact_limit>0 AND (ai_contact_limit IS NULL OR ai_contact_limit=0)"
+    )
+
+    if (a?.changedRows) console.log(`[migración] IA habilitada + ${AI_CONTACT_LIMIT} contactos IA en ${a.changedRows} plan(es) CRM/Gratuito`)
+    if (b?.changedRows) console.log(`[migración] ${b.changedRows} plan(es) Agente: su tope pasa a ser de chats de IA (CRM ilimitado)`)
+  } catch (e) { console.warn('[migración topes de contactos]', e.message) }
   // Dedup de membresías: una identidad (email) solo debe tener UNA fila por cuenta.
   // Datos legados podían tener duplicados (p. ej. invitarse a una cuenta donde ya se era
   // miembro) → se fusiona el acceso a agentes en la fila que se conserva y se borran las demás.

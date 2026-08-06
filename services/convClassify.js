@@ -67,7 +67,7 @@ async function classifyBatch(accId, { limit = 25 } = {}) {
       }
       let topic = 'otro', sentiment = 'neutral', intent = 'nula'
       if (text.trim()) {
-        const r = await callAI({ provider, model, apiKey, systemPrompt: SYS, userPrompt: text.trim(), maxTokens: 90, temperature: 0, jsonMode: provider !== 'anthropic' })
+        const r = await callAI({ provider, model, apiKey, systemPrompt: SYS, userPrompt: text.trim(), maxTokens: 90, temperature: 0, jsonMode: true })
         const parsed = extractJson(r.text || '') || {}
         topic = TOPICS.includes(String(parsed.tema || '').toLowerCase()) ? String(parsed.tema).toLowerCase() : 'otro'
         sentiment = SENTIMENTS.includes(String(parsed.sentimiento || '').toLowerCase()) ? String(parsed.sentimiento).toLowerCase() : 'neutral'

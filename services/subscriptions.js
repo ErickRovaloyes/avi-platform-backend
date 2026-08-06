@@ -81,26 +81,30 @@ async function seedDefaults() {
   try {
     const [[{ n: famCount }]] = await pool.query('SELECT COUNT(*) AS n FROM subscription_plans WHERE family IS NOT NULL')
     if (!famCount) {
+      // `contactLimit` significa cosas distintas según la familia:
+      //   · crm/free → contactos de CRM (al agotarse se bloquea ESCRIBIR)
+      //   · agente   → no aplica; su tope es `aiContactLimit` (chats de IA)
+      // Los planes CRM llevan IA incluida como muestra: 100 contactos al mes.
       const fam = [
-        // family,   name,             contactLimit, priceCop,  aiEnabled, isCustom, order
-        ['free',    'Gratuito',          100,          0,        1,         0,        0],
-        ['agente',  'Agente 400',        400,          350000,   1,         0,        10],
-        ['agente',  'Agente 1.500',      1500,         600000,   1,         0,        11],
-        ['agente',  'Agente 3.000',      3000,         720000,   1,         0,        12],
-        ['agente',  'Agente 5.000',      5000,         1000000,  1,         0,        13],
-        ['agente',  'Agente CUSTOM',     0,            0,        1,         1,        14],
-        ['crm',     'CRM 1.000',         1000,         90000,    0,         0,        20],
-        ['crm',     'CRM 3.000',         3000,         120000,   0,         0,        21],
-        ['crm',     'CRM 10.000',        10000,        150000,   0,         0,        22],
-        ['crm',     'CRM Ilimitado',     0,            180000,   0,         0,        23],
+        // family,   name,             contactLimit, priceCop,  aiLimit, isCustom, order
+        ['free',    'Gratuito',          100,          0,        100,     0,        0],
+        ['agente',  'Agente 400',        0,            350000,   400,     0,        10],
+        ['agente',  'Agente 1.500',      0,            600000,   1500,    0,        11],
+        ['agente',  'Agente 3.000',      0,            720000,   3000,    0,        12],
+        ['agente',  'Agente 5.000',      0,            1000000,  5000,    0,        13],
+        ['agente',  'Agente CUSTOM',     0,            0,        0,       1,        14],
+        ['crm',     'CRM 1.000',         1000,         90000,    100,     0,        20],
+        ['crm',     'CRM 3.000',         3000,         120000,   100,     0,        21],
+        ['crm',     'CRM 10.000',        10000,        150000,   100,     0,        22],
+        ['crm',     'CRM Ilimitado',     0,            180000,   100,     0,        23],
       ]
-      for (const [family, name, contactLimit, priceCop, aiEnabled, isCustom, order] of fam) {
+      for (const [family, name, contactLimit, priceCop, aiLimit, isCustom, order] of fam) {
         await pool.query(
           `INSERT INTO subscription_plans
-             (id,name,family,contact_limit,price_cop,ai_enabled,is_custom_contact,
+             (id,name,family,contact_limit,ai_contact_limit,price_cop,ai_enabled,is_custom_contact,
               monthly_conversation_limit,is_custom_limit,grace_period_days,monthly_price,sort_order,created_at,updated_at)
-           VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?)`,
-          ['plan_' + uid(), name, family, contactLimit, priceCop, aiEnabled, isCustom, 0, 0, 5, 0, order, now, now]
+           VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`,
+          ['plan_' + uid(), name, family, contactLimit, aiLimit, priceCop, 1, isCustom, 0, 0, 5, 0, order, now, now]
         )
       }
     }
@@ -137,6 +141,8 @@ const mapPlan = p => ({
   // Planes por familia escalados por contactos (COP base).
   family: p.family || null,
   contactLimit: p.contact_limit != null ? Number(p.contact_limit) : 0,   // 0 = ilimitado
+  // Tope de contactos con IA. 0 = el plan no fija uno propio y se usa el de la familia.
+  aiContactLimit: p.ai_contact_limit != null ? Number(p.ai_contact_limit) : 0,
   priceCop: p.price_cop != null ? Number(p.price_cop) : 0,
   aiEnabled: p.ai_enabled == null ? true : !!p.ai_enabled,
   modules: parseJ(p.modules, null),
@@ -145,7 +151,11 @@ const mapPlan = p => ({
 
 // ── Presets de módulos por familia (espejo de services/modules.js) ─────────────
 const ALL_MODULES       = ['inbox', 'crm', 'channels', 'campaigns', 'flows', 'ai_agents', 'knowledge', 'calendars', 'metrics', 'teamchat']
-const CRM_MODULES       = ['inbox', 'crm', 'channels', 'campaigns', 'flows', 'calendars', 'metrics', 'teamchat'] // sin ai_agents/knowledge
+// Los planes CRM incluyen IA (100 contactos al mes), así que necesitan `ai_agents` y
+// `knowledge`: sin ellos podrían usar el asistente pero no escribir su prompt ni subir
+// conocimiento, y solo un superadmin podría ajustarlo. Antes se excluían porque estos
+// planes no tenían IA en absoluto.
+const CRM_MODULES       = ALL_MODULES
 const CRM_BASIC_MODULES = ['inbox', 'crm', 'channels']
 const FAMILY_MODULES    = { agente: ALL_MODULES, crm: CRM_MODULES }
 const MODULE_SETS       = { all: ALL_MODULES, crm: CRM_MODULES, crm_basic: CRM_BASIC_MODULES }
@@ -153,35 +163,68 @@ const MODULE_SETS       = { all: ALL_MODULES, crm: CRM_MODULES, crm_basic: CRM_B
 // Límite de conversaciones mensuales del Plan Gratuito cuando el tipo no define otro.
 const FREE_CONVERSATION_LIMIT = 100
 
-// Estado del Plan Gratuito. Las cuentas demo/gratuitas tienen acceso a TODO (todos los
-// módulos y la IA activa); su ÚNICA limitación son las conversaciones mensuales. El tope
-// es configurable en el tipo de cuenta (account_types.demo_max_conversations).
+// ── Los DOS topes de contactos ────────────────────────────────────────────────
+// Un contacto de CRM y un contacto atendido por la IA no son lo mismo y no se agotan al
+// mismo ritmo: un plan CRM vende miles de contactos de CRM pero solo una MUESTRA de IA.
+// Por eso hay dos contadores y dos consecuencias distintas al llegar al tope:
+//
+//   · contactos de CRM agotados  → se bloquea ESCRIBIR desde la plataforma (sendGate).
+//     Los mensajes del cliente siguen entrando y todo se sigue viendo.
+//   · contactos con IA agotados  → se calla el BOT (assistantGate). El asesor humano
+//     puede seguir respondiendo con normalidad.
+//
+// Un plan Agente invierte el reparto: contactos de CRM ilimitados, y el número del plan
+// (400/1.500/3.000/5.000) pasa a ser su tope de chats de IA.
+const AI_CONTACT_LIMIT = 100     // planes CRM y Gratuito/Demo
+const AI_MSGS_PER_CONV = 30      // tope de respuestas de IA por conversación
+
+// Estado del Plan Gratuito/Demo. Acceso completo a los módulos; los topes son 100 contactos
+// de CRM, 100 contactos con IA y 30 mensajes de IA por conversación.
 function freeState(sub) {
   const limit = Number(sub?.type?.demoMaxConversations) || FREE_CONVERSATION_LIMIT
   return {
-    modules: null,            // null = sin recorte de módulos (acceso completo)
+    modules: null,                    // null = sin recorte de módulos (acceso completo)
     aiEnabled: true,
-    contactLimit: 0,          // el gratuito no se limita por contactos
+    contactLimit: limit,              // contactos de CRM → bloquea escribir
+    aiContactLimit: AI_CONTACT_LIMIT, // contactos con IA → calla el bot
+    aiMsgsPerConv: AI_MSGS_PER_CONV,
     conversationLimit: limit,
     hardBlock: true,
   }
 }
 
-// Estado efectivo del plan de una suscripción: { family, modules, aiEnabled, contactLimit,
-// hardBlock, softLimit }. modules=null → no forzar (compat con planes viejos sin familia).
+// Estado efectivo del plan: { family, modules, aiEnabled, contactLimit, aiContactLimit,
+// aiMsgsPerConv, hardBlock, softLimit }. Un límite en 0 significa ILIMITADO.
+// modules=null → no forzar (compat con planes viejos sin familia).
 function effectivePlanState(sub) {
   const family = sub?.planFamily || sub?.plan?.family || null
   if (family === 'free' || (!family && sub?.freeStartedAt)) {
     const st = freeState(sub); return { family: 'free', ...st, softLimit: false }
   }
   if (family === 'agente') {
-    return { family, modules: ALL_MODULES, aiEnabled: true, contactLimit: sub?.plan?.contactLimit ?? 0, hardBlock: true, softLimit: false }
+    // Agente: lo que se vende es capacidad de IA. El número del plan es el tope de chats
+    // de IA; los contactos de CRM son ilimitados y NUNCA bloquean una conversación.
+    // Tampoco hay corte de 30 mensajes por chat: la IA conversa sin límite.
+    return {
+      family, modules: ALL_MODULES, aiEnabled: true,
+      contactLimit: 0,                                                    // CRM ilimitado
+      aiContactLimit: sub?.plan?.aiContactLimit || sub?.plan?.contactLimit || 0,
+      aiMsgsPerConv: 0,                                                   // sin corte por chat
+      hardBlock: true, softLimit: false,
+    }
   }
   if (family === 'crm') {
-    // CRM: el tope de contactos NO bloquea (solo alerta); la IA no es parte del plan.
-    return { family, modules: CRM_MODULES, aiEnabled: false, contactLimit: sub?.plan?.contactLimit ?? 0, hardBlock: false, softLimit: true }
+    // CRM: el tope del plan son contactos de CRM y sí bloquea (escribir, no ver).
+    // La IA viene incluida como muestra: 100 contactos y 30 mensajes por conversación.
+    return {
+      family, modules: CRM_MODULES, aiEnabled: true,
+      contactLimit: sub?.plan?.contactLimit ?? 0,
+      aiContactLimit: sub?.plan?.aiContactLimit || AI_CONTACT_LIMIT,
+      aiMsgsPerConv: AI_MSGS_PER_CONV,
+      hardBlock: true, softLimit: false,
+    }
   }
-  return { family: null, modules: null, aiEnabled: true, contactLimit: 0, hardBlock: false, softLimit: false }
+  return { family: null, modules: null, aiEnabled: true, contactLimit: 0, aiContactLimit: 0, aiMsgsPerConv: 0, hardBlock: false, softLimit: false }
 }
 
 // Devuelve la suscripción de una cuenta con su tipo y plan resueltos (o null).
@@ -196,6 +239,7 @@ async function getSubscription(accId) {
     customMonthlyLimit: s.custom_monthly_limit,
     conversationCount: s.conversation_count_current_period || 0,
     contactCount: s.contact_count_current_period || 0,
+    aiContactCount: s.ai_contact_count_current_period || 0,
     currentPeriodStart: s.current_period_start, currentPeriodEnd: s.current_period_end,
     graceUntil: s.grace_until, demoStartedAt: s.demo_started_at, demoExpiresAt: s.demo_expires_at,
     lastAlertThreshold: s.last_alert_threshold || 0, status: s.status || 'active',
@@ -249,12 +293,14 @@ async function assignSubscription(accId, { accountTypeId, subscriptionPlanId, cu
         plan_family=?, free_started_at=?, free_phase=?, next_charge_at=?,
         demo_started_at=?, demo_expires_at=?, current_period_start=?, current_period_end=?,
         contact_count_current_period=IF(?,0,contact_count_current_period),
+        ai_contact_count_current_period=IF(?,0,ai_contact_count_current_period),
         last_alert_threshold=IF(?,0,last_alert_threshold),
         grace_until=IF(?,NULL,grace_until),
         status='active', updated_at=? WHERE account_id=?`,
       [accountTypeId || null, subscriptionPlanId || null, customMonthlyLimit ?? existing.custom_monthly_limit ?? null,
        planFamily, freeStarted, freePhase, nextCharge,
-       demoStart, demoExpires, periodStart, periodEnd, rc, rc, rc, now, accId]
+       // 4 × rc: contactos CRM, contactos IA, umbral de alerta y gracia se reinician juntos.
+       demoStart, demoExpires, periodStart, periodEnd, rc, rc, rc, rc, now, accId]
     )
   } else {
     await pool.query(
@@ -326,6 +372,50 @@ async function markContactActive(accId, contactId) {
   } catch { /* sin suscripción → sin conteo */ }
 }
 
+// ── Consumo por contactos ATENDIDOS POR LA IA ─────────────────────────────────
+// Devuelve si este contacto puede ser atendido por la IA, contándolo si es nuevo.
+//
+// 🔴 El orden importa. Primero se mira si el contacto YA estaba contado en el ciclo y solo
+// después se compara con el tope. Al revés, el contacto que ocupa la última plaza se
+// bloquearía a sí mismo en su segundo mensaje: entraría contado, y en la siguiente vuelta
+// el contador ya estaría en el tope. La regla es:
+//   · contacto ya contado  → pasa siempre, aunque el cupo esté lleno;
+//   · contacto nuevo con el cupo lleno → se bloquea y NO se cuenta (no gasta plaza).
+async function claimAiContact(accId, contactId, limit) {
+  if (!accId || !contactId) return { allowed: true, counted: false }
+  const [[s]] = await pool.query('SELECT current_period_start FROM account_subscriptions WHERE account_id=?', [accId])
+  if (!s) return { allowed: true, counted: false }
+  const periodStart = s.current_period_start || 0
+
+  const [[seen]] = await pool.query(
+    'SELECT 1 AS x FROM subscription_ai_contact_activity WHERE account_id=? AND contact_id=? AND period_start=?',
+    [accId, contactId, periodStart]
+  )
+  if (seen) return { allowed: true, counted: false }          // ya tenía plaza
+
+  if (limit > 0) {
+    const [[{ n }]] = await pool.query(
+      'SELECT COUNT(*) AS n FROM subscription_ai_contact_activity WHERE account_id=? AND period_start=?',
+      [accId, periodStart]
+    )
+    if (n >= limit) return { allowed: false, counted: false, used: n, limit }  // cupo lleno
+  }
+
+  const [r] = await pool.query(
+    'INSERT IGNORE INTO subscription_ai_contact_activity (account_id, contact_id, period_start, created_at) VALUES (?,?,?,?)',
+    [accId, contactId, periodStart, Date.now()]
+  )
+  if ((r?.affectedRows || 0) > 0) {
+    const [[{ n }]] = await pool.query(
+      'SELECT COUNT(*) AS n FROM subscription_ai_contact_activity WHERE account_id=? AND period_start=?',
+      [accId, periodStart]
+    )
+    await pool.query('UPDATE account_subscriptions SET ai_contact_count_current_period=?, updated_at=? WHERE account_id=?',
+      [n, Date.now(), accId])
+  }
+  return { allowed: true, counted: true }
+}
+
 // Alertas de consumo de contactos 80/90/100% (reusa last_alert_threshold).
 async function maybeAlertContacts(sub) {
   const st = effectivePlanState(sub)
@@ -347,7 +437,7 @@ async function downgradeToFree(accId) {
   await pool.query(
     `UPDATE account_subscriptions SET plan_family='free', subscription_plan_id=NULL, free_started_at=?, free_phase=NULL,
        gateway=NULL, stripe_subscription_id=NULL, wompi_payment_source_id=NULL, next_charge_at=NULL,
-       conversation_count_current_period=0, contact_count_current_period=0, last_alert_threshold=0, grace_until=NULL,
+       conversation_count_current_period=0, contact_count_current_period=0, ai_contact_count_current_period=0, last_alert_threshold=0, grace_until=NULL,
        current_period_start=?, current_period_end=?, status='active', updated_at=? WHERE account_id=?`,
     [now, now, now + 30 * DAY, now, accId]
   )
@@ -389,6 +479,47 @@ async function channelGate(accId, channelType, used = 0) {
   return { allowed: true, max, used }
 }
 
+// ── Gate de ESCRITURA (se llama antes de entregar un mensaje manual) ──────────
+// Es el tope de contactos de CRM, y su consecuencia es distinta a la de la IA: aquí no se
+// calla al bot, se corta la capacidad de REDACTAR desde AVI. Todo lo demás sigue igual —
+// los mensajes del cliente entran, las conversaciones se leen, y si el dueño responde
+// desde el WhatsApp de su propio teléfono ese mensaje se sincroniza como siempre.
+//
+// Vive en el servidor a propósito: la web y la app móvil comparten esta misma ruta de
+// entrega, así que un tope aplicado solo en la interfaz se esquivaría abriendo la app.
+async function sendGate(accId) {
+  const sub = await getSubscription(accId)
+  if (!sub) return { allowed: true }
+  const st = effectivePlanState(sub)
+  // Los planes Agente no tienen tope de contactos de CRM: nunca se les bloquea escribir.
+  if (!st.hardBlock || !st.contactLimit || st.contactLimit <= 0) return { allowed: true }
+  if (sub.contactCount < st.contactLimit) return { allowed: true }
+  return {
+    allowed: false, reason: 'crm_contact_limit',
+    used: sub.contactCount, limit: st.contactLimit,
+    message: `Has alcanzado los ${st.contactLimit} contactos de tu plan este ciclo, así que no puedes escribir desde la plataforma. Puedes seguir viendo las conversaciones y los mensajes que lleguen. Amplía tu plan o espera al siguiente ciclo de facturación para volver a responder.`,
+  }
+}
+
+// Apaga la IA en una conversación dejando el motivo (franja visible solo para admins).
+async function disableAiInConv(accId, convId, reason) {
+  if (!convId) return
+  try {
+    await pool.query('UPDATE conversations SET ai_enabled=0, ai_disabled_reason=? WHERE id=?', [reason, convId])
+    socket.emit(accId, 'convos:updated', { accId })
+  } catch { /* el side-effect no debe tumbar el gate */ }
+}
+
+// El contacto de una conversación vive en `local_vars.contact_id`, igual que lo leen
+// conversations.controller.js y flow/store.js para el contador de contactos de CRM.
+async function contactIdOf(convId) {
+  if (!convId) return null
+  try {
+    const [[c]] = await pool.query('SELECT local_vars FROM conversations WHERE id=?', [convId])
+    return parseJ(c?.local_vars, {})?.contact_id || null
+  } catch { return null }
+}
+
 // ── Gate del asistente (se llama antes de que la IA responda) ──────────────────
 const MSG = {
   convAi: 'Has alcanzado el límite de respuestas permitido para esta conversación.',
@@ -413,16 +544,38 @@ async function assistantGate(accId, convId) {
   const family = sub.planFamily || sub.plan?.family
   if (family) {
     const st = effectivePlanState(sub)
-    // Plan sin IA (CRM) → la IA no responde (silencioso, sin aviso al cliente; el panel
-    // ya oculta la Zona IA por módulos).
     if (!st.aiEnabled) return { allowed: false, disableAi: true, reason: 'plan_no_ai' }
-    // Gratuito: única limitación = conversaciones mensuales (acceso completo a todo lo demás).
+
+    // 1) Tope de respuestas de IA por conversación (CRM y Gratuito; los Agente no lo tienen).
+    //    No se avisa al contacto: se apaga la IA en ese chat y se deja el motivo para que
+    //    los administradores lo vean. El asesor humano continúa sin problema.
+    if (st.aiMsgsPerConv > 0 && convId) {
+      const [[{ n }]] = await pool.query("SELECT COUNT(*) AS n FROM messages WHERE conversation_id=? AND sender='ai'", [convId])
+      if (n >= st.aiMsgsPerConv) {
+        await disableAiInConv(accId, convId, 'ai_per_conv_limit')
+        return { allowed: false, disableAi: true, reason: 'ai_per_conv_limit', max: st.aiMsgsPerConv }
+      }
+    }
+
+    // 2) Tope de CONTACTOS ATENDIDOS POR LA IA.
+    //    En Agente es el tope del plan y da derecho a días de gracia (se sigue respondiendo
+    //    mientras duren). En CRM/Gratuito es la muestra de 100 y corta en seco: el bot calla,
+    //    pero la cuenta sigue funcionando y el asesor responde a mano.
+    if (st.aiContactLimit > 0) {
+      const contactId = await contactIdOf(convId)
+      if (contactId) {
+        const claim = await claimAiContact(accId, contactId, st.aiContactLimit)
+        if (!claim.allowed) {
+          if (family === 'agente') return applyContactGrace(sub, now)
+          await disableAiInConv(accId, convId, 'ai_contact_limit')
+          return { allowed: false, disableAi: true, reason: 'ai_contact_limit', max: st.aiContactLimit }
+        }
+      }
+    }
+
+    // 3) Gratuito: tope de conversaciones mensuales.
     if (st.conversationLimit > 0 && sub.conversationCount >= st.conversationLimit) {
       return { allowed: false, message: MSG.demoConv }
-    }
-    // Tope de contactos con bloqueo duro (planes Agente de pago).
-    if (st.hardBlock && st.contactLimit > 0 && sub.contactCount >= st.contactLimit) {
-      return applyContactGrace(sub, now)
     }
     return { allowed: true }
   }
@@ -435,15 +588,21 @@ async function assistantGate(accId, convId) {
     // 30 respuestas de IA por conversación: NO se avisa al contacto. Se desactiva
     // la IA en ese chat y se guarda el motivo para mostrarlo SOLO a los
     // administradores (franja dentro del chat). El asesor humano puede continuar.
-    const maxAi = sub.type.demoMaxAiResponsesPerConversation || 0
+    const maxAi = sub.type.demoMaxAiResponsesPerConversation || AI_MSGS_PER_CONV
     if (maxAi > 0 && convId) {
       const [[{ n }]] = await pool.query("SELECT COUNT(*) AS n FROM messages WHERE conversation_id=? AND sender='ai'", [convId])
       if (n >= maxAi) {
-        try {
-          await pool.query("UPDATE conversations SET ai_enabled=0, ai_disabled_reason='ai_per_conv_limit' WHERE id=?", [convId])
-          socket.emit(accId, 'convos:updated', { accId })
-        } catch { /* no bloquear por el side-effect */ }
+        await disableAiInConv(accId, convId, 'ai_per_conv_limit')
         return { allowed: false, disableAi: true, reason: 'ai_per_conv_limit', max: maxAi }
+      }
+    }
+    // 100 contactos atendidos por la IA (mismo tope que el resto de familias).
+    const contactId = await contactIdOf(convId)
+    if (contactId) {
+      const claim = await claimAiContact(accId, contactId, AI_CONTACT_LIMIT)
+      if (!claim.allowed) {
+        await disableAiInConv(accId, convId, 'ai_contact_limit')
+        return { allowed: false, disableAi: true, reason: 'ai_contact_limit', max: AI_CONTACT_LIMIT }
       }
     }
     // 100 conversaciones totales
@@ -518,7 +677,7 @@ async function tick() {
           // cada 30 días (su única limitación).
           if (s.current_period_end && now > s.current_period_end) {
             await pool.query(
-              `UPDATE account_subscriptions SET conversation_count_current_period=0, contact_count_current_period=0,
+              `UPDATE account_subscriptions SET conversation_count_current_period=0, contact_count_current_period=0, ai_contact_count_current_period=0,
                  last_alert_threshold=0, current_period_start=?, current_period_end=?, updated_at=? WHERE id=?`,
               [now, now + 30 * DAY, now, s.id]
             )
@@ -541,7 +700,7 @@ async function tick() {
         // Reinicio del ciclo mensual de contactos (planes de pago por familia).
         if (s.current_period_end && now > s.current_period_end && s.status !== 'grace') {
           await pool.query(
-            `UPDATE account_subscriptions SET contact_count_current_period=0, conversation_count_current_period=0, last_alert_threshold=0,
+            `UPDATE account_subscriptions SET contact_count_current_period=0, ai_contact_count_current_period=0, conversation_count_current_period=0, last_alert_threshold=0,
               current_period_start=?, current_period_end=?, updated_at=? WHERE id=?`,
             [now, now + 30 * DAY, now, s.id]
           )
@@ -592,4 +751,6 @@ module.exports = {
   markContactActive, effectivePlanState, freeState, downgradeToFree,
   FAMILY_MODULES, ALL_MODULES, CRM_MODULES, CRM_BASIC_MODULES,
   MODULE_SETS, FREE_CONVERSATION_LIMIT,
+  // Los dos topes de contactos: escribir (CRM) vs. responder con IA.
+  sendGate, claimAiContact, AI_CONTACT_LIMIT, AI_MSGS_PER_CONV,
 }

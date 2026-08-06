@@ -45,19 +45,20 @@ const transferResolve = async (req, res) => {
 // Redacta el mensaje de transferencia con IA a partir del historial real de la conversación.
 async function draftMessage(accId, { convId, assignee, extra } = {}) {
   try {
-    const { chat, getApiKey, detectProvider } = require('../services/aiClient')
+    const { chat, getApiKey, detectProvider, normalizeModel } = require('../services/aiClient')
     const [[acc]] = await pool.query(
-      'SELECT name, openai_key, deepseek_key, anthropic_key FROM accounts WHERE id=?', [accId])
+      'SELECT name, openai_key, deepseek_key FROM accounts WHERE id=?', [accId])
     if (!acc) return null
     // El modelo por defecto lo gobierna la plataforma (las cuentas no tienen override).
     const [[plat]] = await pool.query(
-      'SELECT openai_key, deepseek_key, anthropic_key, default_prompt_model, default_prompt_provider FROM platform_settings WHERE id=1')
-    const model = plat?.default_prompt_model || 'gpt-4o-mini'
-    const provider = plat?.default_prompt_provider || detectProvider(model)
+      'SELECT openai_key, deepseek_key, default_prompt_model, default_prompt_provider FROM platform_settings WHERE id=1')
+    const rawModel = plat?.default_prompt_model || 'gpt-4o-mini'
+    // El ajuste de plataforma puede seguir apuntando a un `claude-*`: se reconduce.
+    const { provider, model } = normalizeModel(
+      plat?.default_prompt_provider || detectProvider(rawModel), rawModel)
     const keyBag = {
       openaiKey: acc.openai_key || plat?.openai_key || '',
       deepseekKey: acc.deepseek_key || plat?.deepseek_key || '',
-      anthropicKey: acc.anthropic_key || plat?.anthropic_key || '',
     }
     const apiKey = getApiKey(keyBag, provider)
     if (!apiKey) return null

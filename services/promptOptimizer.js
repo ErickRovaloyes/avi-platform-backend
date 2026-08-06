@@ -270,7 +270,7 @@ async function analyzeCandidates(accId, agId, candidates) {
     const userMsg = `GRUPO: tema="${topic}", tipo_de_fallo="${failReason}", conversaciones=${group.length}, confianza_promedio=${avgConf}\n\nEJEMPLOS REALES (extractos):\n${samples.map((s, i) => `--- Ejemplo ${i + 1} ---\n${s.excerpt || s.line}`).join('\n\n')}`
     let parsed = null
     try {
-      const r = await callAI({ provider, model, apiKey, systemPrompt: OPTIMIZER_SYS, userPrompt: userMsg, maxTokens: 1200, temperature: 0.3, jsonMode: provider !== 'anthropic' })
+      const r = await callAI({ provider, model, apiKey, systemPrompt: OPTIMIZER_SYS, userPrompt: userMsg, maxTokens: 1200, temperature: 0.3, jsonMode: true })
       const pt = r.usage?.promptTokens || 0, ct = r.usage?.completionTokens || 0
       tokens += pt + ct
       cost += computeCost(model, pt, ct, pricing) || 0

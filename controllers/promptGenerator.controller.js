@@ -3,10 +3,10 @@ const pool   = require('../db')
 const mammoth = require('mammoth')
 const { parseJ } = require('../utils')
 const { recordUsageInternal, getPricingMap } = require('./analytics.controller')
+const { normalizeModel } = require('../services/aiClient')
 
 // ── Real token counting ─────────────────────────────────────────────────────
-// Uses gpt-tokenizer (cl100k_base / o200k_base) for OpenAI + DeepSeek,
-// and the official Anthropic /v1/messages/count_tokens endpoint for Claude.
+// Uses gpt-tokenizer (cl100k_base / o200k_base) for OpenAI + DeepSeek.
 
 let _gptTok = null
 function getGptTokenizer() {
@@ -25,41 +25,16 @@ function countOpenAITokens(text) {
   return Math.ceil(String(text || '').length / 4)
 }
 
-// Count tokens via Anthropic's official count_tokens endpoint
-async function countAnthropicTokens({ model, apiKey, systemPrompt, userPrompt }) {
-  if (!apiKey) return null
-  try {
-    const res = await fetch('https://api.anthropic.com/v1/messages/count_tokens', {
-      method: 'POST',
-      headers: {
-        'Content-Type': 'application/json',
-        'x-api-key': apiKey,
-        'anthropic-version': '2023-06-01',
-      },
-      body: JSON.stringify({
-        model,
-        system: systemPrompt || '',
-        messages: [{ role: 'user', content: userPrompt || '' }],
-      }),
-    })
-    if (!res.ok) return null
-    const data = await res.json()
-    return data?.input_tokens || null
-  } catch { return null }
-}
-
 // ── Provider detection ──────────────────────────────────────────────────────
 
 function detectProvider(model) {
   if (!model) return 'openai'
   const m = model.toLowerCase()
-  if (m.startsWith('claude'))    return 'anthropic'
   if (m.startsWith('deepseek'))  return 'deepseek'
-  return 'openai'
+  return 'openai'   // los `claude-*` legados caen aquí y callAI los reconduce
 }
 
 function getProviderKey(provider, account) {
-  if (provider === 'anthropic') return account?.anthropic_key || ''
   if (provider === 'deepseek')  return account?.deepseek_key  || ''
   return account?.openai_key || ''
 }
@@ -67,11 +42,11 @@ function getProviderKey(provider, account) {
 // Returns the API key to use for the given provider, with platform-default fallback.
 async function resolveProviderKey(accountId, provider) {
   if (accountId) {
-    const [[acc]] = await pool.query('SELECT openai_key, deepseek_key, anthropic_key FROM accounts WHERE id=?', [accountId])
+    const [[acc]] = await pool.query('SELECT openai_key, deepseek_key FROM accounts WHERE id=?', [accountId])
     const own = getProviderKey(provider, acc)
     if (own && own.trim()) return { key: own, source: 'account' }
   }
-  const [[pf]] = await pool.query('SELECT openai_key, deepseek_key, anthropic_key FROM platform_settings WHERE id=1')
+  const [[pf]] = await pool.query('SELECT openai_key, deepseek_key FROM platform_settings WHERE id=1')
   const pk = getProviderKey(provider, pf)
   if (pk && pk.trim()) return { key: pk, source: 'platform' }
   return { key: '', source: 'none' }
@@ -112,9 +87,9 @@ function decodePdfString(s) {
 // ── Provider-agnostic AI call ───────────────────────────────────────────────
 
 async function callAI({ provider, model, apiKey, systemPrompt, userPrompt, maxTokens = 4000, temperature = 0.6, jsonMode = false }) {
-  if (provider === 'anthropic') {
-    return callAnthropic({ model, apiKey, systemPrompt, userPrompt, maxTokens, temperature })
-  }
+  // Claude salió de la plataforma. Un ajuste guardado que aún apunte a `claude-*` (o a
+  // 'anthropic') se reconduce al modelo por defecto de OpenAI en vez de fallar.
+  ;({ provider, model } = normalizeModel(provider, model))
   // OpenAI + DeepSeek share the same Chat Completions schema
   return callOpenAICompatible({ provider, model, apiKey, systemPrompt, userPrompt, maxTokens, temperature, jsonMode })
 }
@@ -153,37 +128,6 @@ async function callOpenAICompatible({ provider, model, apiKey, systemPrompt, use
     },
   }
 }
-
-async function callAnthropic({ model, apiKey, systemPrompt, userPrompt, maxTokens, temperature }) {
-  const res = await fetch('https://api.anthropic.com/v1/messages', {
-    method: 'POST',
-    headers: {
-      'Content-Type': 'application/json',
-      'x-api-key': apiKey,
-      'anthropic-version': '2023-06-01',
-    },
-    body: JSON.stringify({
-      model,
-      max_tokens: maxTokens,
-      temperature,
-      system: systemPrompt,
-      messages: [{ role: 'user', content: userPrompt }],
-    }),
-  })
-  if (!res.ok) {
-    const errData = await res.json().catch(() => ({}))
-    throw new Error(`[anthropic] ${errData?.error?.message || `HTTP ${res.status}`}`)
-  }
-  const data = await res.json()
-  return {
-    text: (data.content || []).map(b => b.text || '').join('').trim(),
-    usage: {
-      promptTokens: data.usage?.input_tokens || 0,
-      completionTokens: data.usage?.output_tokens || 0,
-    },
-  }
-}
-
 // Extract a JSON object from a string that might contain prose around it
 function extractJson(text) {
   if (!text) return null
@@ -291,7 +235,7 @@ const generateFromDoc = async (req, res) => {
     const provider = detectProvider(model)
     const { apiKey } = await pickAccountForProvider(accountId, provider)
     if (!apiKey) {
-      const providerLabel = { openai: 'OpenAI', deepseek: 'DeepSeek', anthropic: 'Anthropic (Claude)' }[provider]
+      const providerLabel = { openai: 'OpenAI', deepseek: 'DeepSeek' }[provider]
       return res.status(400).json({ error: `Para usar el modelo "${model}" se requiere una API Key de ${providerLabel} configurada en alguna cuenta` })
     }
 
@@ -400,9 +344,8 @@ ${docExcerpt}
 
 Genera ahora el system prompt completo, exhaustivo y fiel al documento, siguiendo TODAS las condiciones, la estructura base y las observaciones específicas.`
 
-    // Anthropic doesn't support response_format=json_object; we extract JSON manually.
-    // For OpenAI+DeepSeek we request json_object to make parsing safer.
-    const useJsonMode = provider !== 'anthropic'
+    // OpenAI y DeepSeek aceptan response_format=json_object, que hace el parseo más seguro.
+    const useJsonMode = true
 
     const aiResult = await callAI({
       provider, model, apiKey,
@@ -498,16 +441,10 @@ const classifyChange = async (req, res) => {
     const currentPrompt = currentPromptText || ' '.repeat(currentPromptLength)
     const sysForChangeAgent = CHANGE_AGENT_SYSTEM_PROMPT(currentPrompt)
 
-    let inputTokens = null
-    let tokenizer   = 'estimate'
-    if (provider === 'anthropic' && apiKey) {
-      const t = await countAnthropicTokens({ model, apiKey, systemPrompt: sysForChangeAgent, userPrompt: instruction })
-      if (t) { inputTokens = t; tokenizer = 'anthropic' }
-    }
-    if (inputTokens == null) {
-      inputTokens = countOpenAITokens(sysForChangeAgent) + countOpenAITokens(instruction) + 8 // ~8 tokens of overhead per call
-      tokenizer = getGptTokenizer()?.encode ? 'tiktoken' : 'estimate'
-    }
+    // Solo quedan OpenAI y DeepSeek, y ambos usan la misma BPE: el tokenizador local vale
+    // para los dos. (Antes había además una llamada de red al contador oficial de Anthropic.)
+    const inputTokens = countOpenAITokens(sysForChangeAgent) + countOpenAITokens(instruction) + 8 // ~8 tokens of overhead per call
+    const tokenizer = getGptTokenizer()?.encode ? 'tiktoken' : 'estimate'
 
     // ── Cheap LLM classification (OpenAI gpt-4o-mini) ─────────────────────
     // Fall back to a heuristic if no OpenAI key is available (own + platform).
@@ -678,7 +615,7 @@ Genera ahora el system prompt completo siguiendo la estructura base, las condici
     const aiResult = await callAI({
       provider, model, apiKey,
       systemPrompt: sysPrompt, userPrompt: userMsg,
-      maxTokens, temperature, jsonMode: provider !== 'anthropic',
+      maxTokens, temperature, jsonMode: true,
     })
     recordUsageInternal({
       accId: accountId, agentId: null, conversationId: null,

@@ -133,9 +133,16 @@ const getAccountSubscription = async (req, res) => {
         for (const c of chs) if (channelUsage[c.type] != null) channelUsage[c.type]++
       }
     } catch {}
+    // Los dos consumos son independientes y se agotan a ritmos distintos, así que la UI
+    // necesita ambos por separado. `sendBlocked` es la consecuencia del de CRM: con él en
+    // true, el compositor se deshabilita (el backend ya rechaza el envío igualmente).
+    const send = sub ? await subs.sendGate(accId) : { allowed: true }
     res.json({
       subscription: sub, effectiveMonthlyLimit: limit, channelUsage,
       planState, contactCount: sub?.contactCount ?? 0, contactLimit: planState?.contactLimit ?? 0,
+      aiContactCount: sub?.aiContactCount ?? 0, aiContactLimit: planState?.aiContactLimit ?? 0,
+      aiMsgsPerConv: planState?.aiMsgsPerConv ?? 0,
+      sendBlocked: !send.allowed, sendBlockedMessage: send.message || '',
     })
   } catch (err) { console.error('[getAccountSubscription]', err); res.status(500).json({ error: 'Error interno' }) }
 }

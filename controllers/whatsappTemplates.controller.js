@@ -88,6 +88,13 @@ const send = async (req, res) => {
   const { accId, agentId } = req.params
   const { convId, channelId, templateName, language = 'es', components = [], previewText } = req.body || {}
   if (!convId || !templateName) return res.status(400).json({ error: 'Faltan convId o templateName' })
+  // Tope de contactos de CRM agotado → no se puede escribir desde AVI (mismo gate que
+  // deliverManualMessage; ver services/subscriptions.js).
+  try {
+    const gate = await require('../services/subscriptions').sendGate(accId)
+    if (gate && !gate.allowed) return res.status(402).json({ error: gate.message, code: gate.reason })
+  } catch (e) { console.warn('[sendGate]', e.message) }
+
   try {
     const channel = await resolveWhatsAppChannel(accId, agentId, channelId)
     const cfg = channel?.config || {}

@@ -80,10 +80,8 @@ const getSettings = async (req, res) => {
           // Default platform API keys (only super-admin sees full value; others see masked indicator)
           platformOpenaiKey:    maskKey(r.openai_key || ''),
           platformDeepseekKey:  maskKey(r.deepseek_key || ''),
-          platformAnthropicKey: maskKey(r.anthropic_key || ''),
           hasPlatformOpenaiKey:    !!r.openai_key,
           hasPlatformDeepseekKey:  !!r.deepseek_key,
-          hasPlatformAnthropicKey: !!r.anthropic_key,
           mediaMaxSizeMb: r.media_max_size_mb || 30,
           transcriptionModel: r.transcription_model || 'whisper-1',
           defaultPromptProvider: r.default_prompt_provider || 'deepseek',
@@ -186,7 +184,7 @@ const updateSettings = async (req, res) => {
     promptGeneratorMaxTokens, promptGeneratorTemperature, promptGeneratorMaxDocChars,
     promptGeneratorAllowFlows,
     promptGeneratorMaxFileMb,
-    platformOpenaiKey, platformDeepseekKey, platformAnthropicKey,
+    platformOpenaiKey, platformDeepseekKey,
     mediaMaxSizeMb, transcriptionModel,
     defaultPromptProvider, defaultPromptModel, optimizerModel, businessAiModel,
     returningNoticeDefault,
@@ -263,7 +261,6 @@ const updateSettings = async (req, res) => {
     if (login2faEnabled           !== undefined) { sets.push('login_2fa_enabled=?');             vals.push(login2faEnabled ? 1 : 0) }
     if (platformOpenaiKey         !== undefined) { sets.push('openai_key=?');                   vals.push(platformOpenaiKey) }
     if (platformDeepseekKey       !== undefined) { sets.push('deepseek_key=?');                 vals.push(platformDeepseekKey) }
-    if (platformAnthropicKey      !== undefined) { sets.push('anthropic_key=?');                vals.push(platformAnthropicKey) }
     if (mediaMaxSizeMb            !== undefined) {
       const n = parseInt(mediaMaxSizeMb) || 30
       // Hard cap at 100 MB to match the multer ceiling

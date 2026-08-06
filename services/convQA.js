@@ -36,7 +36,7 @@ async function qaBatch(accId, { limit = 15 } = {}) {
       let text = ''
       for (const m of msgs) { text += `${m.sender === 'user' ? 'Cliente' : 'Asistente'}: ${String(m.content).slice(0, 400)}\n`; if (text.length > 2800) break }
       if (!text.trim()) { await pool.query('UPDATE conversations SET qa_score=?, qa_flag=?, qa_at=? WHERE id=?', [null, '', Date.now(), id]); continue }
-      const r = await callAI({ provider, model, apiKey, systemPrompt: SYS, userPrompt: text.trim(), maxTokens: 120, temperature: 0, jsonMode: provider !== 'anthropic' })
+      const r = await callAI({ provider, model, apiKey, systemPrompt: SYS, userPrompt: text.trim(), maxTokens: 120, temperature: 0, jsonMode: true })
       const p = extractJson(r.text || '') || {}
       let score = Math.round(Number(p.puntaje)); if (!Number.isFinite(score)) score = null; else score = Math.max(0, Math.min(100, score))
       const flag = String(p.problema || '').slice(0, 160)

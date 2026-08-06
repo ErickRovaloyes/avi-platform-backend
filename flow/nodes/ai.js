@@ -4,11 +4,13 @@
  * Usa services/aiClient.chat con las keys efectivas de ctx.account.
  */
 
-const { chat, detectProvider, getApiKey } = require('../../services/aiClient')
+const { chat, detectProvider, getApiKey, OPENAI_DEFAULT, DEEPSEEK_DEFAULT } = require('../../services/aiClient')
 const { interpolate, sendBotMsg, logDebug, setVarBoth } = require('../common')
 const store = require('../store')
 
-const DEFAULT_MODEL = { openai: 'gpt-4o-mini', deepseek: 'deepseek-v4-flash', anthropic: 'claude-sonnet-4-6' }
+// Modelo por defecto de cada proveedor cuando el prompt no fija uno. Sale de aiClient para
+// que exista un único sitio donde cambiarlo (antes OpenAI caía en el viejo 'gpt-4o-mini').
+const DEFAULT_MODEL = { openai: OPENAI_DEFAULT, deepseek: DEEPSEEK_DEFAULT }
 // Fallback del aviso para clientes recurrentes cuando ni el canal ni la plataforma
 // definen uno (mismo texto que el default del super admin en platform.controller).
 const DEFAULT_RETURNING_NOTICE = 'Esta persona YA había conversado con el negocio anteriormente; NO la trates como un contacto nuevo ni la saludes como si fuera la primera vez. Retoma el hilo con naturalidad.'
@@ -1174,14 +1176,8 @@ async function callAI(ctx, { systemPrompt, userPrompt, model, provider, maxToken
   // El modelo llama herramienta(s) → ejecutamos → le devolvemos el resultado como
   // mensaje `tool` → vuelve a responder (texto final u otra herramienta). No
   // re-alimentar el resultado (lo que se hacía antes) confunde a algunos modelos
-  // (DeepSeek) y hace que la herramienta "se active solo una vez". Anthropic no
-  // soporta este hilo en nuestro builder → mantiene una sola ronda.
+  // (DeepSeek) y hace que la herramienta "se active solo una vez".
   if (tools.length > 0) {
-    // Anthropic también encadena rondas: `aiClient.anthropicMessages` traduce los
-    // `tool_calls` y los resultados a bloques `tool_use`/`tool_result`. Antes se excluía, y
-    // por eso con Claude se ejecutaba UNA ronda y se devolvía vacío — cualquier gestión de
-    // dos pasos (agregar productos y luego confirmar el pedido) quedaba a medias.
-    const canThread = true
     const convo = messages.slice()
     const executed = []
     // Mensajes ya enviados antes de ejecutar herramientas: si alguna herramienta responde
@@ -1219,7 +1215,7 @@ async function callAI(ctx, { systemPrompt, userPrompt, model, provider, maxToken
       // transferencia a asesor), redactar sería una llamada inútil que además
       // acabaría descartada por no duplicar la respuesta.
       const toolAlreadySpoke = (ctx._sentCount || 0) > sentAtStart
-      if (!clean && executed.length && canThread && !toolAlreadySpoke) {
+      if (!clean && executed.length && !toolAlreadySpoke) {
         try {
           const synth = await chat({ provider: prov, model: finalModel, apiKey, messages: convo, advanced: advForBody, maxTokens, temperature, onUsage, signal: ctx._signal })
           if (typeof synth === 'string' && synth.trim()) clean = synth.trim()
@@ -1239,7 +1235,7 @@ async function callAI(ctx, { systemPrompt, userPrompt, model, provider, maxToken
       if (!toolCalls.length) {
         return await finishText(typeof message?.content === 'string' ? message.content : '')
       }
-      if (canThread) convo.push({ role: 'assistant', content: message.content || null, tool_calls: message.tool_calls })
+      convo.push({ role: 'assistant', content: message.content || null, tool_calls: message.tool_calls })
       for (const tc of toolCalls) {
         let args = {}
         try { args = JSON.parse(tc.function?.arguments || '{}') } catch {}
@@ -1248,21 +1244,15 @@ async function callAI(ctx, { systemPrompt, userPrompt, model, provider, maxToken
         const r = onToolCall ? await onToolCall(name, args) : 'OK'
         logDebug(ctx, 'tool_result', `✅ Resultado: ${name}`, r)
         executed.push(name)
-        if (canThread) convo.push({ role: 'tool', tool_call_id: tc.id, content: typeof r === 'string' ? r : JSON.stringify(r ?? '') })
+        convo.push({ role: 'tool', tool_call_id: tc.id, content: typeof r === 'string' ? r : JSON.stringify(r ?? '') })
       }
-      if (!canThread) { // Anthropic: comportamiento previo (una ronda, sin re-alimentar)
-        if (typeof onTools === 'function') onTools({ invoked: true, names: executed })
-        return ''
-      }
-      // openai/deepseek → siguiente ronda con los resultados en contexto
+      // siguiente ronda, con los resultados de las herramientas ya en contexto
     }
     // Se agotaron las rondas. Antes se redactaba la respuesta final sin más, así que el
     // modelo confirmaba tan tranquilo un pedido al que le faltaban productos. Ahora se le
     // dice, para que avise al cliente en vez de dar por hecho que terminó.
-    if (canThread) {
-      convo.push({ role: 'system', content: 'AVISO INTERNO: se alcanzó el límite de llamadas a herramientas de este turno, así que puede que alguna acción quede sin ejecutar. NO afirmes que algo se completó si no viste su resultado. Si quedaba trabajo pendiente (por ejemplo productos por agregar o un pedido por confirmar), dilo con naturalidad y pide al cliente que confirme para continuar.' })
-      logDebug(ctx, 'flow_run', `⚠ Límite de ${MAX_ROUNDS} rondas de herramientas alcanzado`, { ejecutadas: executed })
-    }
+    convo.push({ role: 'system', content: 'AVISO INTERNO: se alcanzó el límite de llamadas a herramientas de este turno, así que puede que alguna acción quede sin ejecutar. NO afirmes que algo se completó si no viste su resultado. Si quedaba trabajo pendiente (por ejemplo productos por agregar o un pedido por confirmar), dilo con naturalidad y pide al cliente que confirme para continuar.' })
+    logDebug(ctx, 'flow_run', `⚠ Límite de ${MAX_ROUNDS} rondas de herramientas alcanzado`, { ejecutadas: executed })
     return await finishText('')
   }
 

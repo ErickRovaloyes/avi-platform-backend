@@ -251,10 +251,9 @@ async function loadPublicAccount(accId) {
   let members = []
   try { [members] = await pool.query("SELECT id, name FROM members WHERE account_id=? AND status='active'", [accId]) } catch { members = [] }
   // Resolve API keys with super-admin platform fallback
-  const [[pf]] = await pool.query('SELECT openai_key, deepseek_key, anthropic_key, default_prompt_provider, default_prompt_model, returning_notice_default FROM platform_settings WHERE id=1')
+  const [[pf]] = await pool.query('SELECT openai_key, deepseek_key, default_prompt_provider, default_prompt_model, returning_notice_default FROM platform_settings WHERE id=1')
   const effOpenai    = (acc.openai_key    && acc.openai_key.trim())    || pf?.openai_key    || ''
   const effDeepseek  = (acc.deepseek_key  && acc.deepseek_key.trim())  || pf?.deepseek_key  || ''
-  const effAnthropic = (acc.anthropic_key && acc.anthropic_key.trim()) || pf?.anthropic_key || ''
   const schedulingCfg = await schedulingSvc.publicConfig(accId).catch(() => ({ connected: false }))
   const modules = await effectiveModules(accId, acc.modules)
   const _mc = parseJ(acc.meta_catalog, null)
@@ -263,7 +262,7 @@ async function loadPublicAccount(accId) {
     chatTheme: parseJ(acc.chat_theme, null),
     modules,
     metaCatalog: _mc?.catalogId ? { connected: true, catalogId: _mc.catalogId, name: _mc.name || _mc.catalogId } : { connected: false },
-    openaiKey: effOpenai, deepseekKey: effDeepseek, anthropicKey: effAnthropic,
+    openaiKey: effOpenai, deepseekKey: effDeepseek,
     // Aviso por defecto (super admin) para clientes recurrentes; la IA lo usa si el
     // canal no define uno propio. Vacío → ai.js cae a su constante interna.
     returningNoticeDefault: pf?.returning_notice_default || '',
@@ -350,11 +349,10 @@ const getAccount = async (req, res) => {
     let calendars = []
     try { [calendars] = await pool.query('SELECT * FROM calendars WHERE account_id=? ORDER BY created_at DESC', [accId]) } catch { calendars = [] }
     // Effective keys (account own → platform fallback). UI shows badge per provider.
-    const [[pf]] = await pool.query('SELECT openai_key, deepseek_key, anthropic_key, default_prompt_provider, default_prompt_model FROM platform_settings WHERE id=1')
+    const [[pf]] = await pool.query('SELECT openai_key, deepseek_key, default_prompt_provider, default_prompt_model FROM platform_settings WHERE id=1')
     const effOpenai    = (acc.openai_key    && acc.openai_key.trim())    || pf?.openai_key    || ''
     const effDeepseek  = (acc.deepseek_key  && acc.deepseek_key.trim())  || pf?.deepseek_key  || ''
-    const effAnthropic = (acc.anthropic_key && acc.anthropic_key.trim()) || pf?.anthropic_key || ''
-    const schedulingCfg = await schedulingSvc.publicConfig(accId).catch(() => ({ connected: false }))
+      const schedulingCfg = await schedulingSvc.publicConfig(accId).catch(() => ({ connected: false }))
     const modules = await effectiveModules(accId, acc.modules)
     // Catálogo Meta: solo estado público (nunca el token).
     const mc = parseJ(acc.meta_catalog, null)
@@ -365,13 +363,11 @@ const getAccount = async (req, res) => {
       // Own keys (user-settable in Settings); read-only effective ones below
       openaiKeyOwn:    acc.openai_key    || '',
       deepseekKeyOwn:  acc.deepseek_key  || '',
-      anthropicKeyOwn: acc.anthropic_key || '',
       // Effective (used by the AI client) — account own first, platform fallback otherwise
-      openaiKey: effOpenai, deepseekKey: effDeepseek, anthropicKey: effAnthropic,
+      openaiKey: effOpenai, deepseekKey: effDeepseek,
       // Indicate whether the effective key is the platform default
       openaiKeySource:    (acc.openai_key    && acc.openai_key.trim())    ? 'account' : (pf?.openai_key    ? 'platform' : 'none'),
       deepseekKeySource:  (acc.deepseek_key  && acc.deepseek_key.trim())  ? 'account' : (pf?.deepseek_key  ? 'platform' : 'none'),
-      anthropicKeySource: (acc.anthropic_key && acc.anthropic_key.trim()) ? 'account' : (pf?.anthropic_key ? 'platform' : 'none'),
       channelLimitsOverride: parseJ(acc.channel_limits_override, {}),
       changeAgentLimitOverride: acc.change_agent_limit_override,
       changeAgentTokenLimitsOverride: parseJ(acc.change_agent_token_limits_override, null),
@@ -444,7 +440,7 @@ const copilotWaUnblock = async (req, res) => {
 
 const updateAccount = async (req, res) => {
   const { accId } = req.params
-  const { openaiKey, deepseekKey, anthropicKey, name, email, plan, status, channelLimitsOverride, changeAgentLimitOverride, changeAgentTokenLimitsOverride, chatTheme, aiTimezone, aiDatetimeEnabled, aiBaseDatetime, copilotWa } = req.body
+  const { openaiKey, deepseekKey, name, email, plan, status, channelLimitsOverride, changeAgentLimitOverride, changeAgentTokenLimitsOverride, chatTheme, aiTimezone, aiDatetimeEnabled, aiBaseDatetime, copilotWa } = req.body
   try {
     const sets = []; const vals = []
     if (chatTheme               !== undefined) { sets.push('chat_theme=?');                vals.push(chatTheme === null ? null : JSON.stringify(chatTheme)) }
@@ -453,7 +449,6 @@ const updateAccount = async (req, res) => {
     if (aiBaseDatetime          !== undefined) { sets.push('ai_base_datetime=?');          vals.push(aiBaseDatetime ? String(aiBaseDatetime).slice(0, 40) : null) }
     if (openaiKey               !== undefined) { sets.push('openai_key=?');                vals.push(openaiKey) }
     if (deepseekKey             !== undefined) { sets.push('deepseek_key=?');              vals.push(deepseekKey) }
-    if (anthropicKey            !== undefined) { sets.push('anthropic_key=?');             vals.push(anthropicKey) }
     if (name                    !== undefined) { sets.push('name=?');                      vals.push(name) }
     if (email                   !== undefined) { sets.push('email=?');                     vals.push(email) }
     if (plan                    !== undefined) { sets.push('plan=?');                      vals.push(plan) }
@@ -528,9 +523,9 @@ const incrementChangeAgentUsage = async (req, res) => {
 const getEffectiveKeys = async (req, res) => {
   const { accId } = req.params
   try {
-    const [[acc]] = await pool.query('SELECT openai_key, deepseek_key, anthropic_key FROM accounts WHERE id=?', [accId])
+    const [[acc]] = await pool.query('SELECT openai_key, deepseek_key FROM accounts WHERE id=?', [accId])
     if (!acc) return res.status(404).json({ error: 'Cuenta no encontrada' })
-    const [[pf]] = await pool.query('SELECT openai_key, deepseek_key, anthropic_key, default_prompt_provider, default_prompt_model FROM platform_settings WHERE id=1')
+    const [[pf]] = await pool.query('SELECT openai_key, deepseek_key, default_prompt_provider, default_prompt_model FROM platform_settings WHERE id=1')
 
     const pick = (own, platform) => {
       if (own && own.trim())               return { value: own,      source: 'account'  }
@@ -539,12 +534,10 @@ const getEffectiveKeys = async (req, res) => {
     }
     const openai    = pick(acc.openai_key,    pf?.openai_key)
     const deepseek  = pick(acc.deepseek_key,  pf?.deepseek_key)
-    const anthropic = pick(acc.anthropic_key, pf?.anthropic_key)
 
     res.json({
       openai:    { key: openai.value,    source: openai.source },
       deepseek:  { key: deepseek.value,  source: deepseek.source },
-      anthropic: { key: anthropic.value, source: anthropic.source },
     })
   } catch (err) {
     console.error('[EFFECTIVE KEYS]', err)

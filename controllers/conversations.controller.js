@@ -365,6 +365,18 @@ async function serviceWindow(convId, channelType) {
  */
 async function deliverManualMessage(accId, agId, convId, { text, senderName, replyToId } = {}) {
   if (!text || !String(text).trim()) return { ok: false, status: 400, error: 'Texto vacío' }
+
+  // Tope de contactos de CRM agotado → no se puede escribir desde AVI. Se comprueba AQUÍ
+  // porque este es el embudo único de envío manual: la web, la app móvil y los mensajes
+  // programados pasan todos por esta función. Un tope aplicado solo en la interfaz web se
+  // esquivaría abriendo la app.
+  try {
+    const gate = await require('../services/subscriptions').sendGate(accId)
+    if (gate && !gate.allowed) {
+      return { ok: false, status: 402, code: gate.reason, error: gate.message }
+    }
+  } catch (e) { console.warn('[sendGate]', e.message) }   // sin suscripción → sin tope
+
   const [[conv]] = await pool.query(
     'SELECT channel_type, channel_id, wa_from, messenger_from, ig_from FROM conversations WHERE id=? AND account_id=?',
     [convId, accId]

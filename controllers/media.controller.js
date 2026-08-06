@@ -48,6 +48,13 @@ async function storeMediaInternal({ accId, convId, messageId = null, buffer, mim
 const uploadMedia = async (req, res) => {
   const { accId, agId, convId } = req.params
   if (!req.file) return res.status(400).json({ error: 'Archivo requerido' })
+  // Tope de contactos de CRM agotado → no se puede escribir desde AVI (mismo gate que
+  // deliverManualMessage; ver services/subscriptions.js).
+  try {
+    const gate = await require('../services/subscriptions').sendGate(accId)
+    if (gate && !gate.allowed) return res.status(402).json({ error: gate.message, code: gate.reason })
+  } catch (e) { console.warn('[sendGate]', e.message) }
+
   const sender     = (req.body.sender || 'human').toLowerCase()
   const senderName = req.body.senderName || ''
   const caption    = req.body.caption || ''

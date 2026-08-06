@@ -450,7 +450,7 @@ REGLAS:
       provider, model, apiKey,
       systemPrompt: sysPrompt,
       userPrompt: `Diseña un flujo para lo siguiente:\n\n${description}`,
-      maxTokens: 3500, temperature: 0.5, jsonMode: provider !== 'anthropic',
+      maxTokens: 3500, temperature: 0.5, jsonMode: true,
     })
     const parsed = extractJson(aiResult.text || '')
     if (!parsed || !Array.isArray(parsed.nodes) || !parsed.nodes.length) {
