@@ -211,7 +211,7 @@ const mapCmsAsset = c => ({
   ragFileId: c.rag_file_id || null, ragAgentId: c.rag_agent_id || null,
   createdAt: c.created_at,
 })
-const mapCmsFolder = f => ({ id: f.id, name: f.name, type: f.type || 'simple', description: f.description || '', createdAt: f.created_at })
+const mapCmsFolder = f => ({ id: f.id, name: f.name, type: f.type || 'simple', description: f.description || '', photoOrder: f.photo_order === 'ai' ? 'ai' : 'manual', createdAt: f.created_at })
 const mapCmsProduct = p => ({
   id: p.id, name: p.name, description: p.description || '',
   price: Number(p.price) || 0, currency: p.currency || 'COP',
@@ -231,7 +231,7 @@ async function loadPublicAccount(accId) {
   const [agents]    = await pool.query('SELECT * FROM agents WHERE account_id=?', [accId])
   const [variables] = await pool.query('SELECT * FROM variables WHERE account_id=?', [accId])
   const [aiTools]   = await pool.query('SELECT * FROM ai_tools WHERE account_id=?', [accId])
-  const [cmsAssets] = await pool.query('SELECT * FROM cms_assets WHERE account_id=?', [accId])
+  const [cmsAssets] = await pool.query('SELECT * FROM cms_assets WHERE account_id=? ORDER BY sort_order, created_at', [accId])
   let cmsFolders = [], cmsTags = [], cmsCategories = [], cmsProducts = [], stickers = []
   try { [cmsFolders]    = await pool.query('SELECT * FROM cms_folders WHERE account_id=?', [accId]) } catch { cmsFolders = [] }
   try { [cmsTags]       = await pool.query('SELECT * FROM cms_tags WHERE account_id=?', [accId]) } catch { cmsTags = [] }
@@ -335,7 +335,7 @@ const getAccount = async (req, res) => {
     const [pipelines] = await pool.query('SELECT * FROM pipelines WHERE account_id=?', [accId])
     const [variables] = await pool.query('SELECT * FROM variables WHERE account_id=?', [accId])
     const [aiTools]   = await pool.query('SELECT * FROM ai_tools WHERE account_id=?', [accId])
-    const [cmsAssets] = await pool.query('SELECT * FROM cms_assets WHERE account_id=?', [accId])
+    const [cmsAssets] = await pool.query('SELECT * FROM cms_assets WHERE account_id=? ORDER BY sort_order, created_at', [accId])
     let cmsFolders = [], cmsTags = [], cmsCategories = [], cmsProducts = [], stickers = []
     try { [cmsFolders]    = await pool.query('SELECT * FROM cms_folders WHERE account_id=? ORDER BY created_at', [accId]) } catch { cmsFolders = [] }
     try { [cmsTags]       = await pool.query('SELECT * FROM cms_tags WHERE account_id=? ORDER BY name', [accId]) } catch { cmsTags = [] }

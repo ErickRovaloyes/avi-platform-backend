@@ -1209,6 +1209,12 @@ app.use('/api',                flowTemplatesRoutes)
     // CMS: carpetas (simple | unit=super unidad/producto), etiquetas y categorías
     // globales para parametrizar la biblioteca.
     "ALTER TABLE cms_assets ADD COLUMN folder_id VARCHAR(50)",
+    // Orden de envío DENTRO de una carpeta "super unidad": el dueño coloca las fotos en el
+    // orden en que quiere que lleguen (la fachada antes que el baño, por ejemplo).
+    "ALTER TABLE cms_assets ADD COLUMN sort_order INT DEFAULT 0",
+    // Quién manda en ese orden: 'manual' = el de arriba; 'ai' = lo decide el agente según
+    // su prompt activo y lo que esté pidiendo el cliente.
+    "ALTER TABLE cms_folders ADD COLUMN photo_order VARCHAR(10) DEFAULT 'manual'",
     "ALTER TABLE cms_assets ADD COLUMN category VARCHAR(120)",
     `CREATE TABLE IF NOT EXISTS cms_folders (
        id          VARCHAR(50) PRIMARY KEY,

@@ -26,6 +26,7 @@ router.put('/accounts/:accId/cms-assets/:assetId',      authMiddleware, ctrl.upd
 router.delete('/accounts/:accId/cms-assets/:assetId',   authMiddleware, ctrl.deleteCmsAsset)
 // CMS: carpetas / etiquetas / categorías globales
 router.post('/accounts/:accId/cms-folders',             authMiddleware, ctrl.createCmsFolder)
+router.put('/accounts/:accId/cms-folders/:folderId/order', authMiddleware, ctrl.reorderCmsFolder)
 router.put('/accounts/:accId/cms-folders/:folderId',    authMiddleware, ctrl.updateCmsFolder)
 router.delete('/accounts/:accId/cms-folders/:folderId', authMiddleware, ctrl.deleteCmsFolder)
 router.post('/accounts/:accId/cms-tags',                authMiddleware, ctrl.createCmsTag)

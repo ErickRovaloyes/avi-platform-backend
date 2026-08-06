@@ -141,7 +141,7 @@ const createCmsAsset = async (req, res) => {
 
 const updateCmsAsset = async (req, res) => {
   const { accId, assetId } = req.params
-  const { name, description, tags, folderId, category, ragFileId, ragAgentId } = req.body
+  const { name, description, tags, folderId, category, ragFileId, ragAgentId, sortOrder } = req.body
   try {
     const sets = []; const vals = []
     if (name        !== undefined) { sets.push('name=?');         vals.push(name) }
@@ -151,6 +151,8 @@ const updateCmsAsset = async (req, res) => {
     if (category    !== undefined) { sets.push('category=?');     vals.push(category || '') }
     if (ragFileId   !== undefined) { sets.push('rag_file_id=?');  vals.push(ragFileId) }
     if (ragAgentId  !== undefined) { sets.push('rag_agent_id=?'); vals.push(ragAgentId) }
+    // Posición dentro de la carpeta (orden de envío de las fotos de un producto).
+    if (sortOrder   !== undefined) { sets.push('sort_order=?');   vals.push(Number(sortOrder) || 0) }
     if (!sets.length) return res.json({ ok: true })
     vals.push(assetId, accId)
     await pool.query(`UPDATE cms_assets SET ${sets.join(',')} WHERE id=? AND account_id=?`, vals)
@@ -173,16 +175,39 @@ const createCmsFolder = async (req, res) => {
 }
 const updateCmsFolder = async (req, res) => {
   const { accId, folderId } = req.params
-  const { name, type, description } = req.body
+  const { name, type, description, photoOrder } = req.body
   try {
     const sets = []; const vals = []
     if (name        !== undefined) { sets.push('name=?');        vals.push(name) }
     if (type        !== undefined) { sets.push('type=?');        vals.push(type === 'unit' ? 'unit' : 'simple') }
     if (description !== undefined) { sets.push('description=?'); vals.push(description) }
+    // Quién decide en qué orden se envían las fotos: 'manual' (el que fijó el dueño
+    // arrastrando) o 'ai' (lo elige el agente según su prompt activo y lo que pida el cliente).
+    if (photoOrder  !== undefined) { sets.push('photo_order=?'); vals.push(photoOrder === 'ai' ? 'ai' : 'manual') }
     if (!sets.length) return res.json({ ok: true })
     vals.push(folderId, accId)
     await pool.query(`UPDATE cms_folders SET ${sets.join(',')} WHERE id=? AND account_id=?`, vals)
     socket.emit(accId, 'account:updated', { accId }); res.json({ ok: true })
+  } catch (err) { res.status(500).json({ error: 'Error interno' }) }
+}
+
+// Reordena de una vez todas las fotos de una carpeta. El cliente manda los ids en el orden
+// deseado; se guarda la POSICIÓN de cada uno. En una sola llamada para que arrastrar en la
+// interfaz no dispare una petición por foto.
+const reorderCmsFolder = async (req, res) => {
+  const { accId, folderId } = req.params
+  const ids = Array.isArray(req.body?.assetIds) ? req.body.assetIds : []
+  if (!ids.length) return res.status(400).json({ error: 'assetIds requerido' })
+  try {
+    // Se acota a la carpeta indicada: así un id ajeno no puede colarse ni reordenar otra cosa.
+    for (let i = 0; i < ids.length; i++) {
+      await pool.query(
+        'UPDATE cms_assets SET sort_order=? WHERE id=? AND account_id=? AND folder_id=?',
+        [i, ids[i], accId, folderId]
+      )
+    }
+    socket.emit(accId, 'account:updated', { accId })
+    res.json({ ok: true, count: ids.length })
   } catch (err) { res.status(500).json({ error: 'Error interno' }) }
 }
 const deleteCmsFolder = async (req, res) => {
@@ -469,7 +494,7 @@ module.exports = {
   createVariable, updateVariable, deleteVariable,
   createAITool, updateAITool, deleteAITool,
   createCmsAsset, updateCmsAsset, deleteCmsAsset, getCmsUsage,
-  createCmsFolder, updateCmsFolder, deleteCmsFolder,
+  createCmsFolder, updateCmsFolder, deleteCmsFolder, reorderCmsFolder,
   createCmsTag, deleteCmsTag,
   createCmsCategory, deleteCmsCategory,
   createCmsProduct, updateCmsProduct, deleteCmsProduct,
