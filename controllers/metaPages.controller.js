@@ -11,6 +11,8 @@
  */
 const pool = require('../db')
 
+// v19.0 como el resto de rutas de Meta de la plataforma. Se comprobó que sigue respondiendo:
+// la versión NO era la causa de que no llegaran páginas.
 const GRAPH = 'https://graph.facebook.com/v19.0'
 // Campos de webhook de página (Messenger + IG llegan por la suscripción de la página).
 // message_echoes = mensajes que envía el NEGOCIO (desde la app u otra herramienta) →
@@ -20,6 +22,56 @@ const SUBSCRIBE_FIELDS = 'messages,message_echoes,messaging_postbacks,messaging_
 async function globalApp() {
   const [[r]] = await pool.query('SELECT meta_app_id, meta_app_secret FROM platform_settings WHERE id=1')
   return { appId: r?.meta_app_id || '', appSecret: r?.meta_app_secret || '' }
+}
+
+// Permisos mínimos para que el 1-clic funcione, por tipo de canal.
+const REQUIRED_SCOPES = {
+  messenger: ['pages_show_list', 'pages_messaging'],
+  instagram: ['pages_show_list', 'pages_messaging', 'instagram_basic', 'instagram_manage_messages'],
+}
+
+/**
+ * Qué concedió REALMENTE el usuario. Sin esto solo se ve una lista de páginas vacía y hay que
+ * adivinar: no se distingue "no marcó ninguna Página" de "la app nunca pidió el permiso" ni de
+ * "el Config ID configurado es el de WhatsApp y no incluye permisos de Página". Son tres causas
+ * con tres soluciones distintas y el mismo síntoma.
+ *
+ * `granular_scopes` es la parte importante: dice, permiso a permiso, SOBRE QUÉ PÁGINAS se
+ * concedió. Un `pages_show_list` sin `target_ids` significa que el usuario pasó por el diálogo
+ * sin marcar ninguna página.
+ */
+async function debugToken(userToken, appId, appSecret) {
+  if (!appId || !appSecret) return null
+  try {
+    const u = `${GRAPH}/debug_token?input_token=${encodeURIComponent(userToken)}&access_token=${encodeURIComponent(appId + '|' + appSecret)}`
+    const r = await fetch(u)
+    const d = await r.json().catch(() => ({}))
+    if (!r.ok || !d?.data) return null
+    const granular = {}
+    for (const g of (d.data.granular_scopes || [])) granular[g.scope] = g.target_ids || null
+    return { scopes: d.data.scopes || [], granular }
+  } catch { return null }
+}
+
+// Construye un mensaje que diga QUÉ falta y CÓMO arreglarlo, no solo que no hubo páginas.
+function explainNoPages(info, type) {
+  if (!info) {
+    return 'No se recibió acceso a ninguna página. En el diálogo de Meta marca (✓) tu Página antes de continuar. '
+      + 'Si solo tienes un perfil personal de Facebook, primero crea una Página; si la Página pertenece a un portafolio empresarial, entra con la cuenta que la administra.'
+  }
+  const faltan = (REQUIRED_SCOPES[type] || REQUIRED_SCOPES.messenger).filter(s => !info.scopes.includes(s))
+  if (faltan.length) {
+    return `Meta no concedió estos permisos: ${faltan.join(', ')}. `
+      + 'Si en el Super Panel hay un "Config ID de páginas" configurado, el diálogo usa ESA configuración e ignora los permisos que pide la plataforma: '
+      + 'revisa que esa configuración de Facebook Login for Business incluya los permisos de Página, o déjala vacía para usar el inicio de sesión clásico.'
+  }
+  const targets = info.granular?.pages_show_list
+  if (Array.isArray(targets) && targets.length === 0) {
+    return 'Entraste en Meta pero no marcaste ninguna Página. Vuelve a intentarlo y en el diálogo marca (✓) la casilla de tu Página antes de continuar.'
+  }
+  return 'Meta concedió los permisos pero no devolvió ninguna Página. '
+    + 'Suele pasar cuando la Página pertenece a un portafolio empresarial y tu usuario no tiene rol sobre ella: '
+    + 'entra con la cuenta que la administra o pide que te añadan como administrador de la Página.'
 }
 
 // POST /api/meta/pages/connect  { userAccessToken, type, pageId? }
@@ -40,12 +92,36 @@ const connect = async (req, res) => {
     }
 
     // 2) Páginas del usuario (con page token e IG vinculado).
-    const pr = await fetch(`${GRAPH}/me/accounts?fields=id,name,access_token,instagram_business_account{id,username}&access_token=${encodeURIComponent(userToken)}`)
+    // limit=200: por defecto Graph pagina de 25 en 25 y quien administra muchas páginas
+    // podría no ver la suya en la lista.
+    const FIELDS = 'id,name,access_token,instagram_business_account{id,username}'
+    const pr = await fetch(`${GRAPH}/me/accounts?fields=${FIELDS}&limit=200&access_token=${encodeURIComponent(userToken)}`)
     const pd = await pr.json().catch(() => ({}))
     if (!pr.ok) throw new Error(pd?.error?.message || 'No se pudieron obtener las páginas')
-    const pages = pd.data || []
+    let pages = pd.data || []
+
+    // Respaldo: /me/accounts solo devuelve las páginas donde el usuario tiene rol DIRECTO.
+    // Las que pertenecen a un portafolio empresarial suelen quedar fuera, y ese es el caso
+    // más habitual en cuentas de empresa. Se intenta por el portafolio antes de rendirse.
     if (!pages.length) {
-      return res.status(400).json({ error: 'No se recibió acceso a ninguna página. En el diálogo de Meta marca (✓) tu Página antes de continuar.' })
+      try {
+        const br = await fetch(`${GRAPH}/me/businesses?limit=50&access_token=${encodeURIComponent(userToken)}`)
+        const bd = await br.json().catch(() => ({}))
+        for (const biz of (bd.data || [])) {
+          for (const edge of ['owned_pages', 'client_pages']) {
+            const xr = await fetch(`${GRAPH}/${biz.id}/${edge}?fields=${FIELDS}&limit=200&access_token=${encodeURIComponent(userToken)}`)
+            const xd = await xr.json().catch(() => ({}))
+            for (const p of (xd.data || [])) if (p?.access_token && !pages.some(q => q.id === p.id)) pages.push(p)
+          }
+        }
+      } catch (e) { console.warn('[metaPages businesses]', e.message) }
+    }
+
+    if (!pages.length) {
+      // Se consulta el token para decir QUÉ falló, en vez de repetir siempre lo mismo.
+      const info = await debugToken(userToken, appId, appSecret)
+      console.warn('[metaPages] sin páginas · scopes:', info?.scopes?.join(',') || '(desconocidos)')
+      return res.status(400).json({ error: explainNoPages(info, type), scopes: info?.scopes || null })
     }
 
     // Si hay varias y aún no se eligió una → devolver la lista para que el usuario elija.
@@ -61,17 +137,25 @@ const connect = async (req, res) => {
     }
 
     // 3) Suscribir la página a los webhooks de la app (con el page token).
+    // Sin esta suscripción NO llega ningún mensaje. Si falla, el motivo se devuelve al
+    // frontend: antes solo quedaba en el log del servidor y el canal aparecía "conectado"
+    // mientras el cliente esperaba mensajes que nunca iban a entrar.
     let subscribed = false
+    let subscribeError = ''
     try {
       const sr = await fetch(`${GRAPH}/${page.id}/subscribed_apps?subscribed_fields=${SUBSCRIBE_FIELDS}&access_token=${encodeURIComponent(page.access_token)}`, { method: 'POST' })
       const sd = await sr.json().catch(() => ({}))
       subscribed = sr.ok && sd.success !== false
-      if (!sr.ok) console.warn('[metaPages subscribe]', sd?.error?.message)
-    } catch (e) { console.warn('[metaPages subscribe]', e.message) }
+      if (!subscribed) {
+        subscribeError = sd?.error?.message || `HTTP ${sr.status}`
+        console.warn('[metaPages subscribe]', subscribeError)
+      }
+    } catch (e) { subscribeError = e.message; console.warn('[metaPages subscribe]', e.message) }
 
     const config = {
       pageId: page.id, pageName: page.name, pageAccessToken: page.access_token,
       status: 'connected', subscribed,
+      ...(subscribeError ? { subscribeError } : {}),
     }
     if (type === 'instagram') {
       config.igAccountId = page.instagram_business_account?.id || ''
