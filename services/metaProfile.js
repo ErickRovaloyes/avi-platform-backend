@@ -63,4 +63,27 @@ async function fetchProfile(psid, token, kind = 'messenger') {
   }
 }
 
-module.exports = { fetchProfile, isPlaceholder }
+/**
+ * Igual que fetchProfile pero SIN caché y devolviendo el motivo exacto de Meta.
+ * Es para diagnóstico: cuando el nombre no aparece, `fetchProfile` devuelve null y el
+ * porqué se queda en el log del servidor, donde nadie puede verlo.
+ */
+async function probeProfile(psid, token, kind = 'messenger') {
+  if (!psid) return { ok: false, error: 'No hay ninguna conversación de este canal todavía.' }
+  if (!token) return { ok: false, error: 'El canal no tiene Page Access Token guardado.' }
+  const fields = kind === 'instagram' ? 'name,username,profile_pic' : 'first_name,last_name,profile_pic'
+  try {
+    const r = await fetch(`${GRAPH}/${encodeURIComponent(psid)}?fields=${fields}&access_token=${encodeURIComponent(token)}`)
+    const d = await r.json().catch(() => ({}))
+    if (!r.ok) {
+      return { ok: false, error: d?.error?.message || `HTTP ${r.status}`, code: d?.error?.code, sub: d?.error?.error_subcode }
+    }
+    const name = kind === 'instagram'
+      ? (d.name || d.username || '')
+      : [d.first_name, d.last_name].filter(Boolean).join(' ')
+    if (!name) return { ok: false, error: 'Meta respondió correctamente pero sin nombre (perfil restringido o normativa de privacidad de la región).' }
+    return { ok: true, name }
+  } catch (e) { return { ok: false, error: e.message } }
+}
+
+module.exports = { fetchProfile, probeProfile, isPlaceholder }

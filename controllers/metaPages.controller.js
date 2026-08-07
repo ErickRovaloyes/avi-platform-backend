@@ -274,6 +274,28 @@ const diagnose = async (req, res) => {
       add(false, 'Página suscrita a la app', 'Falta el Page Access Token del canal.')
     }
 
+    // 3) ¿Se puede leer el NOMBRE de quien escribe? Se prueba contra una conversación real
+    // de este canal. Sin esto, cuando el nombre no aparece solo queda "FB #8553" en pantalla
+    // y el motivo de Meta se pierde en el log del servidor.
+    const { accId, agentId, kind = 'messenger' } = req.body || {}
+    if (accId) {
+      try {
+        const col = kind === 'instagram' ? 'ig_from' : 'messenger_from'
+        const [[c]] = await pool.query(
+          `SELECT ${col} AS psid, guest_name FROM conversations
+            WHERE account_id=? ${agentId ? 'AND agent_id=?' : ''} AND ${col} IS NOT NULL
+            ORDER BY updated_at DESC LIMIT 1`,
+          agentId ? [accId, agentId] : [accId]
+        )
+        const probe = await require('../services/metaProfile').probeProfile(c?.psid, pageAccessToken, kind)
+        add(probe.ok, 'Nombre de quien escribe',
+          probe.ok
+            ? `Se lee correctamente (ejemplo: ${probe.name}). Los chats con nombre provisional se corrigen solos al llegar su próximo mensaje.`
+            : `No se puede leer, por eso aparece "${c?.guest_name || 'FB #…'}". Meta responde: ${probe.error}`
+              + (probe.code === 100 ? ' · Suele significar que la app no tiene Acceso Avanzado a pages_messaging, o que ese permiso no cubre a este usuario.' : ''))
+      } catch (e) { add(false, 'Nombre de quien escribe', 'No se pudo comprobar: ' + e.message) }
+    }
+
     out.ok = out.checks.every(c => c.ok)
     res.json(out)
   } catch (err) {
