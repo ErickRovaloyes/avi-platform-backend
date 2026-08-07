@@ -318,7 +318,7 @@ const diagnose = async (req, res) => {
           const mp = require('../services/metaProfile')
           let mejor = null
           for (const c of rows) {
-            const probe = await mp.probeProfile(c.psid, pageAccessToken, kind)
+            const probe = await mp.probeProfile(c.psid, pageAccessToken, kind, pageId)
             if (probe.ok) { mejor = { probe, c }; break }
             if (!mejor) mejor = { probe, c }
           }

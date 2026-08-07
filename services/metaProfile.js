@@ -29,12 +29,46 @@ function isPlaceholder(name) {
 }
 
 /**
+ * Nombres a partir de las CONVERSACIONES de la página.
+ *
+ * Es la segunda vía, y en muchas apps la única que funciona: pedir el perfil por el
+ * identificador del usuario (`/{PSID}`) devuelve error 100 aunque el token sea el correcto y
+ * el permiso esté aprobado. La lista de conversaciones de la página sí incluye el nombre de
+ * cada participante, y usa los mismos permisos que ya tiene el canal.
+ *
+ * Se piden varias de una vez y se cachean todas: quien escribe suele estar entre las
+ * conversaciones recientes, así que una llamada resuelve muchos nombres.
+ */
+async function fetchFromConversations(pageId, token, kind = 'messenger') {
+  if (!pageId || !token) return 0
+  const plataforma = kind === 'instagram' ? '&platform=instagram' : ''
+  try {
+    const r = await fetch(`${GRAPH}/${encodeURIComponent(pageId)}/conversations?fields=participants&limit=100${plataforma}&access_token=${encodeURIComponent(token)}`)
+    const d = await r.json().catch(() => ({}))
+    if (!r.ok) { console.warn('[metaProfile conversations]', d?.error?.message || `HTTP ${r.status}`); return 0 }
+    let n = 0
+    for (const conv of (d.data || [])) {
+      for (const p of (conv.participants?.data || [])) {
+        // El propio negocio también figura como participante: se ignora.
+        if (!p?.id || String(p.id) === String(pageId)) continue
+        const nombre = String(p.name || p.username || '').trim()
+        if (!nombre) continue
+        cache.set(String(p.id), { name: nombre, photo: '', at: Date.now() })
+        n++
+      }
+    }
+    return n
+  } catch (e) { console.warn('[metaProfile conversations]', e.message); return 0 }
+}
+
+/**
  * @param {string} psid   PSID (Messenger) o IGSID (Instagram)
  * @param {string} token  Page Access Token del canal
  * @param {'messenger'|'instagram'} kind
+ * @param {string} pageId Página del canal (para la vía de conversaciones)
  * @returns {Promise<{name:string, photo:string}|null>}
  */
-async function fetchProfile(psid, token, kind = 'messenger') {
+async function fetchProfile(psid, token, kind = 'messenger', pageId = '') {
   if (!psid || !token) return null
   const hit = cache.get(psid)
   if (hit && Date.now() - hit.at < TTL) return hit.name || hit.photo ? hit : null
@@ -45,9 +79,14 @@ async function fetchProfile(psid, token, kind = 'messenger') {
     const r = await fetch(`${GRAPH}/${encodeURIComponent(psid)}?fields=${fields}&access_token=${encodeURIComponent(token)}`)
     const d = await r.json().catch(() => ({}))
     if (!r.ok) {
-      // Lo más habitual: el usuario no ha iniciado la conversación todavía, o su perfil no es
-      // accesible. No es motivo para tumbar el mensaje entrante, así que solo se anota.
+      // Vía directa rechazada (error 100 típico, aun con token y permisos correctos).
+      // Se intenta por las conversaciones de la página antes de rendirse.
       console.warn('[metaProfile]', kind, psid, d?.error?.message || `HTTP ${r.status}`)
+      if (pageId) {
+        const n = await fetchFromConversations(pageId, token, kind)
+        const hit2 = cache.get(psid)
+        if (hit2?.name) { console.log(`[metaProfile] nombre resuelto por conversaciones (${n} cacheados)`); return hit2 }
+      }
       cache.set(psid, { name: '', photo: '', at: Date.now() })   // no reintentar en cada mensaje
       return null
     }
@@ -68,7 +107,7 @@ async function fetchProfile(psid, token, kind = 'messenger') {
  * Es para diagnóstico: cuando el nombre no aparece, `fetchProfile` devuelve null y el
  * porqué se queda en el log del servidor, donde nadie puede verlo.
  */
-async function probeProfile(psid, token, kind = 'messenger') {
+async function probeProfile(psid, token, kind = 'messenger', pageId = '') {
   if (!psid) return { ok: false, error: 'No hay ninguna conversación de este canal todavía.' }
   if (!token) return { ok: false, error: 'El canal no tiene Page Access Token guardado.' }
   const fields = kind === 'instagram' ? 'name,username,profile_pic' : 'first_name,last_name,profile_pic'
@@ -76,6 +115,13 @@ async function probeProfile(psid, token, kind = 'messenger') {
     const r = await fetch(`${GRAPH}/${encodeURIComponent(psid)}?fields=${fields}&access_token=${encodeURIComponent(token)}`)
     const d = await r.json().catch(() => ({}))
     if (!r.ok) {
+      // Vía directa rechazada: se prueba la de conversaciones, que es la que suele funcionar.
+      if (pageId) {
+        const n = await fetchFromConversations(pageId, token, kind)
+        const hit = cache.get(String(psid))
+        if (hit?.name) return { ok: true, name: hit.name, via: 'conversaciones', cacheados: n }
+        return { ok: false, error: (d?.error?.message || `HTTP ${r.status}`) + ` · La vía de conversaciones tampoco lo encontró (${n} nombres leídos).`, code: d?.error?.code }
+      }
       return { ok: false, error: d?.error?.message || `HTTP ${r.status}`, code: d?.error?.code, sub: d?.error?.error_subcode }
     }
     const name = kind === 'instagram'
@@ -86,4 +132,4 @@ async function probeProfile(psid, token, kind = 'messenger') {
   } catch (e) { return { ok: false, error: e.message } }
 }
 
-module.exports = { fetchProfile, probeProfile, isPlaceholder }
+module.exports = { fetchProfile, probeProfile, fetchFromConversations, isPlaceholder }

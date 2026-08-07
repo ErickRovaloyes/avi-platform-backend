@@ -272,7 +272,7 @@ async function processMessenger(accId, agentId, body) {
 
     // El webhook no trae el nombre: se pide a la API de perfil con el token de la página.
     // Sin esto la conversación se queda en "FB #5326" y no se sabe con quién se habla.
-    const perfilFb = await metaProfile.fetchProfile(msg.senderId, channel.config?.pageAccessToken, "messenger")
+    const perfilFb = await metaProfile.fetchProfile(msg.senderId, channel.config?.pageAccessToken, "messenger", channel.config?.pageId)
     const nombreFb = msg.senderName || perfilFb?.name || ""
     const convId = await store.createOrGetMessengerConvo(accId, agentId, msg.senderId, nombreFb, channel.id, metaOrigin(msg.referral))
     // Conversaciones que YA existían con el marcador: se les pone el nombre real ahora que
@@ -361,7 +361,7 @@ async function processInstagram(accId, agentId, body) {
     )
     if (!channel) { console.warn('[flow/process] Canal Instagram no encontrado:', msg.igAccountId); continue }
 
-    const perfilIg = await metaProfile.fetchProfile(msg.senderId, channel.config?.pageAccessToken, "instagram")
+    const perfilIg = await metaProfile.fetchProfile(msg.senderId, channel.config?.pageAccessToken, "instagram", channel.config?.pageId)
     const nombreIg = msg.senderName || perfilIg?.name || ""
     const convId = await store.createOrGetInstagramConvo(accId, agentId, msg.senderId, nombreIg, channel.id, metaOrigin(msg.referral))
     await upgradeGuestName(convId, nombreIg, perfilIg?.photo)
