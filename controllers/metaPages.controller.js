@@ -274,25 +274,66 @@ const diagnose = async (req, res) => {
       add(false, 'Página suscrita a la app', 'Falta el Page Access Token del canal.')
     }
 
-    // 3) ¿Se puede leer el NOMBRE de quien escribe? Se prueba contra una conversación real
-    // de este canal. Sin esto, cuando el nombre no aparece solo queda "FB #8553" en pantalla
-    // y el motivo de Meta se pierde en el log del servidor.
-    const { accId, agentId, kind = 'messenger' } = req.body || {}
+    const { accId, agentId, channelId, kind = 'messenger' } = req.body || {}
+
+    // 3) ¿De qué página es REALMENTE el token guardado? Un token de USUARIO, o el de otra
+    // página, deja pasar unas llamadas y falla otras: los mensajes llegan, pero leer el
+    // perfil de quien escribe da error 100 ("does not exist... missing permissions"). Es
+    // indistinguible de un problema de permisos si no se comprueba a quién pertenece.
+    let tokenPageId = null
+    if (pageAccessToken) {
+      try {
+        const r = await fetch(`${GRAPH}/me?fields=id,name&access_token=${encodeURIComponent(pageAccessToken)}`)
+        const d = await r.json().catch(() => ({}))
+        if (!r.ok) {
+          add(false, 'Token de la página', `El token guardado no es válido: ${d?.error?.message || `HTTP ${r.status}`}. Reconecta el canal.`)
+        } else {
+          tokenPageId = String(d.id || '')
+          const coincide = tokenPageId === String(pageId)
+          add(coincide, 'Token de la página',
+            coincide
+              ? `Correcto · pertenece a "${d.name || pageId}"`
+              : `El token guardado NO es de esta página: es de "${d.name || tokenPageId}" (${tokenPageId}) y el canal está configurado con ${pageId}. `
+                + 'Los identificadores de usuario son propios de cada página, así que con el token equivocado no se puede leer ningún perfil. Reconecta el canal.')
+        }
+      } catch (e) { add(false, 'Token de la página', 'No se pudo comprobar: ' + e.message) }
+    }
+
+    // 4) ¿Se puede leer el NOMBRE de quien escribe? Se prueba contra conversaciones REALES
+    // de ESTE canal. Sin acotar por canal se podía acabar probando una conversación de
+    // pruebas, con un identificador inventado que falla siempre y despista.
     if (accId) {
       try {
         const col = kind === 'instagram' ? 'ig_from' : 'messenger_from'
-        const [[c]] = await pool.query(
-          `SELECT ${col} AS psid, guest_name FROM conversations
-            WHERE account_id=? ${agentId ? 'AND agent_id=?' : ''} AND ${col} IS NOT NULL
-            ORDER BY updated_at DESC LIMIT 1`,
-          agentId ? [accId, agentId] : [accId]
-        )
-        const probe = await require('../services/metaProfile').probeProfile(c?.psid, pageAccessToken, kind)
-        add(probe.ok, 'Nombre de quien escribe',
-          probe.ok
-            ? `Se lee correctamente (ejemplo: ${probe.name}). Los chats con nombre provisional se corrigen solos al llegar su próximo mensaje.`
-            : `No se puede leer, por eso aparece "${c?.guest_name || 'FB #…'}". Meta responde: ${probe.error}`
-              + (probe.code === 100 ? ' · Suele significar que la app no tiene Acceso Avanzado a pages_messaging, o que ese permiso no cubre a este usuario.' : ''))
+        const cond = ['account_id=?']; const args = [accId]
+        if (agentId) { cond.push('agent_id=?'); args.push(agentId) }
+        if (channelId) { cond.push('channel_id=?'); args.push(channelId) }
+        cond.push(`${col} IS NOT NULL`)
+        cond.push("channel_type=?"); args.push(kind)
+        const [rows] = await pool.query(
+          `SELECT ${col} AS psid, guest_name FROM conversations WHERE ${cond.join(' AND ')} ORDER BY updated_at DESC LIMIT 3`, args)
+        if (!rows.length) {
+          add(false, 'Nombre de quien escribe', 'Aún no hay ninguna conversación de este canal con la que probar. Escribe a la página desde otra cuenta y repite el diagnóstico.')
+        } else {
+          const mp = require('../services/metaProfile')
+          let mejor = null
+          for (const c of rows) {
+            const probe = await mp.probeProfile(c.psid, pageAccessToken, kind)
+            if (probe.ok) { mejor = { probe, c }; break }
+            if (!mejor) mejor = { probe, c }
+          }
+          const { probe, c } = mejor
+          const ref = `${c.guest_name || 'sin nombre'} · …${String(c.psid || '').slice(-6)}`
+          add(probe.ok, 'Nombre de quien escribe',
+            probe.ok
+              ? `Se lee correctamente (ejemplo: ${probe.name}). Los chats con nombre provisional se corrigen solos al llegar su próximo mensaje.`
+              : `No se puede leer (probado con ${ref}). Meta responde: ${probe.error}`
+                + (probe.code === 100 && tokenPageId && tokenPageId !== String(pageId)
+                    ? ' · La causa está arriba: el token es de OTRA página.'
+                    : probe.code === 100
+                      ? ' · Con el token correcto y Acceso Avanzado a pages_messaging, este error suele significar que esa conversación es de pruebas (identificador inventado) o que el usuario borró la conversación con la página.'
+                      : ''))
+        }
       } catch (e) { add(false, 'Nombre de quien escribe', 'No se pudo comprobar: ' + e.message) }
     }
 
