@@ -206,4 +206,72 @@ const subscribe = async (req, res) => {
   }
 }
 
-module.exports = { connect, subscribe }
+// POST /api/meta/pages/diagnose  { pageId, pageAccessToken }
+// Comprueba la cadena COMPLETA de recepción de mensajes y dice cuál eslabón está roto.
+// Que una página quede "conectada" no significa que vayan a llegar mensajes: hacen falta
+// DOS suscripciones distintas, y fallar una de ellas es silencioso.
+//
+//   1) la APP suscrita al producto correcto con su URL de callback  → /{appId}/subscriptions
+//   2) la PÁGINA suscrita a esa app                                 → /{pageId}/subscribed_apps
+//
+// Sin (1) Meta no tiene a dónde enviar nada; sin (2) no envía los de esa página.
+const diagnose = async (req, res) => {
+  const { pageId, pageAccessToken } = req.body || {}
+  if (!pageId) return res.status(400).json({ error: 'Falta pageId' })
+  const out = { pageId, checks: [], ok: false }
+  const add = (ok, titulo, detalle) => out.checks.push({ ok, titulo, detalle })
+  try {
+    const { appId, appSecret } = await globalApp()
+    if (!appId || !appSecret) {
+      add(false, 'App de Meta configurada', 'Faltan el App ID o el App Secret en el Super Panel.')
+      return res.json(out)
+    }
+    const appToken = `${appId}|${appSecret}`
+
+    // 1) ¿La app tiene webhooks del producto "page" (Messenger) con el campo messages?
+    try {
+      const r = await fetch(`${GRAPH}/${appId}/subscriptions?access_token=${encodeURIComponent(appToken)}`)
+      const d = await r.json().catch(() => ({}))
+      const page = (d.data || []).find(x => x.object === 'page')
+      if (!page) {
+        add(false, 'Webhook de la app para Páginas',
+          'La app de Meta NO tiene webhook configurado para el producto "page". En Meta → tu app → Messenger → Configuración → Webhooks: añade la URL de callback y el Verify Token. Sin esto Meta no envía los mensajes a ninguna parte.')
+      } else {
+        const campos = (page.fields || []).map(f => f.name || f)
+        const tieneMessages = campos.includes('messages')
+        add(tieneMessages, 'Webhook de la app para Páginas',
+          tieneMessages
+            ? `Activo · campos: ${campos.join(', ')} · URL: ${page.callback_url || '(no expuesta)'}`
+            : `Configurado pero SIN el campo "messages" (tiene: ${campos.join(', ') || 'ninguno'}). Actívalo en Meta → Messenger → Webhooks.`)
+      }
+    } catch (e) { add(false, 'Webhook de la app para Páginas', 'No se pudo consultar: ' + e.message) }
+
+    // 2) ¿La página está suscrita a ESTA app?
+    if (pageAccessToken) {
+      try {
+        const r = await fetch(`${GRAPH}/${pageId}/subscribed_apps?access_token=${encodeURIComponent(pageAccessToken)}`)
+        const d = await r.json().catch(() => ({}))
+        if (!r.ok) {
+          add(false, 'Página suscrita a la app', d?.error?.message || `HTTP ${r.status}`)
+        } else {
+          const mine = (d.data || []).find(a => String(a.id) === String(appId))
+          const campos = (mine?.subscribed_fields || [])
+          add(!!mine && campos.includes('messages'), 'Página suscrita a la app',
+            !mine
+              ? 'La página NO está suscrita a esta app. Pulsa "Suscribir a webhooks" o reconecta.'
+              : `Suscrita · campos: ${campos.join(', ') || 'ninguno'}${campos.includes('messages') ? '' : ' — falta "messages"'}`)
+        }
+      } catch (e) { add(false, 'Página suscrita a la app', 'No se pudo consultar: ' + e.message) }
+    } else {
+      add(false, 'Página suscrita a la app', 'Falta el Page Access Token del canal.')
+    }
+
+    out.ok = out.checks.every(c => c.ok)
+    res.json(out)
+  } catch (err) {
+    console.error('[metaPages diagnose]', err.message)
+    res.status(502).json({ error: err.message })
+  }
+}
+
+module.exports = { connect, subscribe, diagnose }
