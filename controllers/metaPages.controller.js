@@ -69,20 +69,22 @@ function explainNoPages(info, type) {
   if (Array.isArray(targets) && targets.length === 0) {
     return 'Entraste en Meta pero no marcaste ninguna Página. Vuelve a intentarlo y en el diálogo marca (✓) la casilla de tu Página antes de continuar.'
   }
-  // Permisos de Página concedidos, cero páginas devueltas y SIN business_management. Ese
-  // permiso es el que habilita /me/businesses, así que sin él tampoco se puede buscar la
-  // página por el portafolio: quedamos ciegos justo en el caso más común de las cuentas de
-  // empresa. Es una carencia de la CONFIGURACIÓN de Meta, no algo que el usuario pueda
-  // resolver marcando casillas, así que se dice sin rodeos.
-  if (!info.scopes.includes('business_management')) {
-    return 'Meta concedió los permisos de Página pero no devolvió ninguna, y la configuración usada NO incluye "business_management". '
-      + 'Ese permiso es el que permite ver las Páginas que pertenecen a un portafolio empresarial (lo habitual en cuentas de negocio). '
-      + 'Añádelo a la configuración de Facebook Login for Business del Super Panel; después vuelve a intentarlo y marca tu Página en el diálogo. '
-      + 'Mientras tanto puedes usar "Probar pidiendo permisos directos", que sí lo solicita.'
-  }
-  return 'Meta concedió los permisos pero no devolvió ninguna Página. '
-    + 'Suele pasar cuando la Página pertenece a un portafolio empresarial y tu usuario no tiene rol sobre ella: '
-    + 'entra con la cuenta que la administra o pide que te añadan como administrador de la Página.'
+  // Aquí `pages_show_list` SÍ está concedido y aun así no llegó ninguna página. Con ese
+  // permiso, /me/accounts devuelve las páginas que el usuario administra, así que lo que
+  // falla es la SELECCIÓN DE ACTIVOS: en Facebook Login for Business el diálogo tiene un
+  // paso donde se eligen las Páginas a las que la app tendrá acceso, y si la configuración
+  // no ofrece Páginas como activo —o se pasa ese paso sin marcar— se conceden los permisos
+  // pero no se concede ninguna página.
+  //
+  // OJO: aquí NO se pide `business_management`. Solo lo necesita el respaldo por portafolio
+  // de este mismo archivo, que es un extra; para conectar basta con administrar la Página.
+  // Mandar a pedir ese permiso a revisión por esto sería mandar a pedir lo que no hace falta.
+  return 'Meta concedió los permisos (incluido pages_show_list) pero no entregó NINGUNA Página. '
+    + 'Eso no es cuestión de permisos, sino de la selección de activos: '
+    + 'revisa que la configuración de Facebook Login for Business del Super Panel incluya "Páginas" entre los activos que pide, '
+    + 'y que en el diálogo aparezca el paso para elegir Página y la marques. '
+    + 'Si ese paso no aparece, la configuración no está pidiendo Páginas. '
+    + 'Compruébalo con "Probar pidiendo permisos directos": si por ahí sí salen tus páginas, el problema está en esa configuración.'
 }
 
 // POST /api/meta/pages/connect  { userAccessToken, type, pageId? }
