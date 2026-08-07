@@ -24,7 +24,12 @@ jobs:
           script: |
             set -e
             cd /opt/avi-platform/backend
-            git pull origin main
+            # `git pull` actualiza refs/remotes/origin/main, y si dos despliegues coinciden el
+            # segundo falla con "cannot lock ref" aunque el repositorio ya esté al día.
+            # fetch + reset --hard FETCH_HEAD no toca esa ref y es idempotente: deja el árbol
+            # exactamente en el commit remoto, que es justo lo que quiere un destino de despliegue.
+            git fetch --prune origin main
+            git reset --hard FETCH_HEAD
             cd /opt/avi-platform
             docker compose build avi-backend
             
