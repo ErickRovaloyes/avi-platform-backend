@@ -17,6 +17,33 @@ const {
   parseInstagramWebhook, sendInstagramText,
 } = require('../services/metaSend')
 const { uploadWhatsAppMedia, sendWhatsAppMediaMessage } = require('../services/metaMedia')
+const metaProfile = require('../services/metaProfile')
+const pool = require('../db')
+
+// Pone el nombre real en una conversación que aún tiene el marcador ("FB #5326").
+//
+// Solo sustituye MARCADORES: si un asesor escribió el nombre a mano, o el contacto ya
+// tenía uno, no se toca. Meta no siempre devuelve nombre —perfiles restringidos, normativa
+// de privacidad de la región— y sobrescribir un dato bueno con uno peor sería un retroceso.
+async function upgradeGuestName(convId, nombre, foto) {
+  if (!convId || !nombre || metaProfile.isPlaceholder(nombre)) return
+  try {
+    const [[c]] = await pool.query('SELECT guest_name, local_vars FROM conversations WHERE id=?', [convId])
+    if (!c || !metaProfile.isPlaceholder(c.guest_name)) return
+    const iniciales = nombre.trim().slice(0, 2).toUpperCase()
+    await pool.query('UPDATE conversations SET guest_name=?, initials=? WHERE id=?', [nombre, iniciales, convId])
+    // La variable canónica que usan los prompts y los flujos ({{user_name}}).
+    let lv = {}; try { lv = JSON.parse(c.local_vars || '{}') } catch {}
+    if (metaProfile.isPlaceholder(lv.user_name)) {
+      lv.user_name = nombre
+      await pool.query('UPDATE conversations SET local_vars=? WHERE id=?', [JSON.stringify(lv), convId])
+    }
+    // Y la ficha del contacto en el CRM, para que no quede como "FB #…" en la agenda.
+    if (lv.contact_id) {
+      await pool.query('UPDATE contacts SET name=? WHERE id=? AND (name IS NULL OR name="" OR name LIKE "FB #%" OR name LIKE "IG #%" OR name = "Visitante" OR name LIKE "Visitante %" OR name LIKE "Guest %")', [nombre, lv.contact_id])
+    }
+  } catch (e) { console.warn('[upgradeGuestName]', e.message) }
+}
 
 // Transcribe la nota de voz del usuario (si la hay) y usa la transcripción como
 // texto del mensaje → así se persiste como contenido y queda en {{_lastUserMessage}}
@@ -243,7 +270,15 @@ async function processMessenger(accId, agentId, body) {
     )
     if (!channel) { console.warn('[flow/process] Canal Messenger no encontrado:', msg.pageId); continue }
 
-    const convId = await store.createOrGetMessengerConvo(accId, agentId, msg.senderId, msg.senderName, channel.id, metaOrigin(msg.referral))
+    // El webhook no trae el nombre: se pide a la API de perfil con el token de la página.
+    // Sin esto la conversación se queda en "FB #5326" y no se sabe con quién se habla.
+    const perfilFb = await metaProfile.fetchProfile(msg.senderId, channel.config?.pageAccessToken, "messenger")
+    const nombreFb = msg.senderName || perfilFb?.name || ""
+    const convId = await store.createOrGetMessengerConvo(accId, agentId, msg.senderId, nombreFb, channel.id, metaOrigin(msg.referral))
+    // Conversaciones que YA existían con el marcador: se les pone el nombre real ahora que
+    // se conoce. createOrGet solo lo aplica al crear, así que sin esto los chats abiertos
+    // antes de este arreglo se quedarían con "FB #…" para siempre.
+    await upgradeGuestName(convId, nombreFb, perfilFb?.photo)
 
     if (await store.messageExistsByProviderId(convId, msg.messageId)) {
       console.log('[flow/process] FB ya procesado en DB:', msg.messageId); continue
@@ -326,7 +361,10 @@ async function processInstagram(accId, agentId, body) {
     )
     if (!channel) { console.warn('[flow/process] Canal Instagram no encontrado:', msg.igAccountId); continue }
 
-    const convId = await store.createOrGetInstagramConvo(accId, agentId, msg.senderId, msg.senderName, channel.id, metaOrigin(msg.referral))
+    const perfilIg = await metaProfile.fetchProfile(msg.senderId, channel.config?.pageAccessToken, "instagram")
+    const nombreIg = msg.senderName || perfilIg?.name || ""
+    const convId = await store.createOrGetInstagramConvo(accId, agentId, msg.senderId, nombreIg, channel.id, metaOrigin(msg.referral))
+    await upgradeGuestName(convId, nombreIg, perfilIg?.photo)
 
     if (await store.messageExistsByProviderId(convId, msg.messageId)) {
       console.log('[flow/process] IG ya procesado en DB:', msg.messageId); continue
