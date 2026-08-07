@@ -69,6 +69,17 @@ function explainNoPages(info, type) {
   if (Array.isArray(targets) && targets.length === 0) {
     return 'Entraste en Meta pero no marcaste ninguna Página. Vuelve a intentarlo y en el diálogo marca (✓) la casilla de tu Página antes de continuar.'
   }
+  // Permisos de Página concedidos, cero páginas devueltas y SIN business_management. Ese
+  // permiso es el que habilita /me/businesses, así que sin él tampoco se puede buscar la
+  // página por el portafolio: quedamos ciegos justo en el caso más común de las cuentas de
+  // empresa. Es una carencia de la CONFIGURACIÓN de Meta, no algo que el usuario pueda
+  // resolver marcando casillas, así que se dice sin rodeos.
+  if (!info.scopes.includes('business_management')) {
+    return 'Meta concedió los permisos de Página pero no devolvió ninguna, y la configuración usada NO incluye "business_management". '
+      + 'Ese permiso es el que permite ver las Páginas que pertenecen a un portafolio empresarial (lo habitual en cuentas de negocio). '
+      + 'Añádelo a la configuración de Facebook Login for Business del Super Panel; después vuelve a intentarlo y marca tu Página en el diálogo. '
+      + 'Mientras tanto puedes usar "Probar pidiendo permisos directos", que sí lo solicita.'
+  }
   return 'Meta concedió los permisos pero no devolvió ninguna Página. '
     + 'Suele pasar cuando la Página pertenece a un portafolio empresarial y tu usuario no tiene rol sobre ella: '
     + 'entra con la cuenta que la administra o pide que te añadan como administrador de la Página.'
@@ -120,8 +131,15 @@ const connect = async (req, res) => {
     if (!pages.length) {
       // Se consulta el token para decir QUÉ falló, en vez de repetir siempre lo mismo.
       const info = await debugToken(userToken, appId, appSecret)
-      console.warn('[metaPages] sin páginas · scopes:', info?.scopes?.join(',') || '(desconocidos)')
-      return res.status(400).json({ error: explainNoPages(info, type), scopes: info?.scopes || null })
+      console.warn('[metaPages] sin páginas · scopes:', info?.scopes?.join(',') || '(desconocidos)',
+        '· granular:', JSON.stringify(info?.granular || {}))
+      // `granular` viaja también al frontend: dice sobre QUÉ páginas se concedió cada permiso
+      // y es lo único que distingue "no marcó ninguna" de "no tiene acceso a ninguna".
+      return res.status(400).json({
+        error: explainNoPages(info, type),
+        scopes: info?.scopes || null,
+        granular: info?.granular || null,
+      })
     }
 
     // Si hay varias y aún no se eligió una → devolver la lista para que el usuario elija.
