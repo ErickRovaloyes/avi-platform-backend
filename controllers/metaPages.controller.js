@@ -234,8 +234,16 @@ const diagnose = async (req, res) => {
       const d = await r.json().catch(() => ({}))
       const page = (d.data || []).find(x => x.object === 'page')
       if (!page) {
+        // Antes este mensaje mandaba directo a Messenger → Webhooks, dando por hecho que el
+        // producto ya estaba añadido. Si no lo está, esa sección NO EXISTE y el usuario se
+        // queda buscando una pantalla que no puede encontrar. El primer paso va primero.
+        const base = (process.env.PUBLIC_URL || process.env.BASE_URL || 'https://platform.aviasistente.com').replace(/\/$/, '')
         add(false, 'Webhook de la app para Páginas',
-          'La app de Meta NO tiene webhook configurado para el producto "page". En Meta → tu app → Messenger → Configuración → Webhooks: añade la URL de callback y el Verify Token. Sin esto Meta no envía los mensajes a ninguna parte.')
+          'La app de Meta no tiene webhook para el producto "page", así que Meta no envía los mensajes a ninguna parte. '
+          + '1) Si en el panel de tu app no aparece "Messenger" en la lista de productos, añádelo primero (Añadir producto → Messenger); sin el producto no existe la sección de Webhooks. '
+          + `2) Luego en Messenger → Configuración → Webhooks pon la URL de devolución: ${base}/api/webhook/messenger `
+          + '(para Instagram: /api/webhook/instagram). El token de verificación puede ser cualquiera. '
+          + '3) Suscribe al menos el campo "messages". Esto se configura UNA vez para toda la plataforma, no por cliente.')
       } else {
         const campos = (page.fields || []).map(f => f.name || f)
         const tieneMessages = campos.includes('messages')
