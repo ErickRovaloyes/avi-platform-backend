@@ -22,9 +22,35 @@ jobs:
           timeout: 120s
           command_timeout: 20m
           script: |
+            set -e
             cd /opt/avi-platform/backend
             git pull origin main
             cd /opt/avi-platform
             docker compose build avi-backend
-            docker compose up -d avi-backend
+            
+            # Compose RENOMBRA el contenedor viejo antes de borrarlo y esa operación a veces se
+            # pierde ("No such container: <hash>_avi-backend"). Cuando pasa, up aborta y el servicio
+            # se queda SIN contenedor: el sitio devuelve 404 y el despliegue salía en VERDE.
+            arriba() {
+              cid=$(docker compose ps -q avi-backend 2>/dev/null)
+              [ -n "$cid" ] && [ "$(docker inspect -f '{{.State.Running}}' "$cid" 2>/dev/null)" = "true" ]
+            }
+            
+            docker compose up -d avi-backend || true
+            for i in 1 2 3; do
+              arriba && break
+              echo "[deploy] avi-backend no quedó arriba; limpiando restos y reintentando ($i/3)…"
+              docker ps -a --filter "name=_avi-backend" -q | xargs -r docker rm -f || true
+              docker compose up -d avi-backend || true
+              sleep 4
+            done
+            
+            # Un verde con el servicio caído es peor que un rojo: si no arrancó, el paso FALLA.
+            if ! arriba; then
+              echo "[deploy] ERROR: avi-backend no está en ejecución tras 3 intentos"
+              docker compose ps
+              docker compose logs --tail 40 avi-backend || true
+              exit 1
+            fi
             docker compose ps avi-backend
+            echo "[deploy] avi-backend en ejecución OK"
