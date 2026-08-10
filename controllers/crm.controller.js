@@ -307,6 +307,9 @@ const listTasks = async (req, res) => {
       dueAt: r.due_at, assigneeId: r.assignee_id, assigneeName: r.assignee_name,
       status: r.status, priority: r.priority, type: r.type || 'general',
       refs: parseJ(r.refs, []),
+      // Tareas de tipo "flujo": qué flujo corre al vencer y, si falló, por qué. El motivo se
+      // devuelve para poder mostrarlo: si no, una tarea que no hizo nada no tiene explicación.
+      flowId: r.flow_id || '', flowError: r.flow_error || '',
       createdBy: r.created_by, createdAt: r.created_at, completedAt: r.completed_at,
     })))
   } catch (err) { res.status(500).json({ error: 'Error interno' }) }
@@ -314,14 +317,17 @@ const listTasks = async (req, res) => {
 
 const createTask = async (req, res) => {
   const { accId } = req.params
-  const { targetType = null, targetId = null, title = '', description = '', dueAt = null, assigneeId = null, assigneeName = '', priority = 'normal', type = 'general', refs = [] } = req.body || {}
+  const { targetType = null, targetId = null, title = '', description = '', dueAt = null, assigneeId = null, assigneeName = '', priority = 'normal', type = 'general', refs = [], flowId = null } = req.body || {}
   if (!title.trim()) return res.status(400).json({ error: 'title requerido' })
+  // Una tarea de tipo "flujo" sin flujo no haría nada al vencer, y el usuario no se enteraría
+  // hasta no ver que no pasó nada. Mejor rechazarla al crearla.
+  if (type === 'flujo' && !String(flowId || '').trim()) return res.status(400).json({ error: 'Elige el flujo que se ejecutará al vencer la tarea.' })
   const id = 'task_' + uid()
   try {
     await pool.query(
-      `INSERT INTO crm_tasks (id, account_id, target_type, target_id, title, description, due_at, assignee_id, assignee_name, status, priority, type, refs, created_by, created_at)
-       VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`,
-      [id, accId, targetType, targetId, title.trim(), description, dueAt, assigneeId, assigneeName, 'open', priority, type || 'general', JSON.stringify(Array.isArray(refs) ? refs : []), req.user?.name || '', Date.now()]
+      `INSERT INTO crm_tasks (id, account_id, target_type, target_id, title, description, due_at, assignee_id, assignee_name, status, priority, type, refs, flow_id, created_by, created_at)
+       VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`,
+      [id, accId, targetType, targetId, title.trim(), description, dueAt, assigneeId, assigneeName, 'open', priority, type || 'general', JSON.stringify(Array.isArray(refs) ? refs : []), flowId || null, req.user?.name || '', Date.now()]
     )
     if (targetType && targetId) {
       await logActivity({ accId, targetType, targetId, kind: 'task', title: 'Nueva tarea: ' + title, detail: assigneeName ? `Asignada a ${assigneeName}` : '', authorId: req.user?.id, authorName: req.user?.name })
@@ -336,13 +342,16 @@ const createTask = async (req, res) => {
 
 const updateTask = async (req, res) => {
   const { accId, id } = req.params
-  const { title, description, dueAt, assigneeId, assigneeName, status, priority, type, refs } = req.body || {}
+  const { title, description, dueAt, assigneeId, assigneeName, status, priority, type, refs, flowId } = req.body || {}
   try {
     const sets = []; const vals = []
     if (title       !== undefined) { sets.push('title=?');         vals.push(title) }
     if (description !== undefined) { sets.push('description=?');   vals.push(description) }
     if (type        !== undefined) { sets.push('type=?');          vals.push(type) }
-    if (dueAt       !== undefined) { sets.push('due_at=?');        vals.push(dueAt); sets.push('due_reminded_at=NULL') }
+    // Reprogramar una tarea de flujo debe darle otra oportunidad limpia: se reinician los
+    // intentos y el último error, o arrastraría el fallo de la fecha anterior.
+    if (dueAt       !== undefined) { sets.push('due_at=?');        vals.push(dueAt); sets.push('due_reminded_at=NULL', 'flow_runs=0', 'flow_error=NULL') }
+    if (flowId      !== undefined) { sets.push('flow_id=?');       vals.push(flowId || null) }
     if (assigneeId  !== undefined) { sets.push('assignee_id=?');   vals.push(assigneeId) }
     if (assigneeName!== undefined) { sets.push('assignee_name=?'); vals.push(assigneeName) }
     if (refs        !== undefined) { sets.push('refs=?');          vals.push(JSON.stringify(Array.isArray(refs) ? refs : [])) }

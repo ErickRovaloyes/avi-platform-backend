@@ -1565,6 +1565,11 @@ app.use('/api',                flowTemplatesRoutes)
     "ALTER TABLE members ADD COLUMN notif_prefs JSON",
     // Marca de "recordatorio de tarea por vencer ya enviado" (idempotencia del worker).
     "ALTER TABLE crm_tasks ADD COLUMN due_reminded_at BIGINT",
+    // Tareas de tipo "flujo": el flujo que se ejecuta al vencer. Columna propia y no dentro
+    // de `refs`, porque `refs` ya guarda un ARRAY de chats referenciados.
+    "ALTER TABLE crm_tasks ADD COLUMN flow_id VARCHAR(50)",
+    "ALTER TABLE crm_tasks ADD COLUMN flow_runs INT DEFAULT 0",
+    "ALTER TABLE crm_tasks ADD COLUMN flow_error TEXT",
     // Biblioteca GLOBAL de plantillas de flujos (creadas por el super admin; instalables
     // por cualquier dueño de cuenta desde la pestaña Flujos).
     `CREATE TABLE IF NOT EXISTS flow_templates (
@@ -1727,6 +1732,9 @@ app.use('/api',                flowTemplatesRoutes)
   try { require('./services/crmRules').startWorker() } catch (e) { console.warn('[crm rules] worker no iniciado:', e.message) }
   // Tareas periódicas del CRM: genera tareas recurrentes cuando llega su próxima fecha.
   try { require('./services/crmTaskSchedules').startWorker() } catch (e) { console.warn('[task schedules] worker no iniciado:', e.message) }
+  // Tareas de tipo "flujo": al vencer, ejecutan el flujo elegido sobre la conversación
+  // del contacto, en vez de limitarse a avisar a la persona asignada.
+  try { require('./services/taskFlows').startWorker() } catch (e) { console.warn('[task flows] worker no iniciado:', e.message) }
 
   try { require('./services/emailNotify').startWorker() } catch (e) { console.warn('[email notify] worker no iniciado:', e.message) }
   try { require('./services/scheduledMessages').startWorker() } catch (e) { console.warn('[scheduled messages] worker no iniciado:', e.message) }

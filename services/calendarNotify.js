@@ -165,16 +165,20 @@ async function notifyIa(accId, calendar, booking, event, instruction) {
   const r = await resolveBookingConvo(accId, calendar, booking)
   if (!r) return false
   const { callAI, detectProvider, resolveProviderKey } = require('../controllers/promptGenerator.controller')
-  const active = r.agent?.prompts?.find(p => p.isActive) || r.agent?.prompts?.[0]
-  const model = active?.model || 'gpt-4o-mini'
-  const provider = active?.provider || detectProvider(model)
+  // Lo escribe EL AGENTE con su prompt activo, entero. Antes el prompt se recortaba a 1.000
+  // caracteres y se envolvía en una personalidad propia, con maxTokens 200 fijo: por eso los
+  // recordatorios salían cortados y sin el tono configurado.
+  const { resolveActivePrompt, composeSystem } = require('./activePrompt')
+  const resolved = resolveActivePrompt({ ...(r.account || {}), agents: r.agent ? [r.agent] : [] }, r.agent?.id)
+  if (!resolved) return false
+  const { systemPrompt, model, temperature, maxTokens } = resolved
+  const provider = resolved.provider || detectProvider(model)
   const { key } = await resolveProviderKey(accId, provider)
   if (!key) return false
   const v = bookingVars(calendar, booking)
-  const persona = active?.content ? `Sigue esta personalidad/estilo:\n${String(active.content).slice(0, 1000)}\n\n` : ''
-  const sys = `${persona}Eres ${r.agent?.name || 'el asistente'}. ${instruction} Datos de la cita — cliente: ${v.cliente_nombre || 'el cliente'}, fecha: ${v.reserva_fecha}, hora: ${v.reserva_hora}, servicio: ${v.calendario}. Máximo 2 frases, tono natural y cálido, sin inventar datos. Responde SOLO con el mensaje para el cliente, sin comillas.`
+  const sys = composeSystem(systemPrompt, `${instruction} Datos de la cita — cliente: ${v.cliente_nombre || 'el cliente'}, fecha: ${v.reserva_fecha}, hora: ${v.reserva_hora}, servicio: ${v.calendario}. Tono natural y cálido, sin inventar datos. Responde SOLO con el mensaje para el cliente, sin comillas.`)
   try {
-    const resp = await callAI({ provider, model, apiKey: key, systemPrompt: sys, userPrompt: 'Mensaje:', maxTokens: 200, temperature: 0.5 })
+    const resp = await callAI({ provider, model, apiKey: key, systemPrompt: sys, userPrompt: 'Mensaje:', maxTokens, temperature })
     const text = (resp.text || '').trim()
     if (!text) return false
     const { sendBotMsg } = require('../flow/common')

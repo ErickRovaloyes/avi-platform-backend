@@ -54,7 +54,14 @@ async function tick() {
       if (!store.isEnabled(cfg)) continue
 
       // 1) ¿Ya se pagó? (sondeo)
-      const st = await store.getOrderStatus(accId, rec)
+      //
+      // El sondeo va en su PROPIO try: si la tienda no responde (API caída, token vencido,
+      // pedido borrado a mano), la excepción saltaba al catch de todo el bucle y este pedido
+      // se quedaba también sin el paso 2. Es decir: un fallo al consultar el estado dejaba
+      // el carrito sin recuperar, en silencio y para siempre.
+      let st = null
+      try { st = await store.getOrderStatus(accId, rec) }
+      catch (e) { console.warn('[cart recovery estado]', rec.order_id, e.message) }
       if (st?.paid) {
         await pool.query('UPDATE woo_orders SET status=?, paid_notified=1, updated_at=? WHERE id=?', [st.status || 'paid', now, rec.id])
         const tot = (st.total || rec.total) ? ` por ${st.total || rec.total} ${st.currency || rec.currency || ''}`.trimEnd() : ''

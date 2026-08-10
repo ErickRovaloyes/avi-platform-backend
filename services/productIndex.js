@@ -350,6 +350,36 @@ async function searchSmart(accId, query, opts = {}) {
   return store.searchProducts(accId, query, opts)
 }
 
+/**
+ * Categorías realmente presentes en el catálogo indexado.
+ *
+ * Sirve para que una búsqueda SIN resultados no acabe en un "no encontré nada" seco:
+ * ese hueco es justo donde el modelo se inventa un producto parecido. Devolviendo lo que
+ * SÍ existe, puede ofrecer alternativas reales en vez de rellenar de memoria.
+ *
+ * Sale del índice local (una consulta, sin llamar a la tienda). Si el índice está vacío
+ * o apagado, devuelve [] y quien llama se limita a decir que no hay.
+ */
+async function listCategories(accId, source = 'store', limit = 12) {
+  try {
+    const { platform } = await loadCtx(accId, source)
+    const [rows] = await pool.query(
+      'SELECT product_json FROM product_index WHERE account_id=? AND platform=? LIMIT 500',
+      [accId, platform]
+    )
+    const cuenta = new Map()
+    for (const r of rows) {
+      let p = null
+      try { p = typeof r.product_json === 'string' ? JSON.parse(r.product_json) : r.product_json } catch { continue }
+      for (const c of (p?.categories || [])) {
+        const nombre = String(typeof c === 'string' ? c : c?.name || '').trim()
+        if (nombre) cuenta.set(nombre, (cuenta.get(nombre) || 0) + 1)
+      }
+    }
+    return [...cuenta].sort((a, b) => b[1] - a[1]).slice(0, limit).map(([n]) => n)
+  } catch (e) { console.warn('[product index categorías]', e.message); return [] }
+}
+
 // Búsqueda inteligente del Catálogo Meta con fallback al scoring por tokens actual.
 async function searchSmartMeta(accId, query, opts = {}) {
   const vi = await getSettings(accId, 'meta')
@@ -432,7 +462,7 @@ async function purge(accId, platform = null) {
 module.exports = {
   getSettings, saveSettings, normalizeSettings, resolveOpenaiKey,
   fullSync, syncOne, removeOne, enqueueChange, flushQueue,
-  searchVector, searchSmart, searchSmartMeta,
+  searchVector, searchSmart, searchSmartMeta, listCategories,
   startWorker, tick, status, purge, isSyncing, indexedIds,
   // puras (tests):
   buildStableText, buildContentDoc, hashContent, tokenScore, rankProducts, shouldRunScheduledSync,

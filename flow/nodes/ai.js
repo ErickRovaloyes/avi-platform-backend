@@ -322,14 +322,99 @@ async function sendCmsResource(ctx, args) {
 }
 
 // ── Tienda WooCommerce: herramienta especial con varias funciones ──────────────
+/**
+ * Respuesta a una búsqueda SIN resultados.
+ *
+ * "No encontré productos" a secas es el hueco donde el modelo se inventa un producto
+ * parecido, que es exactamente el fallo reportado. Devolver las categorías que SÍ existen
+ * le da con qué ofrecer alternativas reales, y le recuerda que no puede tirar de memoria.
+ */
+async function emptySearchHint(accId, consulta, cargarCategorias) {
+  let cats = []
+  try { cats = await cargarCategorias() } catch { cats = [] }
+  const base = `No hay ningún producto que coincida con "${consulta}" en el catálogo.`
+  if (!cats.length) {
+    return `${base} NO inventes ni sugieras productos: dile con naturalidad que eso no lo manejan y pregúntale qué más necesita.`
+  }
+  return `${base} Lo que SÍ hay en el catálogo son estas categorías: ${cats.join(', ')}.`
+    + ' Ofrécele alternativas SOLO de esas categorías, y búscalas primero con buscar_productos para confirmar precio y disponibilidad. NO menciones ningún producto que no hayas buscado.'
+}
+
+/**
+ * Normaliza lo que manda la IA a una lista de líneas `{ nombre, cantidad }`.
+ *
+ * Acepta la forma nueva (`items: [{producto, cantidad}]`) y la antigua (`producto` y
+ * `cantidad` sueltos), porque un modelo puede seguir usando la vieja: el molde guía,
+ * no obliga. Sin esta tolerancia, un despiste del modelo dejaría al cliente sin pedido.
+ */
+function normalizeOrderItems(args) {
+  const crudas = Array.isArray(args?.items) && args.items.length
+    ? args.items
+    : (args?.producto ? [{ producto: args.producto, cantidad: args.cantidad }] : [])
+  const out = []
+  for (const it of crudas) {
+    // El modelo a veces manda la línea como texto suelto en vez de objeto.
+    const nombre = String((typeof it === 'string' ? it : it?.producto ?? it?.nombre) || '').trim()
+    if (!nombre) continue
+    const cantidad = Math.max(1, parseInt(typeof it === 'string' ? 1 : it?.cantidad, 10) || 1)
+    out.push({ nombre, cantidad })
+  }
+  return out
+}
+
+/**
+ * Resuelve cada línea contra el buscador de productos.
+ *
+ * Devuelve las líneas resueltas y los nombres que NO se encontraron. Quien llama decide
+ * qué hacer con los fallos; aquí no se crea nada a medias.
+ *
+ * Las líneas que resuelven al MISMO producto se fusionan sumando cantidades: si el
+ * cliente dice "dos camisas y otra camisa más", debe salir una línea de 3, no dos líneas
+ * del mismo artículo en la misma factura.
+ */
+async function resolveOrderLines(pedidas, buscar) {
+  const lineas = []
+  const faltantes = []
+  const porClave = new Map()
+  for (const { nombre, cantidad } of pedidas) {
+    let encontrado = null
+    try { encontrado = (await buscar(nombre))?.[0] || null } catch { encontrado = null }
+    if (!encontrado) { faltantes.push(nombre); continue }
+    const clave = `${encontrado.id}|${encontrado.variantId || ''}`
+    const ya = porClave.get(clave)
+    if (ya) { ya.cantidad += cantidad; continue }
+    const linea = { product: encontrado, cantidad, pedido: nombre }
+    porClave.set(clave, linea)
+    lineas.push(linea)
+  }
+  return { lineas, faltantes }
+}
+
 const WOO_FUNCS = new Set(['buscar_productos', 'enviar_producto', 'crear_pedido', 'ver_pedido'])
 function buildWooToolDefs(account) {
   const storeSvc = require('../../services/store')
   const fields = account?.woocommerce?.orderForm || []
   const labels = storeSvc.ORDER_FIELD_LABELS
+  // UN pedido puede llevar VARIOS productos. Antes el molde solo tenía sitio para uno
+  // (`producto` + `cantidad`), así que ante "quiero A y B" el modelo o llamaba dos veces
+  // —dos pedidos y dos links de pago— o se dejaba un producto fuera. Ambos síntomas
+  // reportados salían de aquí. `producto`/`cantidad` se conservan por compatibilidad:
+  // si un modelo los manda sueltos, se convierten en una lista de un elemento.
   const pedidoProps = {
-    producto: { type: 'string', description: 'Producto que quiere comprar' },
-    cantidad: { type: 'string', description: 'Cantidad (por defecto 1)' },
+    items: {
+      type: 'array',
+      description: 'TODOS los productos del pedido. Si el cliente pide varios, van TODOS aquí en una sola llamada: NO llames a esta herramienta más de una vez.',
+      items: {
+        type: 'object',
+        properties: {
+          producto: { type: 'string', description: 'Nombre del producto' },
+          cantidad: { type: 'integer', description: 'Unidades (por defecto 1)' },
+        },
+        required: ['producto'],
+      },
+    },
+    producto: { type: 'string', description: 'OBSOLETO: usa "items". Solo para pedidos de un único producto.' },
+    cantidad: { type: 'string', description: 'OBSOLETO: cantidad del campo "producto".' },
   }
   // Cada dato configurado se expone como parámetro; la validación de OBLIGATORIOS se
   // hace en el servidor (más fiable que marcarlos required en el schema).
@@ -338,7 +423,8 @@ function buildWooToolDefs(account) {
     pedidoProps[f.key] = { type: 'string', description: `${labels[f.key]} del cliente${f.required ? ' (OBLIGATORIO: si no lo tienes, PÍDESELO al cliente antes de crear el pedido)' : ' (si lo tienes)'}` }
   }
   const req = fields.filter(f => f.required && labels[f.key]).map(f => labels[f.key])
-  const pedidoDesc = 'Crea un pedido en la tienda y envía al usuario el LINK DE PAGO. Úsalo SOLO cuando el usuario confirme que quiere comprar.'
+  const pedidoDesc = 'Crea UN pedido en la tienda y envía al usuario UN ÚNICO link de pago. Úsalo SOLO cuando el usuario confirme que quiere comprar.'
+    + ' Si el cliente pide VARIOS productos, inclúyelos TODOS en "items" en UNA SOLA llamada — nunca llames varias veces, porque generarías varios pedidos y varios links de pago.'
     + (req.length ? ` ANTES debes tener estos datos del cliente (pídeselos si faltan): ${req.join(', ')}.` : '')
     + ' Tras el pago, se confirma automáticamente.'
   // Si la gestión de pedidos está desactivada, la IA solo consulta productos y
@@ -346,14 +432,18 @@ function buildWooToolDefs(account) {
   const ordersOff = account?.woocommerce?.ordersEnabled === false
   const defs = [
     { type: 'function', function: { name: 'buscar_productos',
-      description: 'Busca productos en la tienda para responder preguntas sobre disponibilidad, precios o características. Devuelve nombre, precio y descripción de los productos que coincidan.',
-      parameters: { type: 'object', properties: { consulta: { type: 'string', description: 'Nombre, categoría o palabras clave del producto que busca el usuario' } }, required: ['consulta'] } } },
+      description: 'Consulta el catálogo REAL de la tienda. Es tu ÚNICA fuente sobre qué se vende: tú no sabes qué hay en stock.\n'
+        + 'ÚSALA SIEMPRE ANTES DE RESPONDER cuando el cliente:\n'
+        + '· pregunte por un producto, su precio o su disponibilidad;\n'
+        + '· exprese una NECESIDAD, un problema, un gusto o una situación, aunque no nombre ningún producto. Ejemplos: "tengo calor" → busca "ventilador aire acondicionado refrescante"; "no duermo bien" → busca "almohada colchón descanso"; "busco un regalo para mi mamá" → busca "regalo"; "algo para la lluvia" → busca "impermeable paraguas".\n'
+        + 'NUNCA recomiendes ni menciones un producto que no haya salido de esta búsqueda: no puedes saber si existe. Si dudas, busca.',
+      parameters: { type: 'object', properties: { consulta: { type: 'string', description: 'Palabras clave de lo que necesita el cliente. Si expresó una necesidad y no un producto, traduce la necesidad a los productos que podrían resolverla.' } }, required: ['consulta'] } } },
     { type: 'function', function: { name: 'enviar_producto',
       description: 'Envía al usuario un producto con sus FOTOS y una ficha (nombre, precio, link). Úsalo cuando el usuario quiera VER un producto o pida su foto/presentación/catálogo.',
       parameters: { type: 'object', properties: { producto: { type: 'string', description: 'Nombre o palabras clave del producto a enviar' } }, required: ['producto'] } } },
     ...(ordersOff ? [] : [{ type: 'function', function: { name: 'crear_pedido',
       description: pedidoDesc,
-      parameters: { type: 'object', properties: pedidoProps, required: ['producto'] } } }]),
+      parameters: { type: 'object', properties: pedidoProps, required: ['items'] } } }]),
     { type: 'function', function: { name: 'ver_pedido',
       description: 'Consulta el ESTADO actual de un pedido en la tienda (seguimiento). Úsalo cuando el cliente pregunte por su pedido, envío o estado. Si no da el número, se usa el último pedido de esta conversación.',
       parameters: { type: 'object', properties: {
@@ -370,7 +460,7 @@ async function wooExec(ctx, fnName, args) {
   try {
     if (fnName === 'buscar_productos') {
       const list = await store.searchProductsSmart(accId, args?.consulta || args?.query || '')
-      if (!list.length) return 'No encontré productos para esa búsqueda en la tienda.'
+      if (!list.length) return await emptySearchHint(accId, args?.consulta || args?.query || '', () => require('../../services/productIndex').listCategories(accId, 'store'))
       logDebug(ctx, 'tool_result', `🛒 ${list.length} producto(s) encontrados`, {})
       return 'Productos encontrados:\n' + list.slice(0, 8).map((p, i) => {
         const d = (p.shortDescription || p.description || '').slice(0, 200)
@@ -391,12 +481,16 @@ async function wooExec(ctx, fnName, args) {
     }
     if (fnName === 'crear_pedido') {
       if (cfg?.ordersEnabled === false) return 'La creación de pedidos está desactivada: un asesor humano gestionará el pedido. Ayuda al cliente con información de productos y avísale que un asesor tomará su pedido.'
-      // El índice solo RESUELVE el producto; el pedido se crea contra la API viva
+      // El índice solo RESUELVE los productos; el pedido se crea contra la API viva
       // (la tienda calcula el precio real al crear el pedido).
-      const list = await store.searchProductsSmart(accId, args?.producto || '')
-      const p = list[0]
-      if (!p) return `No encontré el producto "${args?.producto || ''}" en la tienda. Pídele al cliente que confirme el nombre exacto o búscalo con buscar_productos.`
-      const qty = Math.max(1, parseInt(args?.cantidad) || 1)
+      const pedidas = normalizeOrderItems(args)
+      if (!pedidas.length) return 'No me indicaste qué productos lleva el pedido. Confirma con el cliente qué quiere y vuelve a llamar crear_pedido con todos los productos en "items".'
+      const { lineas, faltantes } = await resolveOrderLines(pedidas, q => store.searchProductsSmart(accId, q))
+      // Un pedido a medias que además se cobra es peor que ninguno: si algo no se
+      // resuelve, no se crea nada y se le dice al modelo QUÉ falló para que pregunte.
+      if (faltantes.length) {
+        return `No encontré en la tienda: ${faltantes.map(f => `"${f}"`).join(', ')}. NO se creó ningún pedido. Confirma con el cliente el nombre exacto de ${faltantes.length > 1 ? 'esos productos' : 'ese producto'} (o búscalo con buscar_productos) y vuelve a llamar crear_pedido con TODOS los productos juntos.`
+      }
       // Datos del cliente/envío CONFIGURABLES: se recogen de los argumentos de la IA y,
       // como respaldo, de variables/conversación para nombre/teléfono/email.
       const fields = ctx.account?.woocommerce?.orderForm || []
@@ -418,12 +512,16 @@ async function wooExec(ctx, fnName, args) {
       // Valida los OBLIGATORIOS configurados: si falta alguno, pídeselo (no crea el pedido).
       const missing = fields.filter(f => f.required && labels[f.key] && !String(customer[f.key] || '').trim()).map(f => labels[f.key])
       if (missing.length) return `Antes de crear el pedido necesito estos datos del cliente para el envío/facturación: ${missing.join(', ')}. Pídeselos al cliente y vuelve a llamar crear_pedido con esos datos.`
-      const order = await store.createOrder(accId, { items: [{ productId: p.id, variantId: p.variantId, quantity: qty }], customer, convId: ctx.convId, agId: ctx.agId })
+      const order = await store.createOrder(accId, {
+        items: lineas.map(l => ({ productId: l.product.id, variantId: l.product.variantId, quantity: l.cantidad })),
+        customer, convId: ctx.convId, agId: ctx.agId,
+      })
       // Mensaje del evento "pedido creado" según la config (default/IA/flujo/off).
-      const vars = { pay_url: order.payUrl, total: order.total, currency: order.currency, pedido_id: order.orderId, pedido_items: `${qty} × ${p.name}`, pedido_estado: order.status || 'pending' }
+      const resumen = lineas.map(l => `${l.cantidad} × ${l.product.name}`).join(', ')
+      const vars = { pay_url: order.payUrl, total: order.total, currency: order.currency, pedido_id: order.orderId, pedido_items: resumen, pedido_estado: order.status || 'pending' }
       await require('../../services/orderNotify').emit(accId, ctx.agId, ctx.convId, 'created', vars, ctx)
-      logDebug(ctx, 'tool_result', `🛒 Pedido #${order.orderId} creado (${order.total} ${order.currency})`, {})
-      return `Pedido #${order.orderId} creado por ${order.total} ${order.currency}. Link de pago: ${order.payUrl}.`
+      logDebug(ctx, 'tool_result', `🛒 Pedido #${order.orderId} creado · ${lineas.length} línea(s) · ${order.total} ${order.currency}`, { items: resumen })
+      return `Pedido #${order.orderId} creado con ${lineas.length} producto(s) (${resumen}) por ${order.total} ${order.currency}. Link de pago ÚNICO para todo el pedido: ${order.payUrl}. No crees otro pedido.`
     }
     if (fnName === 'ver_pedido') {
       let orderId = String(args?.numero_pedido || '').replace(/[^\d]/g, '')
@@ -452,8 +550,12 @@ const CATALOG_FUNCS = new Set(['buscar_en_catalogo', 'enviar_producto_catalogo',
 function buildCatalogToolDefs() {
   return [
     { type: 'function', function: { name: 'buscar_en_catalogo',
-      description: 'Busca productos en el catálogo conectado para responder preguntas sobre disponibilidad, precios o características. Devuelve nombre, precio y descripción de los que coincidan.',
-      parameters: { type: 'object', properties: { consulta: { type: 'string', description: 'Nombre, categoría o palabras clave del producto' } }, required: ['consulta'] } } },
+      description: 'Consulta el catálogo REAL conectado. Es tu ÚNICA fuente sobre qué se vende: tú no sabes qué hay.\n'
+        + 'ÚSALA SIEMPRE ANTES DE RESPONDER cuando el cliente:\n'
+        + '· pregunte por un producto, su precio o su disponibilidad;\n'
+        + '· exprese una NECESIDAD, un problema, un gusto o una situación, aunque no nombre ningún producto. Ejemplos: "tengo calor" → busca "ventilador aire acondicionado refrescante"; "no duermo bien" → busca "almohada colchón descanso"; "busco un regalo" → busca "regalo".\n'
+        + 'NUNCA recomiendes ni menciones un producto que no haya salido de esta búsqueda: no puedes saber si existe. Si dudas, busca.',
+      parameters: { type: 'object', properties: { consulta: { type: 'string', description: 'Palabras clave de lo que necesita el cliente. Si expresó una necesidad y no un producto, traduce la necesidad a los productos que podrían resolverla.' } }, required: ['consulta'] } } },
     { type: 'function', function: { name: 'enviar_producto_catalogo',
       description: 'Envía al usuario un producto del catálogo con su FOTO y ficha (nombre, precio, link). Úsalo cuando el usuario quiera VER un producto o pida su foto.',
       parameters: { type: 'object', properties: { producto: { type: 'string', description: 'Nombre o palabras clave del producto a enviar' } }, required: ['producto'] } } },
@@ -461,8 +563,19 @@ function buildCatalogToolDefs() {
       description: 'Envía al usuario el catálogo completo (lista de productos con precios). Úsalo cuando el usuario pida ver todo el catálogo o "qué productos tienen".',
       parameters: { type: 'object', properties: {} } } },
     { type: 'function', function: { name: 'crear_pedido_catalogo',
-      description: 'Genera un pedido a partir de un producto del catálogo. Si hay pasarela de pago conectada, envía el link de pago; si no, registra el pedido para que un asesor lo confirme. Úsalo SOLO cuando el usuario confirme que quiere comprar.',
-      parameters: { type: 'object', properties: { producto: { type: 'string', description: 'Producto que quiere comprar' }, cantidad: { type: 'string', description: 'Cantidad (por defecto 1)' } }, required: ['producto'] } } },
+      description: 'Genera UN pedido a partir de productos del catálogo y envía UN ÚNICO link de pago (o lo registra para que un asesor lo confirme, si no hay pasarela). Úsalo SOLO cuando el usuario confirme que quiere comprar. Si pide VARIOS productos, van TODOS en "items" en UNA SOLA llamada: llamar varias veces generaría varios pedidos y varios links de pago.',
+      parameters: { type: 'object', properties: {
+        items: {
+          type: 'array',
+          description: 'TODOS los productos del pedido, en una sola llamada.',
+          items: { type: 'object', properties: {
+            producto: { type: 'string', description: 'Nombre del producto en el catálogo' },
+            cantidad: { type: 'integer', description: 'Unidades (por defecto 1)' },
+          }, required: ['producto'] },
+        },
+        producto: { type: 'string', description: 'OBSOLETO: usa "items".' },
+        cantidad: { type: 'string', description: 'OBSOLETO: cantidad del campo "producto".' },
+      }, required: ['items'] } } },
   ]
 }
 async function catalogExec(ctx, fnName, args) {
@@ -471,7 +584,7 @@ async function catalogExec(ctx, fnName, args) {
   try {
     if (fnName === 'buscar_en_catalogo') {
       const list = await require("../../services/productIndex").searchSmartMeta(accId, args?.consulta || args?.query || '')
-      if (!list.length) return 'No encontré productos para esa búsqueda en el catálogo.'
+      if (!list.length) return await emptySearchHint(accId, args?.consulta || args?.query || '', () => require('../../services/productIndex').listCategories(accId, 'meta'))
       logDebug(ctx, 'tool_result', `🛍 ${list.length} producto(s) en catálogo`, {})
       return 'Productos encontrados:\n' + list.slice(0, 8).map((p, i) => {
         const d = (p.description || '').slice(0, 160)
@@ -500,22 +613,29 @@ async function catalogExec(ctx, fnName, args) {
       return `Envié el catálogo (${shown.length} de ${list.length} productos) al usuario.`
     }
     if (fnName === 'crear_pedido_catalogo') {
-      const list = await require("../../services/productIndex").searchSmartMeta(accId, args?.producto || '')
-      const p = list[0]
-      if (!p) return 'No encontré ese producto en el catálogo para crear el pedido.'
-      const qty = Math.max(1, parseInt(args?.cantidad) || 1)
-      const unit = parseFloat(String(p.price || '').replace(/[^\d.,]/g, '').replace(/\.(?=\d{3}\b)/g, '').replace(',', '.')) || 0
-      const total = unit * qty
+      const pedidas = normalizeOrderItems(args)
+      if (!pedidas.length) return 'No me indicaste qué productos lleva el pedido. Confirma con el cliente y vuelve a llamar con todos los productos en "items".'
+      const idx = require('../../services/productIndex')
+      const { lineas, faltantes } = await resolveOrderLines(pedidas, q => idx.searchSmartMeta(accId, q))
+      // Igual que en la tienda: nada de pedidos a medias. Si falta un producto, no se
+      // cobra por los demás sin que el cliente lo sepa.
+      if (faltantes.length) {
+        return `No encontré en el catálogo: ${faltantes.map(f => `"${f}"`).join(', ')}. NO se creó ningún pedido. Confirma con el cliente el nombre exacto y vuelve a llamar con TODOS los productos juntos.`
+      }
+      const precioDe = p => parseFloat(String(p.price || '').replace(/[^\d.,]/g, '').replace(/\.(?=\d{3}\b)/g, '').replace(',', '.')) || 0
+      const total = lineas.reduce((suma, l) => suma + precioDe(l.product) * l.cantidad, 0)
+      const detalle = lineas.map(l => `${l.cantidad} × ${l.product.name}`).join('\n')
+      const resumen = lineas.map(l => `${l.cantidad} × ${l.product.name}`).join(', ')
       if (ctx.account?.payments?.connected && total > 0) {
         const payments = require('../../services/payments')
-        const r = await payments.createPaymentLink(accId, { amount: total, description: `${qty} × ${p.name}`, convId: ctx.convId, agId: ctx.agId })
-        await sendBotMsg(ctx, `🛒 Pedido: ${qty} × ${p.name}\nTotal: ${r.amount} ${r.currency}\n\n💳 Paga aquí:\n${r.url}\n\nApenas completes el pago te confirmo automáticamente.`)
-        logDebug(ctx, 'tool_result', `🛒 Pedido catálogo ${r.amount} ${r.currency}`, {})
-        return `Pedido creado por ${r.amount} ${r.currency} y envié el link de pago al usuario.`
+        const r = await payments.createPaymentLink(accId, { amount: total, description: resumen.slice(0, 200), convId: ctx.convId, agId: ctx.agId })
+        await sendBotMsg(ctx, `🛒 Pedido:\n${detalle}\nTotal: ${r.amount} ${r.currency}\n\n💳 Paga aquí:\n${r.url}\n\nApenas completes el pago te confirmo automáticamente.`)
+        logDebug(ctx, 'tool_result', `🛒 Pedido catálogo · ${lineas.length} línea(s) · ${r.amount} ${r.currency}`, { items: resumen })
+        return `Pedido creado con ${lineas.length} producto(s) (${resumen}) por ${r.amount} ${r.currency} y envié UN link de pago para todo. No crees otro pedido.`
       }
-      await sendBotMsg(ctx, `🛒 Pedido registrado:\n${qty} × ${p.name}${total ? `\nTotal estimado: ${total} ${p.currency || ''}` : ''}\n\nUn asesor confirmará tu pedido en breve.`)
-      logDebug(ctx, 'tool_result', `🛒 Pedido catálogo registrado (${qty} × ${p.name})`, {})
-      return `Pedido de ${qty} × ${p.name} registrado (sin pasarela de pago conectada; lo confirmará un asesor).`
+      await sendBotMsg(ctx, `🛒 Pedido registrado:\n${detalle}${total ? `\nTotal estimado: ${total} ${lineas[0].product.currency || ''}` : ''}\n\nUn asesor confirmará tu pedido en breve.`)
+      logDebug(ctx, 'tool_result', `🛒 Pedido catálogo registrado · ${lineas.length} línea(s)`, { items: resumen })
+      return `Pedido de ${resumen} registrado (sin pasarela de pago conectada; lo confirmará un asesor). No crees otro pedido.`
     }
   } catch (e) {
     logDebug(ctx, 'error', `Catálogo: ${e.message}`, {})
@@ -626,6 +746,11 @@ async function recontactExec(ctx, fnName, args) {
     // sustituiría todas las variables de la conversación.
     // Reactivar guarda cadena vacía a propósito: el worker comprueba truthy, así que '0' NO reactivaría.
     await store.setLocalVar(ctx.accId, ctx.agId, ctx.convId, '_recontact_stopped', stop ? '1' : '')
+    // Al reactivar hay que levantar TAMBIÉN el cierre del caso. El worker se salta la
+    // conversación si ve CUALQUIERA de las dos banderas, y cerrar el caso pone las dos
+    // (flow/nodes/human.js). Limpiando solo una, la IA respondía "los recontactos vuelven a
+    // estar activos" y el worker seguía ignorando la conversación: el fallo reportado.
+    if (!stop) await store.setLocalVar(ctx.accId, ctx.agId, ctx.convId, '_case_status', '')
     logDebug(ctx, 'flow_run', stop ? '🛑 Marcado como NO recontactable' : '🔁 Recontactos reactivados',
       { motivo: args?.motivo || undefined })
     return stop
@@ -646,7 +771,7 @@ function buildLabelToolDefs(account) {
   return [
     { type: 'function', function: {
       name: 'aplicar_etiqueta',
-      description: `Etiqueta esta conversación para clasificar al cliente. Aplica una etiqueta solo cuando su descripción encaje de verdad con lo que dice el cliente. Etiquetas disponibles:\n${menu}`,
+      description: `Etiqueta esta conversación para clasificar al cliente. Aplica una etiqueta solo cuando su descripción encaje de verdad con lo que dice el cliente.\nEtiquetar es INDEPENDIENTE de mover el ticket: si el cliente avanzó de etapa Y además encaja una etiqueta, haz las DOS cosas en este turno.\nEtiquetas disponibles:\n${menu}`,
       parameters: { type: 'object', properties: { etiqueta: { type: 'string', description: etiquetaDesc } }, required: ['etiqueta'] },
     } },
     { type: 'function', function: {
@@ -686,7 +811,18 @@ const PIPELINE_FUNCS = new Set(['crear_ticket', 'mover_ticket'])
 function buildPipelineToolDefs(account) {
   const pipes = account?.aiPipelines || []
   if (!pipes.length) return []
-  const menu = pipes.map(p => `- Pipeline "${p.name}" → etapas: ${(p.stages || []).map(s => `"${s.name}"`).join(', ') || '(sin etapas)'}`).join('\n')
+  // El menú incluye la DESCRIPCIÓN de cada etapa cuando la hay. Con solo los nombres, ante
+  // etapas como "En proceso" o "Seguimiento" el modelo no tiene forma de saber cuál toca, y
+  // por eso ubicaba mal a los clientes. La descripción es lo que convierte la lista en un
+  // criterio. Las etapas apagadas para la IA ya vienen filtradas de la cuenta.
+  const menu = pipes.map(p => {
+    const stages = p.stages || []
+    if (!stages.length) return `- Pipeline "${p.name}" → (sin etapas disponibles)`
+    const conDesc = stages.some(s => s.description)
+    if (!conDesc) return `- Pipeline "${p.name}" → etapas: ${stages.map(s => `"${s.name}"`).join(', ')}`
+    return `- Pipeline "${p.name}" → etapas:\n`
+      + stages.map(s => `    · "${s.name}"${s.description ? `: ${s.description}` : ''}`).join('\n')
+  }).join('\n')
   const multi = pipes.length > 1
   const pipeDesc = multi
     ? `Nombre del pipeline. Disponibles:\n${menu}`
@@ -695,7 +831,10 @@ function buildPipelineToolDefs(account) {
   return [
     { type: 'function', function: {
       name: 'mover_ticket',
-      description: `Mueve el ticket de ESTA conversación a otra etapa del pipeline, cuando la conversación muestre que el cliente avanzó. Si aún no tiene ticket, se crea en esa etapa.\n${menu}`,
+      // Mover el ticket y etiquetar son acciones INDEPENDIENTES, y hay que decirlo: si no,
+      // el modelo trata "mover el ticket" como LA acción del turno y se deja la etiqueta sin
+      // poner, que es el fallo de "a veces etiqueta y a veces no" cuando toca hacer ambas.
+      description: `Mueve el ticket de ESTA conversación a otra etapa del pipeline, cuando la conversación muestre que el cliente avanzó. Si aún no tiene ticket, se crea en esa etapa.\nMover el ticket NO etiqueta la conversación: son acciones distintas. Si además corresponde una etiqueta, llama TAMBIÉN a la herramienta de etiquetas en este mismo turno.\n${menu}`,
       parameters: { type: 'object', properties: {
         etapa: { type: 'string', description: etapaDesc },
         pipeline: { type: 'string', description: pipeDesc },
@@ -703,7 +842,7 @@ function buildPipelineToolDefs(account) {
     } },
     { type: 'function', function: {
       name: 'crear_ticket',
-      description: `Crea el ticket de ESTA conversación en un pipeline. Úsalo cuando aparezca una oportunidad de negocio que aún no está registrada.\n${menu}`,
+      description: `Crea el ticket de ESTA conversación en un pipeline. Úsalo cuando aparezca una oportunidad de negocio que aún no está registrada.\nCrear el ticket NO etiqueta la conversación: son acciones distintas. Si además corresponde una etiqueta, llama TAMBIÉN a la herramienta de etiquetas en este mismo turno.\n${menu}`,
       parameters: { type: 'object', properties: {
         etapa: { type: 'string', description: etapaDesc },
         pipeline: { type: 'string', description: pipeDesc },

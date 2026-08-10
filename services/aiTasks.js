@@ -10,6 +10,9 @@ const pool = require('../db')
 const { uid, parseJ } = require('../utils')
 
 // Mismo catálogo que frontend/src/lib/taskTypes.js — si diverge, la tarea se ve sin icono.
+// `flujo` no está aquí a propósito: esas tareas las crea una persona eligiendo el flujo en
+// el panel, y la IA no tiene forma de elegirlo. Si pudiera pedirlo, crearía tareas de tipo
+// flujo sin flujo asignado, que no harían nada.
 const TYPES = ['general', 'llamada', 'whatsapp', 'correo', 'reunion', 'seguimiento']
 const PRIORITIES = ['low', 'normal', 'high']
 

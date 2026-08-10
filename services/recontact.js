@@ -119,18 +119,24 @@ function publicConfig(raw) {
 
 // Genera, con IA, un mensaje de recontacto analizando dónde quedó la conversación.
 async function generateRecontactMessage(accId, agId, convId, account, extraInstructions) {
-  const agent = account.agents?.find(a => a.id === agId)
-  const active = agent?.prompts?.find(p => p.isActive) || agent?.prompts?.[0]
-  const model = active?.model || 'gpt-4o-mini'
-  const provider = detectProvider(model)
+  // El mensaje lo escribe EL AGENTE con su prompt activo: su tono, sus reglas y su techo
+  // de tokens. Antes se componía aquí un prompt propio con maxTokens 160, y por eso los
+  // recontactos salían cortados y sin la personalidad configurada.
+  const { resolveActivePrompt, composeSystem } = require('./activePrompt')
+  const resolved = resolveActivePrompt(account, agId)
+  if (!resolved) return null
+  const { systemPrompt, model, temperature, maxTokens } = resolved
+  const provider = resolved.provider || detectProvider(model)
   const { key } = await resolveProviderKey(accId, provider)
   if (!key) return null
   const [rows] = await pool.query('SELECT sender, content FROM messages WHERE conversation_id=? ORDER BY ts DESC LIMIT 8', [convId])
   const history = rows.reverse().map(m => `${m.sender === 'user' ? 'Cliente' : 'Agente'}: ${(m.content || '').slice(0, 300)}`).join('\n')
   const extra = String(extraInstructions || '').trim()
-  const sys = `Eres ${agent?.name || 'un asistente'} de atención al cliente. El cliente dejó de responder hace un rato. Redacta UN solo mensaje breve, cálido y natural para retomar la conversación EXACTAMENTE donde quedó (haz referencia a lo último que se habló) e invítalo a continuar. No te disculpes en exceso, no inventes datos ni precios. Máximo 2 frases. Responde SOLO con el mensaje, sin comillas.${extra ? `\n\nINSTRUCCIONES ADICIONALES (tienen prioridad): ${extra}` : ''}`
+  const encargo = 'El cliente dejó de responder hace un rato. Redacta UN solo mensaje para retomar la conversación EXACTAMENTE donde quedó (haz referencia a lo último que se habló) e invítalo a continuar. No te disculpes en exceso y no inventes datos ni precios. Responde SOLO con el mensaje, sin comillas.'
+    + (extra ? `\n\nINSTRUCCIONES ADICIONALES (tienen prioridad): ${extra}` : '')
+  const sys = composeSystem(systemPrompt, encargo)
   try {
-    const r = await callAI({ provider, model, apiKey: key, systemPrompt: sys, userPrompt: `Conversación hasta ahora:\n${history}\n\nMensaje de recontacto:`, maxTokens: 160, temperature: 0.6 })
+    const r = await callAI({ provider, model, apiKey: key, systemPrompt: sys, userPrompt: `Conversación hasta ahora:\n${history}\n\nMensaje de recontacto:`, maxTokens, temperature })
     try { require('../controllers/analytics.controller').recordUsageInternal({ accId, agentId: agId, conversationId: convId, provider, model, promptTokens: r.usage?.promptTokens || 0, completionTokens: r.usage?.completionTokens || 0, source: 'recontact' }) } catch {}
     return (r.text || '').trim()
   } catch (e) { console.warn('[recontact LLM]', e.message); return null }
@@ -300,7 +306,11 @@ async function tick() {
         const occ = nthOccurrence(cfg.steps, cfg.repeat, count)
         if (!occ) continue   // secuencia terminada (no hay más ocurrencias)
         const step = occ.step
-        if ((conv.updated_at || 0) > now - step.delayMinutes * 60000) continue  // aún no toca este paso
+        // `Date.now()` recalculado, NO el `now` del principio del tick: entre uno y otro se
+        // recorren cuentas y se hacen consultas, y con el reloj viejo un paso ya vencido
+        // parecía pendiente y se iba al escaneo siguiente. Ese desfase era parte de por qué
+        // un recontacto de 2 min llegaba a los 3 o 4.
+        if ((conv.updated_at || 0) > Date.now() - step.delayMinutes * 60000) continue  // aún no toca
 
         try { await processConversation(a.id, conv, step, account) } catch (e) { console.warn('[recontact conv]', e.message) }
       }
@@ -309,14 +319,17 @@ async function tick() {
 }
 
 let _timer = null
+const SCAN_MS = 15 * 1000
 function startWorker() {
   if (_timer) return
-  // Cada minuto: el mínimo de espera de un paso es 1 min, así que el escaneo debe
-  // ser igual de fino para no retrasar los recontactos cortos. El prefiltro es
-  // selectivo (solo cuentas con recontact y convos ya vencidas), así que es barato.
-  _timer = setInterval(() => tick().catch(() => {}), 60 * 1000)
+  // Cada 15 s. Con un escaneo de 60 s el retraso llegaba a ser de casi un minuto entero:
+  // un paso de 2 min vence a los 120 s, pero el tick siguiente podía caer en el 179. Como
+  // los ticks no están alineados con el vencimiento, la única forma de cumplir un tiempo
+  // corto es escanear más fino. El prefiltro solo mira cuentas con recontactos activos y
+  // conversaciones ya vencidas, así que el coste por pasada es mínimo.
+  _timer = setInterval(() => tick().catch(() => {}), SCAN_MS)
   _timer.unref?.()
-  setTimeout(() => tick().catch(() => {}), 30000) // primer pase a los 30s
+  setTimeout(() => tick().catch(() => {}), 5000) // primer pase a los 5 s
 }
 
 module.exports = { getConfig, saveConfig, publicConfig, tick, startWorker, diagnose, testNow }

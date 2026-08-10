@@ -52,16 +52,21 @@ async function resolveConv(accId, agId, convId) {
 }
 
 // Genera el mensaje con la IA usando el prompt activo del agente.
-async function generateIa(accId, agent, convId, event, v) {
-  const active = agent?.prompts?.find(p => p.isActive) || agent?.prompts?.[0]
-  const model = active?.model || 'gpt-4o-mini'
-  const provider = active?.provider || detectProvider(model)
+async function generateIa(accId, agent, convId, event, v, account) {
+  // Lo escribe EL AGENTE con su prompt activo, entero. Antes el prompt se recortaba a 1.200
+  // caracteres y se envolvía en una personalidad propia, con maxTokens 220 fijo: de ahí que
+  // los avisos salieran cortados y sin el tono configurado.
+  const { resolveActivePrompt, composeSystem } = require('./activePrompt')
+  // Se pasa la cuenta para no perder su modelo por defecto cuando el prompt no fija uno.
+  const resolved = resolveActivePrompt({ ...(account || {}), agents: agent ? [agent] : [] }, agent?.id)
+  if (!resolved) return null
+  const { systemPrompt, model, temperature, maxTokens } = resolved
+  const provider = resolved.provider || detectProvider(model)
   const { key } = await resolveProviderKey(accId, provider)
   if (!key) return null
-  const persona = active?.content ? `Sigue esta personalidad/estilo:\n${String(active.content).slice(0, 1200)}\n\n` : ''
-  const sys = `${persona}Eres ${agent?.name || 'el asistente'} de la tienda. ${iaInstruction(event, v)} Máximo 2 frases, tono natural y cálido, sin inventar datos ni precios. Responde SOLO con el mensaje para el cliente, sin comillas.`
+  const sys = composeSystem(systemPrompt, `${iaInstruction(event, v)} Tono natural y cálido, sin inventar datos ni precios. Responde SOLO con el mensaje para el cliente, sin comillas.`)
   try {
-    const r = await callAI({ provider, model, apiKey: key, systemPrompt: sys, userPrompt: 'Mensaje:', maxTokens: 220, temperature: 0.5 })
+    const r = await callAI({ provider, model, apiKey: key, systemPrompt: sys, userPrompt: 'Mensaje:', maxTokens, temperature })
     try { require('../controllers/analytics.controller').recordUsageInternal({ accId, agentId: agent?.id, conversationId: convId, provider, model, promptTokens: r.usage?.promptTokens || 0, completionTokens: r.usage?.completionTokens || 0, source: 'order_notify' }) } catch {}
     return (r.text || '').trim()
   } catch (e) { console.warn('[orderNotify IA]', e.message); return null }
@@ -88,7 +93,7 @@ async function emit(accId, agId, convId, event, vars = {}, aiCtx = null) {
     }
 
     let text = ''
-    if (conf.mode === 'ia' && rc.agent) text = await generateIa(accId, rc.agent, convId, event, vars)
+    if (conf.mode === 'ia' && rc.agent) text = await generateIa(accId, rc.agent, convId, event, vars, rc.account)
     if (!text) text = defaultMessage(event, vars)   // IA falló o modo default
     if (!text) return
     const sendCtx = aiCtx || { accId, agId: aid, convId, _outbound: outbound }

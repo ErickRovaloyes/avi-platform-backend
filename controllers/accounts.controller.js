@@ -276,9 +276,16 @@ async function loadPublicAccount(accId) {
     variables: variables.map(v => ({ id: v.id, name: v.name, type: v.type, defaultValue: v.default_value, description: v.description, isSystem: !!v.is_system, aiEnabled: v.ai_enabled == null ? true : !!v.ai_enabled })),
     // Etiquetas y pipelines que el asistente PUEDE usar (solo los marcados).
     aiLabels: aiLabels.map(l => ({ id: l.id, name: l.name, color: l.color, description: l.description || '' })),
+    // Las etapas llevan su DESCRIPCIÓN («cuándo poner un cliente aquí»): con solo el nombre,
+    // ante etapas tipo "En proceso" o "Seguimiento" el asistente no tenía criterio para
+    // decidir dónde ubicar al cliente. Y se excluyen las que el negocio haya apagado para la
+    // IA (aiEnabled === false): si no están en el menú, no las puede usar.
     aiPipelines: aiPipelines.map(p => ({
       id: p.id, name: p.name,
-      stages: [...parseJ(p.stages, [])].sort((a, b) => (a.order || 0) - (b.order || 0)).map(s => ({ id: s.id, name: s.name })),
+      stages: [...parseJ(p.stages, [])]
+        .sort((a, b) => (a.order || 0) - (b.order || 0))
+        .filter(s => s.aiEnabled !== false)
+        .map(s => ({ id: s.id, name: s.name, description: s.description || '' })),
     })),
     members: members.map(mapNamed),
     aiTools:   [SPECIAL_CMS_TOOL, ...specialTools(), ...aiTools.map(t => ({ id: t.id, name: t.name, description: t.description, collectFields: parseJ(t.collect_fields, []), flowId: t.flow_id, actionType: t.action_type || 'variable' }))],
