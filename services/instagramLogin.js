@@ -128,10 +128,16 @@ async function accountInfo(token) {
   } catch (e) { return { ok: false, error: e.message } }
 }
 
+// Campos que necesita la cuenta. `messages` trae los DM; `messaging_seen` es el aviso de
+// LEÍDO, y sin él la paloma se queda en «enviado» para siempre: se pedía solo `messages`,
+// así que en las cuentas conectadas por aquí Meta nunca tuvo motivo para avisar del visto.
+// (Instagram no tiene campo de ENTREGA: en ese canal se pasa de enviado a visto sin escala.)
+const CAMPOS = 'messages,messaging_seen'
+
 /** Suscribe la cuenta a los webhooks de mensajes. Sin esto no llega ningún DM. */
 async function subscribe(igUserId, token) {
   try {
-    const r = await fetch(`${GRAPH}/${encodeURIComponent(igUserId)}/subscribed_apps?subscribed_fields=messages&access_token=${encodeURIComponent(token)}`, { method: 'POST' })
+    const r = await fetch(`${GRAPH}/${encodeURIComponent(igUserId)}/subscribed_apps?subscribed_fields=${CAMPOS}&access_token=${encodeURIComponent(token)}`, { method: 'POST' })
     const d = await r.json().catch(() => ({}))
     if (!r.ok || !d?.success) return { ok: false, error: d?.error?.message || `HTTP ${r.status}` }
     return { ok: true }
@@ -167,6 +173,17 @@ async function tick() {
       for (const ch of chans) {
         const cfg = ch?.config
         if (ch?.type !== 'instagram' || cfg?.mode !== 'instagram' || !cfg?.igAccessToken) continue
+
+        // Los canales conectados ANTES de añadir messaging_seen se quedaron suscritos solo a
+        // `messages`, y sin eso no llega el aviso de leído. Se resuscriben aquí, una vez, en
+        // lugar de pedirte que reconectes todos los canales a mano: volver a suscribir es
+        // idempotente, así que repetirlo no rompe nada.
+        if (cfg.camposWebhook !== CAMPOS) {
+          const s = await subscribe(cfg.igUserId, cfg.igAccessToken)
+          if (s.ok) { cfg.camposWebhook = CAMPOS; cambio = true; console.log('[instagramLogin] resuscrito a', CAMPOS, cfg.igUserId) }
+          else console.warn('[instagramLogin] no se pudo resuscribir', cfg.igUserId, s.error)
+        }
+
         if (!needsRefresh(cfg.igTokenExpiry)) continue
         const r = await refreshToken(cfg.igAccessToken)
         if (r.ok) { cfg.igAccessToken = r.token; cfg.igTokenExpiry = r.expiresAt; cambio = true; console.log('[instagramLogin] token renovado', cfg.igUserId) }
@@ -187,5 +204,5 @@ function startWorker() {
 
 module.exports = {
   config, isConfigured, authorizeUrl, exchangeCode, accountInfo, subscribe,
-  refreshToken, needsRefresh, signState, verifyState, startWorker, tick, SCOPES, GRAPH,
+  refreshToken, needsRefresh, signState, verifyState, startWorker, tick, SCOPES, GRAPH, CAMPOS,
 }

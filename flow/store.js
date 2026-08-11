@@ -270,6 +270,31 @@ async function getMessageByProviderId(convId, providerId) {
   } catch { return null }
 }
 
+/**
+ * Instante de un mensaje a partir del id que le dio el proveedor.
+ *
+ * El acuse de lectura de Instagram no dice "todo lo anterior a tal hora", como Messenger:
+ * nombra UN mensaje (`read.mid`). Para reutilizar markReadUpTo hace falta traducir ese id al
+ * momento en que se envió, y a partir de ahí vale la misma regla de "todo lo anterior".
+ *
+ * Devuelve null si no lo encuentra, que es un caso normal y no un error: si respondiste
+ * desde la app de Instagram, ese mensaje nunca pasó por aquí.
+ */
+async function messageTsByProviderId(convId, providerId) {
+  if (!convId || !providerId) return null
+  try {
+    const [[m]] = await pool.query(
+      `SELECT ts FROM messages
+       WHERE conversation_id=?
+         AND (JSON_UNQUOTE(JSON_EXTRACT(metadata,'$.waMessageId'))=?
+           OR JSON_UNQUOTE(JSON_EXTRACT(metadata,'$.providerMsgId'))=?)
+       ORDER BY ts DESC LIMIT 1`,
+      [convId, String(providerId), String(providerId)]
+    )
+    return m ? Number(m.ts) : null
+  } catch (e) { console.warn('[messageTsByProviderId]', e.message); return null }
+}
+
 // Lee los bytes de un medio nuestro (tabla media) para subirlos a un canal.
 async function getMediaBytes(accId, mediaId) {
   if (!mediaId) return null
@@ -327,7 +352,7 @@ async function markReadUpTo(convId, watermark) {
 module.exports = {
   loadAccount, readConvos, appendMsg, updateConvo, setLocalVar, appendDebugEntry,
   createOrGetWhatsAppConvo, createOrGetMessengerConvo, createOrGetInstagramConvo,
-  markReadUpTo,
+  markReadUpTo, messageTsByProviderId,
   recordTokenUsage, messageExistsByProviderId, updateMessageStatus,
   saveExecution, getMediaBytes, getMessageByProviderId, recountCampaignStats, lastUserText,
 }

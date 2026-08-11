@@ -343,12 +343,28 @@ function parseInstagramWebhook(body) {
         // LECTURA solo trae una marca de tiempo y significa "todo lo enviado antes de este
         // instante ya se leyó" — tratarla como un mensaje suelto dejaría el resto del chat
         // en "entregado" para siempre.
+        // Instagram NO emite acuse de entrega: su webhook solo tiene messages y
+        // messaging_seen. Esta rama queda por si Meta lo añadiera; hoy no entra nunca.
         if (event.delivery) {
           acuses.push({ tipo: 'delivered', mids: event.delivery.mids || [], watermark: event.delivery.watermark || 0, recipientId: event.sender?.id || event.recipient?.id })
           continue
         }
         if (event.read) {
-          acuses.push({ tipo: 'read', mids: [], watermark: event.read.watermark || 0, recipientId: event.sender?.id || event.recipient?.id })
+          // Instagram NO manda watermark: manda el `mid` del mensaje leído. Se leía
+          // `read.watermark`, que aquí siempre viene vacío, y el acuse se descartaba entero
+          // por la comprobación de más adelante. Por eso el visto no funcionaba nunca en
+          // este canal, aunque Meta lo estuviera enviando.
+          //
+          // El `timestamp` del evento —el instante en que lo leyó— sirve de watermark de
+          // reserva para cuando el mid no se encuentre: no todo saliente es nuestro, un
+          // mensaje escrito desde la app de Instagram no está en nuestra base.
+          acuses.push({
+            tipo: 'read', mids: [],
+            mid: event.read.mid || null,
+            watermark: event.read.watermark || 0,
+            ts: event.timestamp || 0,
+            recipientId: event.sender?.id || event.recipient?.id,
+          })
           continue
         }
       // is_echo = mensaje enviado por el NEGOCIO (app de Instagram, plataforma u otra

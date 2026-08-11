@@ -116,12 +116,21 @@ async function fetchProfile(psid, token, kind = 'messenger', pageId = '') {
  * Es para diagnóstico: cuando el nombre no aparece, `fetchProfile` devuelve null y el
  * porqué se queda en el log del servidor, donde nadie puede verlo.
  */
-async function probeProfile(psid, token, kind = 'messenger', pageId = '') {
+async function probeProfile(psid, token, kind = 'messenger', pageId = '', nativo = false) {
   if (!psid) return { ok: false, error: 'No hay ninguna conversación de este canal todavía.' }
-  if (!token) return { ok: false, error: 'El canal no tiene Page Access Token guardado.' }
+  if (!token) {
+    return { ok: false, error: nativo
+      ? 'El canal no tiene token de Instagram guardado. Reconéctalo.'
+      : 'El canal no tiene Page Access Token guardado.' }
+  }
   const fields = kind === 'instagram' ? 'name,username,profile_pic' : 'first_name,last_name,profile_pic'
+  // Un Instagram conectado con su propio inicio de sesión no cuelga de ninguna Página: va por
+  // graph.instagram.com y con SU token. Se consultaba siempre por la vía de Página, así que
+  // en esos canales el diagnóstico decía "falta el Page Access Token" y no llegaba a probar
+  // nada — justo en el caso que había que averiguar.
+  const base = nativo ? 'https://graph.instagram.com' : GRAPH
   try {
-    const r = await fetch(`${GRAPH}/${encodeURIComponent(psid)}?fields=${fields}&access_token=${encodeURIComponent(token)}`)
+    const r = await fetch(`${base}/${encodeURIComponent(psid)}?fields=${fields}&access_token=${encodeURIComponent(token)}`)
     const d = await r.json().catch(() => ({}))
     if (!r.ok) {
       // Vía directa rechazada: se prueba la de conversaciones, que es la que suele funcionar.
@@ -136,8 +145,12 @@ async function probeProfile(psid, token, kind = 'messenger', pageId = '') {
     const name = kind === 'instagram'
       ? (d.name || d.username || '')
       : [d.first_name, d.last_name].filter(Boolean).join(' ')
-    if (!name) return { ok: false, error: 'Meta respondió correctamente pero sin nombre (perfil restringido o normativa de privacidad de la región).' }
-    return { ok: true, name }
+    // El usuario se devuelve APARTE del nombre. Colapsarlos en uno hacía imposible saber si
+    // el enlace al perfil (instagram.com/usuario) se puede componer o no: con `name` lleno y
+    // `username` vacío el diagnóstico decía "se lee correctamente" y el enlace no salía.
+    const username = d.username || ''
+    if (!name) return { ok: false, username, error: 'Meta respondió correctamente pero sin nombre (perfil restringido o normativa de privacidad de la región).' }
+    return { ok: true, name, username }
   } catch (e) { return { ok: false, error: e.message } }
 }
 

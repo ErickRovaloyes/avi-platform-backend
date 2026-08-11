@@ -88,6 +88,10 @@ const callback = async (req, res) => {
       igAccessToken: tok.token,
       igTokenExpiry: tok.expiresAt,
       igPhoto: info.photo || '',
+      // Qué campos se suscribieron de verdad. El worker compara esto con la lista actual y
+      // resuscribe los canales que se conectaron antes de añadir alguno — así no hay que
+      // reconectar a mano cada vez que se necesite un campo nuevo del webhook.
+      ...(sub.ok ? { camposWebhook: ig.CAMPOS } : {}),
     }
     ch.status = 'connected'
     await pool.query('UPDATE agents SET channels=? WHERE id=?', [JSON.stringify(chans), st.agentId])

@@ -300,7 +300,11 @@ async function processMessenger(accId, agentId, body) {
           'SELECT id FROM conversations WHERE account_id=? AND agent_id=? AND messenger_from=?',
           [accId, agentId, ack.recipientId]
         )
-        if (cv) await store.markReadUpTo(cv.id, ack.watermark)
+        // Con traza: si el visto no aparece, esto distingue "Meta no manda el acuse"
+        // (no sale nada en el registro) de "llega y no se aplica".
+        if (!cv) { console.warn('[messenger acuse] leído sin conversación para', ack.recipientId); continue }
+        const n = await store.markReadUpTo(cv.id, ack.watermark)
+        console.log(`[messenger acuse] leído · conv ${cv.id} · corte ${ack.watermark} · ${n} mensajes marcados`)
       }
     } catch (e) { console.warn('[messenger acuse]', e.message) }
   }
@@ -404,13 +408,23 @@ async function processInstagram(accId, agentId, body) {
       if (ack.tipo === 'delivered') {
         // La entrega SÍ nombra los mensajes concretos.
         for (const mid of ack.mids) await store.updateMessageStatus(mid, 'delivered').catch(() => {})
-      } else if (ack.tipo === 'read' && ack.watermark) {
-        // La lectura solo trae una marca de tiempo: aplica a todo lo anterior.
+      } else if (ack.tipo === 'read') {
+        // Instagram nombra UN mensaje (`read.mid`) en vez de dar una marca de tiempo. Se
+        // traduce a su instante y se aplica la misma regla que en Messenger: todo lo
+        // anterior queda leído. Si el mid no está en la base —lo respondiste desde la app
+        // de Instagram, por ejemplo— vale el instante del propio evento, que es cuando lo
+        // leyó. Sin este respaldo un solo mensaje ajeno dejaría el chat entero sin marcar.
         const [[cv]] = await require('../db').query(
           'SELECT id FROM conversations WHERE account_id=? AND agent_id=? AND ig_from=?',
           [accId, agentId, ack.recipientId]
         )
-        if (cv) await store.markReadUpTo(cv.id, ack.watermark)
+        if (!cv) { console.warn('[instagram acuse] leído sin conversación para', ack.recipientId); continue }
+        let corte = ack.watermark || 0
+        if (!corte && ack.mid) corte = await store.messageTsByProviderId(cv.id, ack.mid) || 0
+        if (!corte) corte = ack.ts || 0
+        if (!corte) { console.warn('[instagram acuse] leído sin punto de corte', JSON.stringify(ack)); continue }
+        const n = await store.markReadUpTo(cv.id, corte)
+        console.log(`[instagram acuse] leído · conv ${cv.id} · corte ${corte} · ${n} mensajes marcados`)
       }
     } catch (e) { console.warn('[instagram acuse]', e.message) }
   }

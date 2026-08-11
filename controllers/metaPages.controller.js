@@ -456,6 +456,21 @@ const diagnose = async (req, res) => {
 
     const { accId, agentId, channelId, kind = 'messenger' } = req.body || {}
 
+    // Config REAL del canal. Hace falta para saber si este Instagram se conectó con su propio
+    // inicio de sesión (mode 'instagram'): esa vía no cuelga de ninguna Página, usa otra API
+    // y otro token, y sin distinguirla el diagnóstico probaba con el token equivocado.
+    let cfgCanal = {}
+    if (accId && agentId) {
+      try {
+        const { parseJ } = require('../utils')
+        const [[ag]] = await pool.query('SELECT channels FROM agents WHERE id=? AND account_id=?', [agentId, accId])
+        const chans = parseJ(ag?.channels, [])
+        cfgCanal = (chans.find(c => c.id === channelId) || chans.find(c => c.type === kind) || {}).config || {}
+      } catch (e) { console.warn('[diagnose canal]', e.message) }
+    }
+    const igNativo = esIg && cfgCanal.mode === 'instagram'
+    const tokenPerfil = igNativo ? cfgCanal.igAccessToken : pageAccessToken
+
     // 3) ¿De qué página es REALMENTE el token guardado? Un token de USUARIO, o el de otra
     // página, deja pasar unas llamadas y falla otras: los mensajes llegan, pero leer el
     // perfil de quien escribe da error 100 ("does not exist... missing permissions"). Es
@@ -498,11 +513,28 @@ const diagnose = async (req, res) => {
           const mp = require('../services/metaProfile')
           let mejor = null
           for (const c of rows) {
-            const probe = await mp.probeProfile(c.psid, pageAccessToken, kind, pageId)
+            const probe = await mp.probeProfile(c.psid, tokenPerfil, kind, igNativo ? '' : pageId, igNativo)
             if (probe.ok) { mejor = { probe, c }; break }
             if (!mejor) mejor = { probe, c }
           }
           const { probe, c } = mejor
+
+          // El ENLACE al perfil depende de un dato distinto del nombre: el @usuario. Meta
+          // puede devolver el nombre y no el usuario, y entonces el enlace es imposible de
+          // componer aunque todo lo demás esté bien. Sin separarlo, el diagnóstico decía
+          // "se lee correctamente" mientras la fila «Perfil» seguía sin aparecer.
+          if (esIg) {
+            add(!!probe.username, 'Enlace al perfil de Instagram',
+              probe.username
+                ? `Meta devuelve el usuario (@${probe.username}), así que el enlace se puede componer. `
+                  + 'En los chats abiertos antes de esto aparece al llegar su próximo mensaje.'
+                : probe.ok
+                  ? 'Meta devuelve el NOMBRE pero no el campo "username", que es lo único con lo que se '
+                    + 'arma instagram.com/usuario. Sin él no hay enlace posible: suele pasar con perfiles '
+                    + 'restringidos o cuando la app no tiene Acceso Avanzado a instagram_business_basic.'
+                  : `No se pudo comprobar porque no se lee el perfil. Meta responde: ${probe.error}`)
+          }
+
           const ref = `${c.guest_name || 'sin nombre'} · …${String(c.psid || '').slice(-6)}`
           add(probe.ok, 'Nombre de quien escribe',
             probe.ok
@@ -528,6 +560,33 @@ const diagnose = async (req, res) => {
           tieneSeen
             ? 'El campo messaging_seen está suscrito. Instagram NO emite acuse de ENTREGA, así que la paloma pasa de «enviado» a «visto» sin escala.'
             : 'Falta el campo "messaging_seen" en el webhook del objeto instagram: sin él no llega el aviso de leído y la paloma se queda en «enviado». Añádelo donde suscribiste "messages".')
+
+        // Hay DOS suscripciones y ambas hacen falta: la de la APP (arriba, en el panel de
+        // Meta) y la de ESTA CUENTA a la app. La de la cuenta la hacemos nosotros al
+        // conectar, y durante un tiempo solo pidió "messages" — por eso podía estar todo
+        // verde arriba y aun así no llegar el aviso de leído.
+        if (igNativo && cfgCanal.igUserId && cfgCanal.igAccessToken) {
+          try {
+            const r = await fetch(`https://graph.instagram.com/${encodeURIComponent(cfgCanal.igUserId)}/subscribed_apps?access_token=${encodeURIComponent(cfgCanal.igAccessToken)}`)
+            const d = await r.json().catch(() => ({}))
+            const campos = (d?.data || []).flatMap(a => a.subscribed_fields || [])
+            const ok = campos.includes('messaging_seen')
+            add(ok, 'La cuenta de Instagram suscrita al visto',
+              ok ? `Correcto · campos: ${campos.join(', ')}`
+                 : `La cuenta está suscrita a: ${campos.join(', ') || 'nada'} — falta "messaging_seen". Se corrige solo en menos de 12 h; para no esperar, reconecta el canal.`)
+          } catch (e) { add(false, 'La cuenta de Instagram suscrita al visto', 'No se pudo consultar: ' + e.message) }
+        }
+      } else {
+        // Messenger sí tiene acuse de entrega y de lectura, pero son campos DISTINTOS. Tener
+        // message_deliveries y no message_reads da exactamente el síntoma de "el entregado
+        // funciona y el visto no", y desde fuera parece un fallo de la plataforma.
+        const tieneReads = camposObjeto.includes('message_reads')
+        add(tieneReads, 'Palomas de visto (Messenger)',
+          tieneReads
+            ? 'El campo message_reads está suscrito.'
+            : `Falta el campo "message_reads" en el webhook del objeto page (tiene: ${camposObjeto.join(', ') || 'ninguno'}). `
+              + 'Es un campo aparte de "message_deliveries": por eso el ENTREGADO funciona y el VISTO no. '
+              + 'Actívalo en Meta → tu app → Messenger → Configuración → Webhooks, en el mismo sitio donde marcaste "messages".')
       }
 
     if (esIg) {
