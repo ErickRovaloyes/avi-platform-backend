@@ -78,7 +78,16 @@ function buildOutbound(agent, channelType, channelId, to) {
   if (channelType === 'instagram') {
     const ch = (channelId && chans.find(c => c.type === 'instagram' && c.id === channelId)) || chans.find(c => c.type === 'instagram')
     const cfg = ch?.config || {}
-    if (!cfg.igAccountId || !cfg.pageAccessToken || !to) return null
+    if (!to) return null
+    // Inicio nativo: token propio de Instagram, sin Página de por medio.
+    if (cfg.mode === 'instagram') {
+      if (!cfg.igAccessToken) return null
+      return async (text, meta) => {
+        const body = meta?.media?.url ? `${text ? text + '\n' : ''}${meta.media.url}` : text
+        if (body) return sendInstagramText({ igAccessToken: cfg.igAccessToken, igUserId: cfg.igUserId, recipientId: to, text: body })
+      }
+    }
+    if (!cfg.igAccountId || !cfg.pageAccessToken) return null
     return async (text, meta) => { const body = meta?.media?.url ? `${text ? text + '\n' : ''}${meta.media.url}` : text; if (body) return sendInstagramText({ igAccountId: cfg.igAccountId, pageAccessToken: cfg.pageAccessToken, recipientId: to, text: body }) }
   }
   return null

@@ -139,6 +139,7 @@ app.use('/api/guest', guestRouter)
 
 app.use('/api/auth',          authRoutes)
 app.use('/api/accounts',      accountRoutes)
+app.use('/api',               require('./routes/instagramOauth.routes'))   // OAuth de Instagram (redirección)
 app.use('/api',               agentRoutes)
 app.use('/api',               memberRoutes)
 app.use('/api',               pipelineRoutes)
@@ -1572,6 +1573,11 @@ app.use('/api',                flowTemplatesRoutes)
     // no vuelve a ejecutarse, así que el DEFAULT hay que cambiarlo aparte para las cuentas
     // NUEVAS. Las existentes conservan la suya (puede ser una elección deliberada).
     "ALTER TABLE accounts ALTER COLUMN ai_timezone SET DEFAULT 'America/Bogota'",
+    // Instagram API con Instagram Login: credenciales PROPIAS del producto Instagram, distintas
+    // de las de la app de Facebook. Sin ellas el inicio nativo queda apagado.
+    "ALTER TABLE platform_settings ADD COLUMN instagram_app_id VARCHAR(64) DEFAULT ''",
+    "ALTER TABLE platform_settings ADD COLUMN instagram_app_secret VARCHAR(200) DEFAULT ''",
+    "ALTER TABLE platform_settings ADD COLUMN instagram_redirect_uri VARCHAR(300) DEFAULT ''",
     "ALTER TABLE calendars ALTER COLUMN timezone SET DEFAULT 'America/Bogota'",
     "ALTER TABLE crm_tasks ADD COLUMN flow_runs INT DEFAULT 0",
     "ALTER TABLE crm_tasks ADD COLUMN flow_error TEXT",
@@ -1740,6 +1746,9 @@ app.use('/api',                flowTemplatesRoutes)
   // Tareas de tipo "flujo": al vencer, ejecutan el flujo elegido sobre la conversación
   // del contacto, en vez de limitarse a avisar a la persona asignada.
   try { require('./services/taskFlows').startWorker() } catch (e) { console.warn('[task flows] worker no iniciado:', e.message) }
+  // Token de Instagram (inicio nativo): caduca a los 60 días. Sin renovarlo, el canal deja de
+  // enviar sin más aviso que el silencio.
+  try { require('./services/instagramLogin').startWorker() } catch (e) { console.warn('[instagram login] worker no iniciado:', e.message) }
 
   try { require('./services/emailNotify').startWorker() } catch (e) { console.warn('[email notify] worker no iniciado:', e.message) }
   try { require('./services/scheduledMessages').startWorker() } catch (e) { console.warn('[scheduled messages] worker no iniciado:', e.message) }

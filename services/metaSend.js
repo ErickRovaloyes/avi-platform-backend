@@ -278,8 +278,29 @@ function parseMessengerWebhook(body) {
 // Como ambas se usan en la práctica y /me/messages con un IGSID da a veces (#100)
 // "No matching user found", se intenta primero el de la cuenta IG y, si falla, se
 // reintenta con /me/messages. Así funciona sin importar la variante de conexión.
-async function sendInstagramText({ igAccountId, pageAccessToken, recipientId, text }) {
+/**
+ * @param {string} igAccessToken  Token propio de Instagram (inicio nativo). Si viene, se envía
+ *                                por graph.instagram.com y NO se usa el token de la Página:
+ *                                son credenciales distintas y la de Página no vale ahí.
+ */
+async function sendInstagramText({ igAccountId, pageAccessToken, recipientId, text, igAccessToken, igUserId }) {
   const body = JSON.stringify({ recipient: { id: recipientId }, message: { text } })
+
+  // Inicio de sesión nativo de Instagram: otra API y otro token.
+  if (igAccessToken) {
+    const url = `https://graph.instagram.com/v21.0/${encodeURIComponent(igUserId || 'me')}/messages`
+    try {
+      const res = await fetch(url, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${igAccessToken}` },
+        body,
+      })
+      if (res.ok) return res.json()
+      const err = await res.json().catch(() => ({}))
+      throw new Error(`[Instagram] ${err?.error?.message || `HTTP ${res.status}`}`)
+    } catch (e) { throw new Error(e.message.startsWith('[Instagram]') ? e.message : `[Instagram] ${e.message}`) }
+  }
+
   const paths = []
   if (igAccountId) paths.push(`${igAccountId}/messages`)
   paths.push('me/messages')

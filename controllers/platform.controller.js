@@ -63,6 +63,11 @@ const getSettings = async (req, res) => {
           // El App Secret solo lo ve el super admin; al resto se le indica si existe.
           metaAppSecret: isSA ? (r.meta_app_secret || '') : '',
           hasMetaAppSecret: !!r.meta_app_secret,
+          // Instagram API con Instagram Login: producto aparte, credenciales propias.
+          instagramAppId: r.instagram_app_id || '',
+          instagramRedirectUri: r.instagram_redirect_uri || '',
+          instagramAppSecret: isSA ? (r.instagram_app_secret || '') : '',
+          hasInstagramAppSecret: !!r.instagram_app_secret,
           // Credenciales OAuth de Google (Calendar + Sheets). El secret solo lo ve el SA.
           googleClientId: r.google_client_id || '',
           googleClientSecret: isSA ? (r.google_client_secret || '') : '',
@@ -179,6 +184,7 @@ const updateSettings = async (req, res) => {
   const {
     changeAgentModel, changeAgentDefaultLimit, changeAgentTokenLimits, changeAgentTokenLimit, changeAgentCaps,
     channelLimits, metaAppId, metaConfigId, metaPagesConfigId, metaAppSecret,
+    instagramAppId, instagramAppSecret, instagramRedirectUri,
     googleClientId, googleClientSecret, googleRedirectUri, googleApiKey,
     promptGeneratorModel, promptGeneratorStructure, promptGeneratorConditions,
     promptGeneratorMaxTokens, promptGeneratorTemperature, promptGeneratorMaxDocChars,
@@ -211,6 +217,9 @@ const updateSettings = async (req, res) => {
     if (metaAppId                 !== undefined) { sets.push('meta_app_id=?');                  vals.push(metaAppId) }
     if (metaConfigId              !== undefined) { sets.push('meta_config_id=?');               vals.push(metaConfigId) }
     if (metaPagesConfigId         !== undefined) { sets.push('meta_pages_config_id=?');         vals.push(String(metaPagesConfigId || '').trim()) }
+    if (instagramAppId            !== undefined) { sets.push('instagram_app_id=?');            vals.push(String(instagramAppId || '').trim()) }
+    if (instagramAppSecret        !== undefined) { sets.push('instagram_app_secret=?');        vals.push(String(instagramAppSecret || '').trim()) }
+    if (instagramRedirectUri      !== undefined) { sets.push('instagram_redirect_uri=?');      vals.push(String(instagramRedirectUri || '').trim()) }
     if (returningNoticeDefault    !== undefined) { sets.push('returning_notice_default=?');     vals.push(String(returningNoticeDefault || '').slice(0, 4000)) }
     // Solo se actualiza el secret si llega un valor no vacío (evita borrarlo al guardar enmascarado)
     if (metaAppSecret             !== undefined && metaAppSecret !== '') { sets.push('meta_app_secret=?'); vals.push(metaAppSecret) }

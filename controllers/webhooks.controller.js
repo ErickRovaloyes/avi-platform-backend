@@ -314,7 +314,10 @@ const instagramReceiveGlobal = async (req, res) => {
   res.sendStatus(200)
   for (const entry of (req.body?.entry || [])) {
     try {
+      // Según cómo se conectara la cuenta, el identificador vive en un campo u otro:
+      // `igAccountId` (vía Página) o `igUserId` (inicio nativo de Instagram).
       const target = await findAgentByChannel('instagram', 'igAccountId', entry.id)
+        || await findAgentByChannel('instagram', 'igUserId', entry.id)
       if (!target) { console.warn(`[IG global] sin agente · igId=${entry.id}`); continue }
       let payload = { object: 'instagram', entry: [entry] }
       try { payload = await enrichInstagramPayloadWithMedia(target.accId, target.agentId, payload) } catch (e) { console.error('[IG global media]', e.message) }

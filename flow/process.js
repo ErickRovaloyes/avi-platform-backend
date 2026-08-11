@@ -357,11 +357,16 @@ async function processInstagram(accId, agentId, body) {
     if (alreadyProcessed(msg.messageId)) { console.log('[flow/process] IG duplicado ignorado:', msg.messageId); continue }
 
     const channel = (agent.channels || []).find(
-      ch => ch.type === 'instagram' && ch.status === 'connected' && ch.config?.igAccountId === msg.igAccountId
+      ch => ch.type === 'instagram' && ch.status === 'connected'
+        && (ch.config?.igAccountId === msg.igAccountId || ch.config?.igUserId === msg.igAccountId)
     )
     if (!channel) { console.warn('[flow/process] Canal Instagram no encontrado:', msg.igAccountId); continue }
 
-    const perfilIg = await metaProfile.fetchProfile(msg.senderId, channel.config?.pageAccessToken, "instagram", channel.config?.pageId)
+    // Inicio nativo: el perfil se lee con el token propio de Instagram; el de la Página
+    // no vale porque esa cuenta no cuelga de ninguna Página.
+    const perfilIg = channel.config?.mode === "instagram"
+      ? await metaProfile.fetchInstagramNative(msg.senderId, channel.config?.igAccessToken)
+      : await metaProfile.fetchProfile(msg.senderId, channel.config?.pageAccessToken, "instagram", channel.config?.pageId)
     const nombreIg = msg.senderName || perfilIg?.name || ""
     const convId = await store.createOrGetInstagramConvo(accId, agentId, msg.senderId, nombreIg, channel.id, metaOrigin(msg.referral))
     await upgradeGuestName(convId, nombreIg, perfilIg?.photo)
@@ -402,6 +407,10 @@ async function processInstagram(accId, agentId, body) {
 
     const igOutbound = async (text, meta) => {
       const body = meta?.media?.url ? `${text ? text + '\n' : ''}${meta.media.url}` : text
+      // Inicio nativo: token propio de Instagram y otra API. El de la Página no sirve ahí.
+      if (body && channel.config?.mode === 'instagram') {
+        return await sendInstagramText({ igAccessToken: channel.config.igAccessToken, igUserId: channel.config.igUserId, recipientId: msg.senderId, text: body })
+      }
       if (body) return await sendInstagramText({ igAccountId: channel.config.igAccountId, pageAccessToken: channel.config.pageAccessToken, recipientId: msg.senderId, text: body })
     }
     const _returningNotice = channel?.config?.returningNotice || ''

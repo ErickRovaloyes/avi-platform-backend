@@ -132,4 +132,29 @@ async function probeProfile(psid, token, kind = 'messenger', pageId = '') {
   } catch (e) { return { ok: false, error: e.message } }
 }
 
-module.exports = { fetchProfile, probeProfile, fetchFromConversations, isPlaceholder }
+/**
+ * Perfil de quien escribe cuando la cuenta se conectó con el INICIO NATIVO de Instagram.
+ *
+ * Es otra API (graph.instagram.com) y otro token: el de la Página no sirve, porque en ese modo
+ * la cuenta no cuelga de ninguna Página. A cambio es más directo que la vía por Página, que
+ * necesita el rodeo por la lista de conversaciones.
+ */
+async function fetchInstagramNative(igsid, token) {
+  if (!igsid || !token) return null
+  const hit = cache.get(igsid)
+  if (hit && Date.now() - hit.at < TTL) return hit.name || hit.photo ? hit : null
+  try {
+    const r = await fetch(`https://graph.instagram.com/${encodeURIComponent(igsid)}?fields=name,username,profile_pic&access_token=${encodeURIComponent(token)}`)
+    const d = await r.json().catch(() => ({}))
+    if (!r.ok) {
+      console.warn('[metaProfile instagram nativo]', igsid, d?.error?.message || `HTTP ${r.status}`)
+      cache.set(igsid, { name: '', photo: '', at: Date.now() })   // no reintentar en cada mensaje
+      return null
+    }
+    const out = { name: String(d.name || d.username || '').trim(), photo: d.profile_pic || '', at: Date.now() }
+    cache.set(igsid, out)
+    return out.name || out.photo ? out : null
+  } catch (e) { console.warn('[metaProfile instagram nativo]', e.message); return null }
+}
+
+module.exports = { fetchProfile, probeProfile, fetchFromConversations, isPlaceholder, fetchInstagramNative }
