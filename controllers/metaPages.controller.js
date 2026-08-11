@@ -239,6 +239,25 @@ const connect = async (req, res) => {
         subscribeError = sd?.error?.message || `HTTP ${sr.status}`
         console.warn('[metaPages subscribe]', subscribeError)
       }
+
+      // La CUENTA de Instagram se suscribe aparte de la Página: son dos suscripciones
+      // distintas y con la de la Página sola no llega ni un DM. Si esta falla, se dice —un
+      // canal que se declara conectado y luego no recibe nada es peor que uno que avisa.
+      if (type === 'instagram' && page.instagram_business_account?.id) {
+        try {
+          const ir = await fetch(`${GRAPH}/${page.instagram_business_account.id}/subscribed_apps?subscribed_fields=messages&access_token=${encodeURIComponent(page.access_token)}`, { method: 'POST' })
+          const id_ = await ir.json().catch(() => ({}))
+          if (!ir.ok || id_.success === false) {
+            const motivo = id_?.error?.message || `HTTP ${ir.status}`
+            subscribed = false
+            subscribeError = `La cuenta de Instagram no quedó suscrita: ${motivo}`
+            console.warn('[metaPages subscribe IG]', motivo)
+          }
+        } catch (e) {
+          subscribed = false
+          subscribeError = `La cuenta de Instagram no quedó suscrita: ${e.message}`
+        }
+      }
     } catch (e) { subscribeError = e.message; console.warn('[metaPages subscribe]', e.message) }
 
     const config = {
@@ -350,7 +369,13 @@ const diagnoseConnect = async (req, res) => {
 }
 
 const diagnose = async (req, res) => {
-  const { pageId, pageAccessToken } = req.body || {}
+  const { pageId, pageAccessToken, kind } = req.body || {}
+  // Los DM de Instagram NO llegan por el webhook de Páginas: usan el objeto `instagram`, que
+  // en el panel de Meta es una suscripción APARTE. Comprobar el de Páginas para un canal de
+  // Instagram daba todo por bueno mientras no entraba un solo mensaje.
+  const esIg = kind === 'instagram'
+  const OBJ = esIg ? 'instagram' : 'page'
+  const ETIQUETA = esIg ? 'Webhook de la app para Instagram' : 'Webhook de la app para Páginas'
   if (!pageId) return res.status(400).json({ error: 'Falta pageId' })
   const out = { pageId, checks: [], ok: false }
   const add = (ok, titulo, detalle) => out.checks.push({ ok, titulo, detalle })
@@ -362,32 +387,37 @@ const diagnose = async (req, res) => {
     }
     const appToken = `${appId}|${appSecret}`
 
-    // 1) ¿La app tiene webhooks del producto "page" (Messenger) con el campo messages?
+    // 1) ¿La app tiene el webhook del objeto que corresponde a ESTE canal?
+    //    page → Messenger · instagram → DM de Instagram. Son suscripciones DISTINTAS en el
+    //    panel de Meta, y tener la de Messenger no habilita la de Instagram.
     try {
       const r = await fetch(`${GRAPH}/${appId}/subscriptions?access_token=${encodeURIComponent(appToken)}`)
       const d = await r.json().catch(() => ({}))
-      const page = (d.data || []).find(x => x.object === 'page')
-      if (!page) {
-        // Antes este mensaje mandaba directo a Messenger → Webhooks, dando por hecho que el
-        // producto ya estaba añadido. Si no lo está, esa sección NO EXISTE y el usuario se
-        // queda buscando una pantalla que no puede encontrar. El primer paso va primero.
-        const base = (process.env.PUBLIC_URL || process.env.BASE_URL || 'https://platform.aviasistente.com').replace(/\/$/, '')
-        add(false, 'Webhook de la app para Páginas',
-          'La app de Meta no tiene webhook para el producto "page", así que Meta no envía los mensajes a ninguna parte. '
-          + '1) Si en el panel de tu app no aparece "Messenger" en la lista de productos, añádelo primero (Añadir producto → Messenger); sin el producto no existe la sección de Webhooks. '
-          + `2) Luego en Messenger → Configuración → Webhooks pon la URL de devolución: ${base}/api/webhook/messenger `
-          + '(para Instagram: /api/webhook/instagram). El token de verificación puede ser cualquiera. '
-          + '3) Suscribe al menos el campo "messages". Esto se configura UNA vez para toda la plataforma, no por cliente.')
+      const sub = (d.data || []).find(x => x.object === OBJ)
+      const base = (process.env.PUBLIC_URL || process.env.BASE_URL || 'https://platform.aviasistente.com').replace(/\/$/, '')
+      if (!sub) {
+        add(false, ETIQUETA, esIg
+          ? 'La app de Meta NO tiene webhook para el objeto "instagram", así que Meta no envía los mensajes directos a ninguna parte. '
+            + 'Ojo: el webhook de Messenger (objeto "page") NO sirve para esto, son suscripciones distintas. '
+            + '1) Si en el panel de tu app no aparece "Instagram" entre los productos, añádelo primero. '
+            + `2) En Instagram → Configuración → Webhooks pon la URL: ${base}/api/webhook/instagram `
+            + '(el token de verificación puede ser cualquiera). '
+            + '3) Suscribe el campo "messages". Se configura UNA vez para toda la plataforma, no por cliente.'
+          : 'La app de Meta no tiene webhook para el producto "page", así que Meta no envía los mensajes a ninguna parte. '
+            + '1) Si en el panel de tu app no aparece "Messenger" en la lista de productos, añádelo primero (Añadir producto → Messenger). '
+            + `2) Luego en Messenger → Configuración → Webhooks pon la URL de devolución: ${base}/api/webhook/messenger. `
+            + 'El token de verificación puede ser cualquiera. '
+            + '3) Suscribe al menos el campo "messages". Esto se configura UNA vez para toda la plataforma, no por cliente.')
       } else {
-        const campos = (page.fields || []).map(f => f.name || f)
+        const campos = (sub.fields || []).map(f => f.name || f)
         const tieneMessages = campos.includes('messages')
-        add(tieneMessages, 'Webhook de la app para Páginas',
+        add(tieneMessages, ETIQUETA,
           tieneMessages
-            ? `Activo · campos: ${campos.join(', ')} · URL: ${page.callback_url || '(no expuesta)'}`
-            : `Configurado pero SIN el campo "messages" (tiene: ${campos.join(', ') || 'ninguno'}). Actívalo en Meta → Messenger → Webhooks.`)
+            ? `Activo · campos: ${campos.join(', ')} · URL: ${sub.callback_url || '(no expuesta)'}`
+            : `Configurado pero SIN el campo "messages" (tiene: ${campos.join(', ') || 'ninguno'}). Actívalo en Meta → ${esIg ? 'Instagram' : 'Messenger'} → Webhooks.`)
       }
-    } catch (e) { add(false, 'Webhook de la app para Páginas', 'No se pudo consultar: ' + e.message) }
-
+    } catch (e) { add(false, ETIQUETA, 'No se pudo consultar: ' + e.message) }
+    
     // 2) ¿La página está suscrita a ESTA app?
     if (pageAccessToken) {
       try {
@@ -469,6 +499,17 @@ const diagnose = async (req, res) => {
                       : ''))
         }
       } catch (e) { add(false, 'Nombre de quien escribe', 'No se pudo comprobar: ' + e.message) }
+    }
+
+    // Dos causas que NINGUNA llamada de la API revela y que dejan el canal mudo con todo lo
+    // demás en verde. Se nombran siempre en Instagram: si el usuario ve todo ✓ y aun así no
+    // le llega nada, esto es lo que le queda por mirar.
+    if (esIg) {
+      add(true, 'Falta comprobar a mano (la API no lo dice)',
+        '1) En la app de Instagram: Configuración → Privacidad → Mensajes → Herramientas conectadas → '
+        + '"Permitir el acceso a los mensajes" debe estar ACTIVADO. Viene apagado por defecto y es la causa '
+        + 'más habitual de que todo se vea bien y no entre ningún mensaje. '
+        + '2) La cuenta debe ser PROFESIONAL (empresa o creador): una personal no entrega mensajes por API.')
     }
 
     out.ok = out.checks.every(c => c.ok)
