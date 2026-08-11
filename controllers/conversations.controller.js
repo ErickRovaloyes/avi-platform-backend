@@ -683,7 +683,10 @@ const suggestReply = async (req, res) => {
 // El asesor marca mensajes clave de un chat (un dato, un acuerdo, una dirección) para
 // tenerlos a mano sin releer toda la conversación.
 const starMessage = async (req, res) => {
-  const { accId, convId, msgId } = req.params
+  // `agId` hace falta para el evento: el frontend recarga con /api/conversations/:accId/:agId
+  // y sin él la URL salía con 'undefined', la recarga fallaba en silencio y la estrella
+  // nunca aparecía. Era el motivo de que 'destacar' pareciera no funcionar.
+  const { accId, agId, convId, msgId } = req.params
   const starred = req.body?.starred !== false
   try {
     const [[c]] = await pool.query('SELECT id FROM conversations WHERE id=? AND account_id=?', [convId, accId])
@@ -692,7 +695,7 @@ const starMessage = async (req, res) => {
       'UPDATE messages SET starred=?, starred_at=?, starred_by=? WHERE id=? AND conversation_id=?',
       [starred ? 1 : 0, starred ? Date.now() : null, starred ? (req.user?.name || req.user?.email || 'Asesor') : null, msgId, convId]
     )
-    socket.emit(accId, 'convos:updated', { accId })
+    socket.emit(accId, 'convos:updated', { accId, agId })
     res.json({ ok: true, starred })
   } catch (err) { console.error('[starMessage]', err); res.status(500).json({ error: 'Error interno' }) }
 }
