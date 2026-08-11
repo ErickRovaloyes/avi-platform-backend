@@ -321,6 +321,21 @@ const getPublicAccount = async (req, res) => {
     // Este endpoint NO pide autenticación: lo consume el webchat incrustado en cualquier web.
     // La lista de asesores es para el motor del servidor, no para publicarla a quien pase.
     const { members, ...publicData } = data
+    // Y la config de los canales TAMPOCO sale de aquí. Ahí viven el accessToken de WhatsApp,
+    // el pageAccessToken de Messenger y el igAccessToken de Instagram: se estaban enviando
+    // enteros a cualquiera que supiera el id de la cuenta — y con el widget ese id pasa a
+    // estar en el HTML de todas las páginas del cliente.
+    //
+    // Se limpia SOLO aquí, en la respuesta HTTP. loadPublicAccount lo usa también el motor
+    // del servidor (flow/store.js), que necesita esos tokens para enviar por cada canal:
+    // quitarlos allí dejaría mudos WhatsApp, Messenger e Instagram.
+    //
+    // El navegador no los echa de menos: la página del webchat solo mira el id y el tipo del
+    // canal para saber cuál es el suyo.
+    publicData.agents = (publicData.agents || []).map(a => ({
+      ...a,
+      channels: (a.channels || []).map(({ config, ...canal }) => canal),
+    }))
     res.json(publicData)
   } catch (err) {
     console.error('[GET PUBLIC ACCOUNT]', err)

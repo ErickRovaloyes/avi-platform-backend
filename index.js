@@ -78,6 +78,10 @@ io.on('connection', sock => {
 // ── Public routes (no auth) ───────────────────────────────────────────────────
 const { getPublicAccount } = require('./controllers/accounts.controller')
 app.get('/api/public/accounts/:accId', getPublicAccount)
+// Apariencia del widget incrustado: la pide widget.js desde la web del cliente, así que no
+// puede pedir autenticación. Devuelve una lista cerrada de campos, nunca la config del canal.
+const { widgetConfig } = require('./controllers/webchatWidget.controller')
+app.get('/api/public/webchat/:accId/:agId/:chId/widget', widgetConfig)
 
 // ── Routes ────────────────────────────────────────────────────────────────────
 

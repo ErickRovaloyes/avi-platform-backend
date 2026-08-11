@@ -161,6 +161,35 @@ async function routeNewConversation(accId, agId) {
 const createConvo = async (req, res) => {
   const { accId, agId } = req.params
   const { guestName, guestId, channelId, channelType = 'webchat', waFrom, messengerFrom, igFrom, origin } = req.body
+
+  // Dominios autorizados del canal de webchat.
+  //
+  // El fragmento del widget queda a la vista en el HTML de la web del cliente, así que
+  // cualquiera puede copiarlo a otro sitio — y cada conversación con IA gasta del cupo del
+  // plan. La comprobación que hace el propio widget es cosmética (quien edite el JavaScript
+  // se la salta); ESTA es la que protege el cupo, porque el navegador pone `Origin` en las
+  // peticiones cruzadas y una página no puede falsificarla.
+  //
+  // Alcance honesto: frena a quien copie el fragmento a otra web, no a quien escriba un
+  // script — fuera del navegador la cabecera se pone a mano.
+  //
+  // Solo aplica a peticiones SIN sesión: desde el panel se crean conversaciones a mano y esas
+  // ya vienen autenticadas. Sin dominios configurados no se comprueba nada, para no romper
+  // los canales que ya funcionan.
+  if (!req.user && channelType === 'webchat' && channelId) {
+    try {
+      const w = require('./webchatWidget.controller')
+      const canal = await w.buscarCanal(accId, agId, channelId)
+      const permitidos = w.normalizarDominios(canal?.config?.allowedDomains)
+      if (permitidos.length) {
+        const host = w.hostDe(req.headers.origin) || w.hostDe(req.headers.referer)
+        if (!w.dominioPermitido(host, permitidos)) {
+          console.warn('[createConvo] webchat bloqueado · dominio no autorizado:', host || '(sin origen)', '· canal', channelId)
+          return res.status(403).json({ error: 'Este chat no está autorizado en este dominio.', code: 'domain_not_allowed' })
+        }
+      }
+    } catch (e) { console.warn('[createConvo dominios]', e.message) }
+  }
   const id       = `conv_${Date.now()}_${guestId || uid()}`
   const initials = (guestName || '').slice(0, 2).toUpperCase()
   const ts       = Date.now()
