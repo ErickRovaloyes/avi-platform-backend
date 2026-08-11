@@ -387,6 +387,11 @@ const diagnose = async (req, res) => {
     }
     const appToken = `${appId}|${appSecret}`
 
+    // QUÉ app se está consultando. Si hay varias apps de Meta en la cuenta y el webhook se
+    // configuró en otra, el síntoma es idéntico a «no está suscrito» y desde fuera no hay
+    // forma de distinguirlo. Enseñarlo permite compararlo con el del panel de Meta.
+    add(true, 'App de Meta consultada', `App ID ${appId} · compáralo con el que aparece en el panel de Meta donde configuraste el webhook: si no coinciden, el webhook está en otra app.`)
+
     // 1) ¿La app tiene el webhook del objeto que corresponde a ESTE canal?
     //    page → Messenger · instagram → DM de Instagram. Son suscripciones DISTINTAS en el
     //    panel de Meta, y tener la de Messenger no habilita la de Instagram.
