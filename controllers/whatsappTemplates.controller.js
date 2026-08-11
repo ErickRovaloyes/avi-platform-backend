@@ -13,6 +13,7 @@ const {
   createWhatsAppTemplate, updateWhatsAppTemplate, deleteWhatsAppTemplate,
 } = require('../services/metaSend')
 const store = require('../flow/store')
+const { invalidate: invalidarTextos } = require('../services/waTemplateText')
 
 // Resuelve la config del canal WhatsApp de un agente. Si se pasa channelId,
 // busca ese canal; si no, toma el primer canal whatsapp conectado.
@@ -114,7 +115,13 @@ const send = async (req, res) => {
     console.log('[WA TEMPLATES] enviada', templateName, language, 'to', to, '→', JSON.stringify(r?.messages?.[0] || r))
 
     // Persistimos en la conversación para que el operador vea lo enviado.
-    const content = previewText || `[Plantilla] ${templateName}`
+    // El navegador manda su vista previa (ya tiene la plantilla cargada); si no llega
+    // —una integración que llame al endpoint directamente—, se reconstruye aquí en vez de
+    // dejar el nombre técnico, que no dice qué recibió el cliente.
+    const content = previewText || await require('../services/waTemplateText').templateText({
+      businessAccountId: cfg.businessAccountId, accessToken: cfg.accessToken,
+      name: templateName, language, components,
+    })
     await store.appendMsg(accId, agentId, convId, {
       role: 'assistant', sender: 'human',
       senderName: req.user?.name || 'Asesor',
@@ -149,6 +156,7 @@ const create = async (req, res) => {
       businessAccountId: cfg.businessAccountId, accessToken: cfg.accessToken,
       payload: { name: String(name).toLowerCase().replace(/[^a-z0-9_]/g, '_').slice(0, 512), language, category, components, allow_category_change: true },
     })
+    invalidarTextos(cfg.businessAccountId)
     res.json({ ok: true, id: data.id, status: data.status, category: data.category })
   } catch (err) {
     console.error('[WA TEMPLATES create]', err.message)
@@ -171,6 +179,7 @@ const update = async (req, res) => {
     const payload = { components }
     if (category) payload.category = category
     const data = await updateWhatsAppTemplate({ templateId, accessToken: cfg.accessToken, payload })
+    invalidarTextos(cfg.businessAccountId)
     res.json({ ok: true, ...data })
   } catch (err) {
     console.error('[WA TEMPLATES update]', err.message)
@@ -188,6 +197,7 @@ const remove = async (req, res) => {
     const cfg = channel?.config || {}
     if (!cfg.businessAccountId || !cfg.accessToken) return res.status(400).json({ error: 'Falta Business Account ID o Access Token en el canal.' })
     await deleteWhatsAppTemplate({ businessAccountId: cfg.businessAccountId, accessToken: cfg.accessToken, name })
+    invalidarTextos(cfg.businessAccountId)
     res.json({ ok: true })
   } catch (err) {
     console.error('[WA TEMPLATES remove]', err.message)

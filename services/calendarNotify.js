@@ -212,6 +212,23 @@ async function notifyTemplate(accId, calendar, booking, event, cfg) {
     phoneNumberId: c.phoneNumberId, accessToken: c.accessToken,
     to, templateName: cfg.template, languageCode: cfg.language || 'es', components,
   })
+  // Este aviso no dejaba ningún rastro en la bandeja: el cliente recibía un recordatorio y
+  // quien atendía no sabía ni que se le había escrito. Los otros modos (mensaje integrado e
+  // IA) sí crean la conversación —arriba, en resolveTarget—, así que era una inconsistencia,
+  // no una decisión. Se guarda el texto real de la plantilla, igual que en el resto de vías.
+  try {
+    const store = require('../flow/store')
+    const convId = await store.createOrGetWhatsAppConvo(accId, n.whatsappAgentId, to, booking.clientName || to, channel.id)
+    if (convId) {
+      const content = await require('./waTemplateText').templateText({
+        businessAccountId: c.businessAccountId, accessToken: c.accessToken,
+        name: cfg.template, language: cfg.language || 'es', components,
+      })
+      await store.appendMsg(accId, n.whatsappAgentId, convId, {
+        sender: 'ai', content, fromTemplate: true, templateName: cfg.template,
+      })
+    }
+  } catch (e) { console.warn('[calendarNotify plantilla → bandeja]', e.message) }
   console.log(`[calendarNotify] ${event} → ${to} (plantilla ${cfg.template})`)
   return true
 }

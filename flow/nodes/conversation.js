@@ -159,8 +159,16 @@ const conversationNodes = [
         to: conv.wa_from, templateName: tplName, languageCode: node.data?.language || 'es', components,
       })
       const wamid = r?.messages?.[0]?.id || null
+      // En la bandeja se guarda lo que LEYÓ el cliente, no el nombre técnico de la
+      // plantilla: quien atiende el chat tiene que poder ver el mensaje al que le están
+      // respondiendo. Si no se puede reconstruir, cae al nombre y el mensaje igual queda.
+      const { templateText } = require('../../services/waTemplateText')
+      const content = await templateText({
+        businessAccountId: cfg.businessAccountId, accessToken: cfg.accessToken,
+        name: tplName, language: node.data?.language || 'es', components,
+      })
       await store.appendMsg(ctx.accId, ctx.agId, ctx.convId, {
-        role: 'assistant', sender: 'ai', content: `📋 Plantilla: ${tplName}`, ts: Date.now(),
+        role: 'assistant', sender: 'ai', content, ts: Date.now(),
         fromFlow: true, fromTemplate: true, templateName: tplName,
         ...(wamid ? { waMessageId: wamid, status: 'sent' } : {}),
       })

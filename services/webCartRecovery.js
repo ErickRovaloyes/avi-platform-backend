@@ -110,7 +110,13 @@ async function processAccount(accId, cfg, ac) {
         // Deja constancia en la bandeja (crea/recupera la conversación de WhatsApp).
         try {
           const convId = await flowStore.createOrGetWhatsAppConvo(accId, wa.agent.id, phone, cart.email || phone, wa.channel.id)
-          if (convId) await flowStore.appendMsg(accId, wa.agent.id, convId, { sender: 'ai', content: `🛒 Plantilla de recuperación de carrito enviada${url ? `\n${url}` : ''}` })
+          // El texto real de la plantilla, no un aviso genérico: si el cliente contesta
+          // «¿qué es esto?», quien atiende necesita leer lo mismo que él.
+          const content = await require('./waTemplateText').templateText({
+            businessAccountId: wa.channel.config.businessAccountId, accessToken: wa.channel.config.accessToken,
+            name: web.template.name, language: web.template.language || 'es', components,
+          })
+          if (convId) await flowStore.appendMsg(accId, wa.agent.id, convId, { sender: 'ai', content, fromTemplate: true, templateName: web.template.name })
           await pool.query('UPDATE abandoned_carts SET conv_id=?, reminders_sent=reminders_sent+1, last_reminder_at=? WHERE id=?', [convId || null, now, cart.id])
         } catch { await pool.query('UPDATE abandoned_carts SET reminders_sent=reminders_sent+1, last_reminder_at=? WHERE id=?', [now, cart.id]) }
         sent = true
