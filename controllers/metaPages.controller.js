@@ -406,11 +406,13 @@ const diagnose = async (req, res) => {
       if (!sub) {
         add(false, ETIQUETA, esIg
           ? 'La app de Meta NO tiene webhook para el objeto "instagram", así que Meta no envía los mensajes directos a ninguna parte. '
-            + 'Ojo: el webhook de Messenger (objeto "page") NO sirve para esto, son suscripciones distintas. '
-            + '1) Si en el panel de tu app no aparece "Instagram" entre los productos, añádelo primero. '
-            + `2) En Instagram → Configuración → Webhooks pon la URL: ${base}/api/webhook/instagram `
-            + '(el token de verificación puede ser cualquiera). '
-            + '3) Suscribe el campo "messages". Se configura UNA vez para toda la plataforma, no por cliente.'
+            + 'OJO CON LA RUTA: en Messenger → Configuración → Webhooks solo se configura el objeto "page", y ese NO entrega los mensajes de Instagram. '
+            + 'El objeto "instagram" se suscribe en OTRO sitio: panel de la app → Webhooks (el producto suelto del menú lateral) → '
+            + 'en el desplegable de arriba elige "Instagram" → Suscribirse a este objeto. '
+            + `Ahí pon la URL ${base}/api/webhook/instagram (el token de verificación puede ser cualquiera) `
+            + 'y suscribe el campo "messages". '
+            + 'Si "Instagram" no aparece en ese desplegable, añade primero el producto Instagram a la app. '
+            + 'Se configura UNA vez para toda la plataforma, no por cliente.'
             + ` · Lo que Meta responde AHORA para esta app: ${suscritos.length ? suscritos.join(" · ") : "ninguna suscripción"}.` + " Si ahí aparece «instagram» pero el diagnóstico no lo ve, dímelo: significa que Meta lo nombra distinto."
           : 'La app de Meta no tiene webhook para el producto "page", así que Meta no envía los mensajes a ninguna parte. '
             + '1) Si en el panel de tu app no aparece "Messenger" en la lista de productos, añádelo primero (Añadir producto → Messenger). '
