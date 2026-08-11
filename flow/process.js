@@ -25,21 +25,28 @@ const pool = require('../db')
 // Solo sustituye MARCADORES: si un asesor escribió el nombre a mano, o el contacto ya
 // tenía uno, no se toca. Meta no siempre devuelve nombre —perfiles restringidos, normativa
 // de privacidad de la región— y sobrescribir un dato bueno con uno peor sería un retroceso.
+/**
+ * Completa la ficha de quien escribe por Meta con lo que diga su perfil.
+ *
+ * Hace DOS cosas independientes, y esa separación importa:
+ *   · el NOMBRE solo se sustituye si el actual es un marcador ("IG #1234"), para no pisar
+ *     uno bueno ni el que haya escrito un asesor a mano;
+ *   · el USUARIO de Instagram se guarda SIEMPRE que se conozca, porque es lo único con lo
+ *     que se compone el enlace a su perfil.
+ *
+ * Estaban juntas, y el usuario se guardaba después de la salida temprana del nombre. Mientras
+ * el nombre falló, la salida no se activaba y no se notó; en cuanto el nombre empezó a
+ * funcionar, esa salida saltaba siempre y el usuario no se guardaba nunca — el enlace no podía
+ * aparecer jamás.
+ */
 async function upgradeGuestName(convId, nombre, foto, usuario) {
-  if (!convId || !nombre || metaProfile.isPlaceholder(nombre)) return
+  if (!convId) return
   try {
     const [[c]] = await pool.query('SELECT guest_name, local_vars FROM conversations WHERE id=?', [convId])
-    if (!c || !metaProfile.isPlaceholder(c.guest_name)) return
-    const iniciales = nombre.trim().slice(0, 2).toUpperCase()
-    await pool.query('UPDATE conversations SET guest_name=?, initials=? WHERE id=?', [nombre, iniciales, convId])
-    // La variable canónica que usan los prompts y los flujos ({{user_name}}).
+    if (!c) return
     let lv = {}; try { lv = JSON.parse(c.local_vars || '{}') } catch {}
-    if (metaProfile.isPlaceholder(lv.user_name)) {
-      lv.user_name = nombre
-      await pool.query('UPDATE conversations SET local_vars=? WHERE id=?', [JSON.stringify(lv), convId])
-    }
-    // El nombre de usuario de Instagram, en la ficha del contacto: es lo único con lo que se
-    // puede componer el enlace a su perfil (instagram.com/usuario).
+
+    // 1) El usuario de Instagram, siempre que lo tengamos. Independiente del nombre.
     if (lv.contact_id && usuario) {
       try {
         const [[ct]] = await pool.query('SELECT extra FROM contacts WHERE id=?', [lv.contact_id])
@@ -50,9 +57,18 @@ async function upgradeGuestName(convId, nombre, foto, usuario) {
         }
       } catch { /* el enlace es un extra: no debe tumbar el mensaje */ }
     }
-    // Y la ficha del contacto en el CRM, para que no quede como "FB #…" en la agenda.
+
+    // 2) El nombre, solo si el actual es un marcador.
+    if (!nombre || metaProfile.isPlaceholder(nombre)) return
+    if (!metaProfile.isPlaceholder(c.guest_name)) return
+    const iniciales = nombre.trim().slice(0, 2).toUpperCase()
+    await pool.query('UPDATE conversations SET guest_name=?, initials=? WHERE id=?', [nombre, iniciales, convId])
+    if (metaProfile.isPlaceholder(lv.user_name)) {
+      lv.user_name = nombre
+      await pool.query('UPDATE conversations SET local_vars=? WHERE id=?', [JSON.stringify(lv), convId])
+    }
     if (lv.contact_id) {
-      await pool.query('UPDATE contacts SET name=? WHERE id=? AND (name IS NULL OR name="" OR name LIKE "FB #%" OR name LIKE "IG #%" OR name = "Visitante" OR name LIKE "Visitante %" OR name LIKE "Guest %")', [nombre, lv.contact_id])
+      await pool.query('UPDATE contacts SET name=? WHERE id=? AND (name IS NULL OR name="" OR name LIKE "FB #%" OR name LIKE "IG #%" OR name = "Visitante" OR name LIKE "Visitante %" OR name LIKE "Guest" OR name LIKE "Guest %")', [nombre, lv.contact_id])
     }
   } catch (e) { console.warn('[upgradeGuestName]', e.message) }
 }
@@ -481,4 +497,7 @@ async function processInstagram(accId, agentId, body) {
   }
 }
 
-module.exports = { processWhatsApp, processMessenger, processInstagram }
+// `__upgradeGuestName` se expone SOLO para las pruebas: es la pieza que decide el nombre y
+// el usuario del contacto, y probarla de verdad es lo que destapó que el usuario no se
+// guardaba cuando el nombre ya era correcto.
+module.exports = { processWhatsApp, processMessenger, processInstagram, __upgradeGuestName: upgradeGuestName }

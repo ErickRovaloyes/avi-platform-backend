@@ -241,11 +241,14 @@ const connect = async (req, res) => {
       }
 
       // La CUENTA de Instagram se suscribe aparte de la Página: son dos suscripciones
+      // `messaging_seen` es el campo de LECTURA en Instagram; el de Messenger (message_reads)
+      // no existe aquí. Y ojo: Instagram NO emite acuse de entrega, solo de lectura, así que
+      // en ese canal la paloma va de "enviado" directamente a "visto".
       // distintas y con la de la Página sola no llega ni un DM. Si esta falla, se dice —un
       // canal que se declara conectado y luego no recibe nada es peor que uno que avisa.
       if (type === 'instagram' && page.instagram_business_account?.id) {
         try {
-          const ir = await fetch(`${GRAPH}/${page.instagram_business_account.id}/subscribed_apps?subscribed_fields=messages&access_token=${encodeURIComponent(page.access_token)}`, { method: 'POST' })
+          const ir = await fetch(`${GRAPH}/${page.instagram_business_account.id}/subscribed_apps?subscribed_fields=messages,messaging_seen&access_token=${encodeURIComponent(page.access_token)}`, { method: 'POST' })
           const id_ = await ir.json().catch(() => ({}))
           if (!ir.ok || id_.success === false) {
             const motivo = id_?.error?.message || `HTTP ${ir.status}`
@@ -374,6 +377,7 @@ const diagnose = async (req, res) => {
   // en el panel de Meta es una suscripción APARTE. Comprobar el de Páginas para un canal de
   // Instagram daba todo por bueno mientras no entraba un solo mensaje.
   const esIg = kind === 'instagram'
+  let camposObjeto = []   // campos suscritos del objeto de este canal
   const OBJ = esIg ? 'instagram' : 'page'
   const ETIQUETA = esIg ? 'Webhook de la app para Instagram' : 'Webhook de la app para Páginas'
   if (!pageId) return res.status(400).json({ error: 'Falta pageId' })
@@ -421,6 +425,7 @@ const diagnose = async (req, res) => {
             + '3) Suscribe al menos el campo "messages". Esto se configura UNA vez para toda la plataforma, no por cliente.')
       } else {
         const campos = (sub.fields || []).map(f => f.name || f)
+        camposObjeto = campos
         const tieneMessages = campos.includes('messages')
         add(tieneMessages, ETIQUETA,
           tieneMessages
@@ -515,6 +520,16 @@ const diagnose = async (req, res) => {
     // Dos causas que NINGUNA llamada de la API revela y que dejan el canal mudo con todo lo
     // demás en verde. Se nombran siempre en Instagram: si el usuario ve todo ✓ y aun así no
     // le llega nada, esto es lo que le queda por mirar.
+      // La paloma de VISTO en Instagram depende de un campo aparte. Y no hay acuse de entrega:
+      // en ese canal se pasa de "enviado" a "visto" sin escala.
+      if (esIg) {
+        const tieneSeen = camposObjeto.includes('messaging_seen')
+        add(tieneSeen, 'Palomas de visto (Instagram)',
+          tieneSeen
+            ? 'El campo messaging_seen está suscrito. Instagram NO emite acuse de ENTREGA, así que la paloma pasa de «enviado» a «visto» sin escala.'
+            : 'Falta el campo "messaging_seen" en el webhook del objeto instagram: sin él no llega el aviso de leído y la paloma se queda en «enviado». Añádelo donde suscribiste "messages".')
+      }
+
     if (esIg) {
       add(true, 'Falta comprobar a mano (la API no lo dice)',
         '1) En la app de Instagram: Configuración → Privacidad → Mensajes → Herramientas conectadas → '
