@@ -59,7 +59,11 @@ async function fetchFromConversations(pageId, token, kind = 'messenger') {
         if (!p?.id || String(p.id) === String(pageId)) continue
         const nombre = String(p.name || p.username || '').trim()
         if (!nombre) continue
-        cache.set(String(p.id), { name: nombre, photo: '', at: Date.now() })
+        // El `username` se guarda APARTE del nombre. Se leía solo para rellenar el nombre y
+        // luego se tiraba, y con él se iba lo único que permite componer el enlace al perfil
+        // (instagram.com/usuario) — justo por esta vía, que es la que funciona cuando pedir
+        // el perfil por el identificador devuelve el error 100.
+        cache.set(String(p.id), { name: nombre, username: p.username || '', photo: '', at: Date.now() })
         n++
       }
     }
