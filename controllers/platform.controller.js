@@ -509,8 +509,11 @@ const updateSAAccount = async (req, res) => {
 const deleteAccount = async (req, res) => {
   if (req.user.type !== 'superadmin') return res.status(403).json({ error: 'Solo super admin' })
   try {
-    await pool.query('DELETE FROM accounts WHERE id=?', [req.params.accId])
-    res.json({ ok: true })
+    // Se lleva TODO lo que cuelga de la cuenta: el esquema no tiene claves foráneas en
+    // cascada, así que un DELETE a secas dejaba huérfanas casi cien tablas.
+    const r = await require('../services/accountPurge').purgeAccount(req.params.accId)
+    if (r.errores.length) console.warn('[borrar cuenta]', r.errores.join(' · '))
+    res.json({ ok: true, deletedRows: r.filas })
   } catch (err) { res.status(500).json({ error: 'Error interno' }) }
 }
 

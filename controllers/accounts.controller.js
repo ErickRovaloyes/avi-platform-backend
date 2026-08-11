@@ -367,6 +367,10 @@ const getAccount = async (req, res) => {
     res.json({
       id: acc.id, name: acc.name, email: acc.email, plan: acc.plan, status: acc.status, createdAt: acc.created_at,
       modules, metaCatalog,
+      // Tema por defecto de los chats. Se guardaba bien en la base, pero esta respuesta no lo
+      // devolvía —solo lo hacía loadPublicAccount—, así que al recargar el panel volvía a
+      // salir el valor por defecto y parecía que la elección no se guardaba.
+      chatTheme: parseJ(acc.chat_theme, null),
       // Own keys (user-settable in Settings); read-only effective ones below
       openaiKeyOwn:    acc.openai_key    || '',
       deepseekKeyOwn:  acc.deepseek_key  || '',

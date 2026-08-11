@@ -48,6 +48,12 @@ const getMySubscription = async (req, res) => {
       subscription: sub, planState,
       contactCount: sub?.contactCount ?? 0,
       contactLimit: planState?.contactLimit ?? 0,
+      // Uso de CONVERSACIONES CON IA. En los planes Agente los contactos de CRM son
+      // ilimitados (contactLimit = 0) pero los chats que atiende el agente NO lo son, y sin
+      // estos dos campos el panel no tenía con qué medirlos: enseñaba «ilimitados» y daba a
+      // entender que no había tope.
+      aiContactCount: sub?.aiContactCount ?? 0,
+      aiContactLimit: planState?.aiContactLimit ?? 0,
     })
   } catch (err) { console.error('[billing subscription]', err); res.status(500).json({ error: 'Error interno' }) }
 }
