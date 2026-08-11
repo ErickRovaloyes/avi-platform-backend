@@ -506,7 +506,7 @@ const diagnose = async (req, res) => {
         cond.push(`${col} IS NOT NULL`)
         cond.push("channel_type=?"); args.push(kind)
         const [rows] = await pool.query(
-          `SELECT ${col} AS psid, guest_name FROM conversations WHERE ${cond.join(' AND ')} ORDER BY updated_at DESC LIMIT 3`, args)
+          `SELECT ${col} AS psid, guest_name, local_vars, id AS conv_id FROM conversations WHERE ${cond.join(' AND ')} ORDER BY updated_at DESC LIMIT 3`, args)
         if (!rows.length) {
           add(false, 'Nombre de quien escribe', 'Aún no hay ninguna conversación de este canal con la que probar. Escribe a la página desde otra cuenta y repite el diagnóstico.')
         } else {
@@ -523,6 +523,33 @@ const diagnose = async (req, res) => {
           // puede devolver el nombre y no el usuario, y entonces el enlace es imposible de
           // componer aunque todo lo demás esté bien. Sin separarlo, el diagnóstico decía
           // "se lee correctamente" mientras la fila «Perfil» seguía sin aparecer.
+          // QUÉ HAY GUARDADO. Que Meta devuelva el usuario no significa que haya llegado a la
+          // ficha del contacto, y sin mirar la base no hay forma de saber en qué eslabón se
+          // corta: si falta el enlace conversación→contacto, si el usuario no se guardó, o si
+          // está guardado y el fallo es de la pantalla. Cada caso se arregla en un sitio
+          // distinto, así que adivinar sale caro.
+          if (esIg) {
+            try {
+              const { parseJ } = require('../utils')
+              const partes = []
+              for (const c of rows) {
+                const lv = parseJ(c.local_vars, {})
+                if (!lv.contact_id) { partes.push(`«${c.guest_name || 'sin nombre'}» → SIN contacto en el CRM`); continue }
+                const [[ct]] = await pool.query('SELECT name, extra FROM contacts WHERE id=?', [lv.contact_id])
+                if (!ct) { partes.push(`«${c.guest_name}» → apunta a un contacto que ya no existe`); continue }
+                const ex = parseJ(ct.extra, {})
+                partes.push(`«${ct.name || c.guest_name}» → ${ex.instagramUsername ? '@' + ex.instagramUsername + ' guardado' : 'SIN usuario guardado'}`)
+              }
+              const guardados = partes.filter(p => /guardado/.test(p) && !/SIN/.test(p)).length
+              add(guardados > 0, 'Qué hay guardado en los contactos',
+                (partes.join(' · ') || 'sin conversaciones') + '. '
+                + (guardados > 0
+                    ? 'El enlace al perfil sale en los que tienen usuario.'
+                    : 'Ninguno tiene el usuario todavía: se rellena al llegar el próximo mensaje de esa persona. '
+                      + 'Si escribes y sigue sin aparecer, el corte está entre leer el perfil y guardarlo — dímelo.'))
+            } catch (e) { add(false, 'Qué hay guardado en los contactos', 'No se pudo consultar: ' + e.message) }
+          }
+
           if (esIg) {
             add(!!probe.username, 'Enlace al perfil de Instagram',
               probe.username

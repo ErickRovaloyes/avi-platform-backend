@@ -160,6 +160,49 @@ function needsRefresh(expiresAt, now = Date.now()) {
   return Number(expiresAt) - now <= RENEW_BEFORE_MS
 }
 
+/**
+ * Rellena el @usuario de Instagram que falte en los contactos ya existentes.
+ *
+ * El usuario se guarda cuando llega un mensaje, así que un chat abierto antes de que esto
+ * existiera se queda sin enlace al perfil hasta que esa persona vuelva a escribir — y hay
+ * conversaciones que no se reabren nunca. Esto las completa sin esperar.
+ *
+ * Se limita a unos pocos perfiles por vuelta: no hay prisa (se repite cada 12 h) y no tiene
+ * sentido castigar a la API de Meta por algo que no urge.
+ */
+const MAX_POR_VUELTA = 25
+
+async function rellenarUsuarios(agentId, cfg) {
+  let hechos = 0
+  try {
+    const [convos] = await pool.query(
+      `SELECT id, ig_from, local_vars FROM conversations
+       WHERE agent_id=? AND channel_type='instagram' AND ig_from IS NOT NULL
+       ORDER BY updated_at DESC LIMIT 200`, [agentId])
+    const metaProfile = require('./metaProfile')
+
+    for (const c of convos) {
+      if (hechos >= MAX_POR_VUELTA) break
+      let lv = {}; try { lv = JSON.parse(c.local_vars || '{}') } catch {}
+      if (!lv.contact_id) continue
+
+      const [[ct]] = await pool.query('SELECT extra FROM contacts WHERE id=?', [lv.contact_id])
+      if (!ct) continue
+      let ex = {}; try { ex = JSON.parse(ct.extra || '{}') } catch {}
+      if (ex.instagramUsername) continue          // ya lo tiene
+
+      const perfil = await metaProfile.fetchInstagramNative(c.ig_from, cfg.igAccessToken)
+      hechos++
+      if (!perfil?.username) continue             // Meta no lo da para este; ya se reintentará
+
+      ex.instagramUsername = perfil.username
+      await pool.query('UPDATE contacts SET extra=? WHERE id=?', [JSON.stringify(ex), lv.contact_id])
+      console.log('[instagramLogin] usuario rellenado:', perfil.username, '→ contacto', lv.contact_id)
+    }
+  } catch (e) { console.warn('[instagramLogin rellenarUsuarios]', e.message) }
+  return hechos
+}
+
 // ── Worker de renovación ─────────────────────────────────────────────────────
 // Sin esto el canal deja de funcionar a los 60 días sin que nadie sepa por qué: los mensajes
 // simplemente dejarían de enviarse.
@@ -184,6 +227,9 @@ async function tick() {
           else console.warn('[instagramLogin] no se pudo resuscribir', cfg.igUserId, s.error)
         }
 
+        // Completa los enlaces al perfil que falten en los contactos ya creados.
+        await rellenarUsuarios(ag.id, cfg)
+
         if (!needsRefresh(cfg.igTokenExpiry)) continue
         const r = await refreshToken(cfg.igAccessToken)
         if (r.ok) { cfg.igAccessToken = r.token; cfg.igTokenExpiry = r.expiresAt; cambio = true; console.log('[instagramLogin] token renovado', cfg.igUserId) }
@@ -205,4 +251,5 @@ function startWorker() {
 module.exports = {
   config, isConfigured, authorizeUrl, exchangeCode, accountInfo, subscribe,
   refreshToken, needsRefresh, signState, verifyState, startWorker, tick, SCOPES, GRAPH, CAMPOS,
+  rellenarUsuarios,
 }
