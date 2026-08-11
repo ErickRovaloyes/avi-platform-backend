@@ -17,7 +17,13 @@ const GRAPH = 'https://graph.facebook.com/v19.0'
 // Caché en memoria: el mismo contacto escribe muchas veces y el nombre no cambia entre
 // mensajes. Evita una llamada a Meta por cada mensaje entrante.
 const cache = new Map()          // psid → { name, photo, at }
-const TTL = 6 * 60 * 60 * 1000   // 6 h
+const TTL = 6 * 60 * 60 * 1000   // 6 h  (un nombre acertado no cambia)
+// Un FALLO se recuerda mucho menos. Con las 6 h de antes, si el primer intento fallaba —el
+// canal recién conectado, el token propagándose, un tropiezo puntual de Meta— durante el
+// resto del día NI SE VOLVÍA A PREGUNTAR: se devolvía null desde la caché y cada contacto
+// nacía como "IG #…". El nombre depende enteramente de esta lectura, así que un fallo
+// pasajero envenenaba la jornada entera.
+const NEG_TTL = 5 * 60 * 1000   // 5 min
 
 // Nombres que NO son un nombre: los marcadores que genera la plataforma cuando no lo sabe.
 //
@@ -71,7 +77,10 @@ async function fetchFromConversations(pageId, token, kind = 'messenger') {
 async function fetchProfile(psid, token, kind = 'messenger', pageId = '') {
   if (!psid || !token) return null
   const hit = cache.get(psid)
-  if (hit && Date.now() - hit.at < TTL) return hit.name || hit.photo ? hit : null
+  if (hit) {
+    const vigente = (hit.name || hit.photo) ? TTL : NEG_TTL
+    if (Date.now() - hit.at < vigente) return (hit.name || hit.photo) ? hit : null
+  }
 
   // Instagram expone `name`/`username`; Messenger, `first_name`/`last_name`.
   const fields = kind === 'instagram' ? 'name,username,profile_pic' : 'first_name,last_name,profile_pic'
@@ -142,7 +151,10 @@ async function probeProfile(psid, token, kind = 'messenger', pageId = '') {
 async function fetchInstagramNative(igsid, token) {
   if (!igsid || !token) return null
   const hit = cache.get(igsid)
-  if (hit && Date.now() - hit.at < TTL) return hit.name || hit.photo ? hit : null
+  if (hit) {
+    const vigente = (hit.name || hit.photo) ? TTL : NEG_TTL
+    if (Date.now() - hit.at < vigente) return (hit.name || hit.photo) ? hit : null
+  }
   try {
     const r = await fetch(`https://graph.instagram.com/${encodeURIComponent(igsid)}?fields=name,username,profile_pic&access_token=${encodeURIComponent(token)}`)
     const d = await r.json().catch(() => ({}))
