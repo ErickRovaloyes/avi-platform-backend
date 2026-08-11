@@ -394,6 +394,9 @@ const diagnose = async (req, res) => {
       const r = await fetch(`${GRAPH}/${appId}/subscriptions?access_token=${encodeURIComponent(appToken)}`)
       const d = await r.json().catch(() => ({}))
       const sub = (d.data || []).find(x => x.object === OBJ)
+      // Qué objetos tiene suscritos la app REALMENTE. Es lo único que distingue "falta la
+      // suscripción" de "Meta la devuelve con otro nombre".
+      const suscritos = (d.data || []).map(x => `${x.object} (${(x.fields || []).map(f => f.name || f).join(", ") || "sin campos"})`)
       const base = (process.env.PUBLIC_URL || process.env.BASE_URL || 'https://platform.aviasistente.com').replace(/\/$/, '')
       if (!sub) {
         add(false, ETIQUETA, esIg
@@ -403,6 +406,7 @@ const diagnose = async (req, res) => {
             + `2) En Instagram → Configuración → Webhooks pon la URL: ${base}/api/webhook/instagram `
             + '(el token de verificación puede ser cualquiera). '
             + '3) Suscribe el campo "messages". Se configura UNA vez para toda la plataforma, no por cliente.'
+            + ` · Lo que Meta responde AHORA para esta app: ${suscritos.length ? suscritos.join(" · ") : "ninguna suscripción"}.` + " Si ahí aparece «instagram» pero el diagnóstico no lo ve, dímelo: significa que Meta lo nombra distinto."
           : 'La app de Meta no tiene webhook para el producto "page", así que Meta no envía los mensajes a ninguna parte. '
             + '1) Si en el panel de tu app no aparece "Messenger" en la lista de productos, añádelo primero (Añadir producto → Messenger). '
             + `2) Luego en Messenger → Configuración → Webhooks pon la URL de devolución: ${base}/api/webhook/messenger. `
