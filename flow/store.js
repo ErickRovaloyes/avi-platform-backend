@@ -290,9 +290,44 @@ async function lastUserText(accId, convId) {
   return ''
 }
 
+/**
+ * Marca como leídos todos los mensajes SALIENTES de una conversación anteriores a una marca
+ * de tiempo.
+ *
+ * Meta no dice "se leyó este mensaje": manda un `watermark` que significa "todo lo enviado
+ * antes de este instante ya se leyó". Aplicarlo mensaje a mensaje dejaría el resto del chat
+ * en "entregado" para siempre, que es justo lo que se ve hoy.
+ *
+ * No degrada estados: un mensaje ya marcado como leído se queda como está.
+ */
+async function markReadUpTo(convId, watermark) {
+  if (!convId || !watermark) return 0
+  try {
+    const [rows] = await pool.query(
+      "SELECT id, metadata FROM messages WHERE conversation_id=? AND sender<>'user' AND ts<=? ORDER BY ts DESC LIMIT 200",
+      [convId, Number(watermark)]
+    )
+    let n = 0
+    for (const m of rows) {
+      const meta = parseJ(m.metadata, {})
+      if (meta.status === 'read') continue          // ya estaba: nada que hacer
+      if (meta.status === 'failed') continue        // un fallo no se convierte en leído
+      meta.status = 'read'
+      await pool.query('UPDATE messages SET metadata=? WHERE id=?', [JSON.stringify(meta), m.id])
+      n++
+    }
+    if (n) {
+      const [[c]] = await pool.query('SELECT account_id, agent_id FROM conversations WHERE id=?', [convId])
+      if (c) socket.emit(c.account_id, 'message:status', { accId: c.account_id, agId: c.agent_id, convId, status: 'read', upTo: Number(watermark) })
+    }
+    return n
+  } catch (e) { console.warn('[markReadUpTo]', e.message); return 0 }
+}
+
 module.exports = {
   loadAccount, readConvos, appendMsg, updateConvo, setLocalVar, appendDebugEntry,
   createOrGetWhatsAppConvo, createOrGetMessengerConvo, createOrGetInstagramConvo,
+  markReadUpTo,
   recordTokenUsage, messageExistsByProviderId, updateMessageStatus,
   saveExecution, getMediaBytes, getMessageByProviderId, recountCampaignStats, lastUserText,
 }

@@ -93,7 +93,7 @@ async function fetchProfile(psid, token, kind = 'messenger', pageId = '') {
     const name = kind === 'instagram'
       ? (d.name || d.username || '')
       : [d.first_name, d.last_name].filter(Boolean).join(' ')
-    const out = { name: String(name || '').trim(), photo: d.profile_pic || '', at: Date.now() }
+    const out = { name: String(name || '').trim(), username: d.username || '', photo: d.profile_pic || '', at: Date.now() }
     cache.set(psid, out)
     return out.name || out.photo ? out : null
   } catch (e) {
@@ -151,7 +151,10 @@ async function fetchInstagramNative(igsid, token) {
       cache.set(igsid, { name: '', photo: '', at: Date.now() })   // no reintentar en cada mensaje
       return null
     }
-    const out = { name: String(d.name || d.username || '').trim(), photo: d.profile_pic || '', at: Date.now() }
+    // El nombre de usuario se guarda APARTE del nombre: es lo único con lo que se puede
+    // componer el enlace al perfil (instagram.com/usuario), y hasta ahora se perdía al
+    // quedarse solo con uno de los dos.
+    const out = { name: String(d.name || d.username || '').trim(), username: d.username || '', photo: d.profile_pic || '', at: Date.now() }
     cache.set(igsid, out)
     return out.name || out.photo ? out : null
   } catch (e) { console.warn('[metaProfile instagram nativo]', e.message); return null }

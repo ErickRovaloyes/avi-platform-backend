@@ -244,8 +244,22 @@ async function sendMessengerButtons({ pageId, pageAccessToken, recipientId, text
 
 function parseMessengerWebhook(body) {
   const messages = []
+  const acuses = []
   for (const entry of body?.entry || []) {
     for (const event of entry?.messaging || []) {
+        // Acuses de Meta: no son mensajes (no traen texto ni adjunto) y por eso se
+        // descartaban en el filtro de abajo. La ENTREGA nombra los mensajes concretos; la
+        // LECTURA solo trae una marca de tiempo y significa "todo lo enviado antes de este
+        // instante ya se leyó" — tratarla como un mensaje suelto dejaría el resto del chat
+        // en "entregado" para siempre.
+        if (event.delivery) {
+          acuses.push({ tipo: 'delivered', mids: event.delivery.mids || [], watermark: event.delivery.watermark || 0, recipientId: event.sender?.id || event.recipient?.id })
+          continue
+        }
+        if (event.read) {
+          acuses.push({ tipo: 'read', mids: [], watermark: event.read.watermark || 0, recipientId: event.sender?.id || event.recipient?.id })
+          continue
+        }
       // is_echo = mensaje que envió el NEGOCIO (desde la app, la plataforma u otra
       // herramienta). Se registra como SALIENTE para sincronizar el inbox; se llavea la
       // conversación por el USUARIO (recipient). El dedupe por id evita duplicar lo ya guardado.
@@ -268,6 +282,7 @@ function parseMessengerWebhook(body) {
       })
     }
   }
+  messages.acuses = acuses
   return messages
 }
 
@@ -320,8 +335,22 @@ async function sendInstagramText({ igAccountId, pageAccessToken, recipientId, te
 
 function parseInstagramWebhook(body) {
   const messages = []
+  const acuses = []
   for (const entry of body?.entry || []) {
     for (const event of entry?.messaging || []) {
+        // Acuses de Meta: no son mensajes (no traen texto ni adjunto) y por eso se
+        // descartaban en el filtro de abajo. La ENTREGA nombra los mensajes concretos; la
+        // LECTURA solo trae una marca de tiempo y significa "todo lo enviado antes de este
+        // instante ya se leyó" — tratarla como un mensaje suelto dejaría el resto del chat
+        // en "entregado" para siempre.
+        if (event.delivery) {
+          acuses.push({ tipo: 'delivered', mids: event.delivery.mids || [], watermark: event.delivery.watermark || 0, recipientId: event.sender?.id || event.recipient?.id })
+          continue
+        }
+        if (event.read) {
+          acuses.push({ tipo: 'read', mids: [], watermark: event.read.watermark || 0, recipientId: event.sender?.id || event.recipient?.id })
+          continue
+        }
       // is_echo = mensaje enviado por el NEGOCIO (app de Instagram, plataforma u otra
       // herramienta) → se registra como SALIENTE para sincronizar el inbox. Conversación
       // llaveada por el USUARIO (recipient); dedupe por id evita duplicar lo ya guardado.
@@ -364,6 +393,7 @@ function parseInstagramWebhook(body) {
       }
     }
   }
+  messages.acuses = acuses
   return messages
 }
 

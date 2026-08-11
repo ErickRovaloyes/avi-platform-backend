@@ -25,7 +25,7 @@ const pool = require('../db')
 // Solo sustituye MARCADORES: si un asesor escribió el nombre a mano, o el contacto ya
 // tenía uno, no se toca. Meta no siempre devuelve nombre —perfiles restringidos, normativa
 // de privacidad de la región— y sobrescribir un dato bueno con uno peor sería un retroceso.
-async function upgradeGuestName(convId, nombre, foto) {
+async function upgradeGuestName(convId, nombre, foto, usuario) {
   if (!convId || !nombre || metaProfile.isPlaceholder(nombre)) return
   try {
     const [[c]] = await pool.query('SELECT guest_name, local_vars FROM conversations WHERE id=?', [convId])
@@ -37,6 +37,18 @@ async function upgradeGuestName(convId, nombre, foto) {
     if (metaProfile.isPlaceholder(lv.user_name)) {
       lv.user_name = nombre
       await pool.query('UPDATE conversations SET local_vars=? WHERE id=?', [JSON.stringify(lv), convId])
+    }
+    // El nombre de usuario de Instagram, en la ficha del contacto: es lo único con lo que se
+    // puede componer el enlace a su perfil (instagram.com/usuario).
+    if (lv.contact_id && usuario) {
+      try {
+        const [[ct]] = await pool.query('SELECT extra FROM contacts WHERE id=?', [lv.contact_id])
+        let ex = {}; try { ex = JSON.parse(ct?.extra || '{}') } catch {}
+        if (ex.instagramUsername !== usuario) {
+          ex.instagramUsername = usuario
+          await pool.query('UPDATE contacts SET extra=? WHERE id=?', [JSON.stringify(ex), lv.contact_id])
+        }
+      } catch { /* el enlace es un extra: no debe tumbar el mensaje */ }
     }
     // Y la ficha del contacto en el CRM, para que no quede como "FB #…" en la agenda.
     if (lv.contact_id) {
@@ -258,6 +270,25 @@ function metaOrigin(ref) {
 // ─── Messenger ─────────────────────────────────────────────────────────────────
 async function processMessenger(accId, agentId, body) {
   const messages = parseMessengerWebhook(body)
+
+  // Acuses de entrega y lectura. Llegan por el mismo webhook que los mensajes y hasta ahora
+  // se descartaban, por eso estos chats solo mostraban "Enviado".
+  for (const ack of (messages.acuses || [])) {
+    try {
+      if (ack.tipo === 'delivered') {
+        // La entrega SÍ nombra los mensajes concretos.
+        for (const mid of ack.mids) await store.updateMessageStatus(mid, 'delivered').catch(() => {})
+      } else if (ack.tipo === 'read' && ack.watermark) {
+        // La lectura solo trae una marca de tiempo: aplica a todo lo anterior.
+        const [[cv]] = await require('../db').query(
+          'SELECT id FROM conversations WHERE account_id=? AND agent_id=? AND messenger_from=?',
+          [accId, agentId, ack.recipientId]
+        )
+        if (cv) await store.markReadUpTo(cv.id, ack.watermark)
+      }
+    } catch (e) { console.warn('[messenger acuse]', e.message) }
+  }
+
   const { agent } = await getAgent(accId, agentId)
   if (!agent) { console.warn('[flow/process] FB agente no encontrado:', agentId); return }
 
@@ -349,6 +380,25 @@ async function processMessenger(accId, agentId, body) {
 // ─── Instagram ─────────────────────────────────────────────────────────────────
 async function processInstagram(accId, agentId, body) {
   const messages = parseInstagramWebhook(body)
+
+  // Acuses de entrega y lectura. Llegan por el mismo webhook que los mensajes y hasta ahora
+  // se descartaban, por eso estos chats solo mostraban "Enviado".
+  for (const ack of (messages.acuses || [])) {
+    try {
+      if (ack.tipo === 'delivered') {
+        // La entrega SÍ nombra los mensajes concretos.
+        for (const mid of ack.mids) await store.updateMessageStatus(mid, 'delivered').catch(() => {})
+      } else if (ack.tipo === 'read' && ack.watermark) {
+        // La lectura solo trae una marca de tiempo: aplica a todo lo anterior.
+        const [[cv]] = await require('../db').query(
+          'SELECT id FROM conversations WHERE account_id=? AND agent_id=? AND ig_from=?',
+          [accId, agentId, ack.recipientId]
+        )
+        if (cv) await store.markReadUpTo(cv.id, ack.watermark)
+      }
+    } catch (e) { console.warn('[instagram acuse]', e.message) }
+  }
+
   const { agent } = await getAgent(accId, agentId)
   if (!agent) { console.warn('[flow/process] IG agente no encontrado:', agentId); return }
 
@@ -369,7 +419,7 @@ async function processInstagram(accId, agentId, body) {
       : await metaProfile.fetchProfile(msg.senderId, channel.config?.pageAccessToken, "instagram", channel.config?.pageId)
     const nombreIg = msg.senderName || perfilIg?.name || ""
     const convId = await store.createOrGetInstagramConvo(accId, agentId, msg.senderId, nombreIg, channel.id, metaOrigin(msg.referral))
-    await upgradeGuestName(convId, nombreIg, perfilIg?.photo)
+    await upgradeGuestName(convId, nombreIg, perfilIg?.photo, perfilIg?.username)
 
     if (await store.messageExistsByProviderId(convId, msg.messageId)) {
       console.log('[flow/process] IG ya procesado en DB:', msg.messageId); continue

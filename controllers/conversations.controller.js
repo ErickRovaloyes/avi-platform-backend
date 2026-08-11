@@ -23,6 +23,19 @@ async function findOrCreateContact(accId, { guestName, guestId, waFrom, messenge
       existing = row
     }
 
+    // Messenger / Instagram: emparejar por SU identificador, que es lo único estable. Se
+    // guardaba en `extra` desde el principio pero nunca se buscaba, así que la misma persona
+    // acababa con un contacto nuevo cada vez que se recreaba su conversación.
+    if (!existing && (messengerFrom || igFrom)) {
+      const campo = messengerFrom ? 'messengerId' : 'instagramId'
+      const valor = messengerFrom || igFrom
+      const [[row]] = await pool.query(
+        `SELECT id, memory FROM contacts WHERE account_id=? AND JSON_UNQUOTE(JSON_EXTRACT(extra, '$.${campo}'))=?`,
+        [accId, String(valor)]
+      )
+      existing = row
+    }
+
     // Any channel: match by guestId stored in extra JSON
     if (!existing && guestId) {
       const [[row]] = await pool.query(
@@ -539,7 +552,27 @@ async function createOrGetSocialConvo(accId, agId, lookupCol, lookupVal, guestNa
     `SELECT id FROM conversations WHERE account_id=? AND agent_id=? AND ${lookupCol}=?`,
     [accId, agId, lookupVal]
   )
-  if (existing) return existing.id
+  if (existing) {
+    // Una conversación que ya existía salía por aquí SIN pasar por la creación de contacto,
+    // así que los chats abiertos antes de esta lógica no tenían contacto en el CRM y nunca
+    // iban a tenerlo. Se repara al vuelo: el próximo mensaje de cada chat lo enlaza.
+    try {
+      const [[c]] = await pool.query('SELECT local_vars FROM conversations WHERE id=?', [existing.id])
+      const lv = parseJ(c?.local_vars, {})
+      if (!lv.contact_id) {
+        const args = { guestName, guestId: String(lv.guest_id || ''), channelType, origin: origin || { type: 'direct' } }
+        if (lookupCol === 'wa_from')             args.waFrom        = lookupVal
+        else if (lookupCol === 'messenger_from') args.messengerFrom = lookupVal
+        else if (lookupCol === 'ig_from')        args.igFrom        = lookupVal
+        const { id: contactId } = await findOrCreateContact(accId, args)
+        if (contactId) {
+          lv.contact_id = contactId
+          await pool.query('UPDATE conversations SET local_vars=? WHERE id=?', [JSON.stringify(lv), existing.id])
+        }
+      }
+    } catch (e) { console.warn('[convo existente sin contacto]', e.message) }
+    return existing.id
+  }
   await pool.query('UPDATE counters SET value=value+1 WHERE name="guest_counter"')
   const [[ctr]] = await pool.query('SELECT value FROM counters WHERE name="guest_counter"')
   const n  = ctr?.value || Date.now()
