@@ -9,5 +9,7 @@ router.post('/meta/pages/connect', authMiddleware, ctrl.connect)
 router.post('/meta/pages/subscribe', authMiddleware, ctrl.subscribe)
 // Diagnóstico de la cadena de recepción: dice qué eslabón impide que lleguen los mensajes.
 router.post('/meta/pages/diagnose', authMiddleware, ctrl.diagnose)
+// Por qué no llega ninguna Página (antes de conectar ninguna).
+router.post('/meta/pages/diagnose-connect', authMiddleware, ctrl.diagnoseConnect)
 
 module.exports = router
