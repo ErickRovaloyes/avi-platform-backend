@@ -956,7 +956,7 @@ function buildTaskToolDefs(account) {
 async function taskExec(ctx, args) {
   try {
     const out = await require('../../services/aiTasks').createAiTask(ctx.accId, ctx.convId, args || {}, {
-      timezone: ctx.account?.aiTimezone || ctx.account?.scheduling?.timezone || 'America/Lima',
+      timezone: ctx.account?.aiTimezone || ctx.account?.scheduling?.timezone || 'America/Bogota',
     })
     if (out.ok) logDebug(ctx, 'flow_run', `✅ Tarea creada: ${args?.titulo || ''}`, { asignada: out.assigneeName || '(sin asignar)', vence: out.dueAt || null })
     return out.text
@@ -1354,7 +1354,7 @@ async function callAI(ctx, { systemPrompt, userPrompt, model, provider, maxToken
   // de IA (ai_agent, ai_chat, …) conoce la fecha y hora reales. La instrucción es
   // imperativa porque algunos modelos niegan por reflejo tener acceso a la hora.
   if (!jsonMode && ctx.account?.aiDatetimeEnabled !== false) {
-    const tz = ctx.account?.aiTimezone || ctx.account?.scheduling?.timezone || 'America/Lima'
+    const tz = ctx.account?.aiTimezone || ctx.account?.scheduling?.timezone || 'America/Bogota'
     const now = new Date()
     let localStr = '', utcStr = ''
     try { localStr = now.toLocaleString('es', { timeZone: tz, weekday: 'long', year: 'numeric', month: 'long', day: 'numeric', hour: '2-digit', minute: '2-digit' }) } catch { localStr = now.toISOString() }
@@ -1655,8 +1655,8 @@ const aiNodes = [
       const _sch = ctx.account?.scheduling
       if (_sch?.connected) {
         let hoy = ''
-        try { hoy = new Date().toLocaleDateString('es-CO', { timeZone: _sch.timezone || 'America/Lima', weekday: 'long', year: 'numeric', month: 'long', day: 'numeric' }) } catch { hoy = new Date().toISOString().slice(0, 10) }
-        sysWithRag = `${sysWithRag}\n\n📅 HOY es ${hoy} (zona horaria ${_sch.timezone || 'America/Lima'}). Para citas usa SIEMPRE la herramienta de agenda (ver_disponibilidad / recomendar_citas / agendar_cita / mover_cita / cancelar_cita / confirmar_cita); NO inventes horarios ni confirmes citas sin la herramienta. Si el cliente confirma su asistencia (p. ej. tras un recordatorio: "sí", "confirmo", "ahí estaré"), llama a confirmar_cita.`
+        try { hoy = new Date().toLocaleDateString('es-CO', { timeZone: _sch.timezone || 'America/Bogota', weekday: 'long', year: 'numeric', month: 'long', day: 'numeric' }) } catch { hoy = new Date().toISOString().slice(0, 10) }
+        sysWithRag = `${sysWithRag}\n\n📅 HOY es ${hoy} (zona horaria ${_sch.timezone || 'America/Bogota'}). Para citas usa SIEMPRE la herramienta de agenda (ver_disponibilidad / recomendar_citas / agendar_cita / mover_cita / cancelar_cita / confirmar_cita); NO inventes horarios ni confirmes citas sin la herramienta. Si el cliente confirma su asistencia (p. ej. tras un recordatorio: "sí", "confirmo", "ahí estaré"), llama a confirmar_cita.`
       }
 
       // Recontacto: si el flujo se disparó como recontacto inteligente, inyecta la

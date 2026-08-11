@@ -409,7 +409,7 @@ app.use('/api',                flowTemplatesRoutes)
        INDEX idx_oc_acc (account_id), INDEX idx_oc_code (account_id, code)
      )`,
     // Conciencia temporal de la IA: zona horaria local + (opcional) fecha/hora base fija.
-    "ALTER TABLE accounts ADD COLUMN ai_timezone VARCHAR(64) DEFAULT 'America/Lima'",
+    "ALTER TABLE accounts ADD COLUMN ai_timezone VARCHAR(64) DEFAULT 'America/Bogota'",
     "ALTER TABLE accounts ADD COLUMN ai_datetime_enabled TINYINT(1) DEFAULT 1",
     "ALTER TABLE accounts ADD COLUMN ai_base_datetime VARCHAR(40)",
     // Correo transaccional (Resend/SendGrid vía API HTTP) + verificación de registro
@@ -878,7 +878,7 @@ app.use('/api',                flowTemplatesRoutes)
        type         VARCHAR(20) DEFAULT 'booking',   -- booking | form
        name         VARCHAR(150) NOT NULL,
        description  TEXT,
-       timezone     VARCHAR(64) DEFAULT 'America/Lima',
+       timezone     VARCHAR(64) DEFAULT 'America/Bogota',
        color        VARCHAR(20) DEFAULT '#7c6fff',
        status       VARCHAR(20) DEFAULT 'active',     -- active | inactive
        availability JSON,    -- { mon:{enabled,slots:[{start,end}]}, ... }
@@ -1568,6 +1568,11 @@ app.use('/api',                flowTemplatesRoutes)
     // Tareas de tipo "flujo": el flujo que se ejecuta al vencer. Columna propia y no dentro
     // de `refs`, porque `refs` ya guarda un ARRAY de chats referenciados.
     "ALTER TABLE crm_tasks ADD COLUMN flow_id VARCHAR(50)",
+    // Zona horaria por defecto: Colombia. La columna se creó con America/Lima y ese ALTER
+    // no vuelve a ejecutarse, así que el DEFAULT hay que cambiarlo aparte para las cuentas
+    // NUEVAS. Las existentes conservan la suya (puede ser una elección deliberada).
+    "ALTER TABLE accounts ALTER COLUMN ai_timezone SET DEFAULT 'America/Bogota'",
+    "ALTER TABLE calendars ALTER COLUMN timezone SET DEFAULT 'America/Bogota'",
     "ALTER TABLE crm_tasks ADD COLUMN flow_runs INT DEFAULT 0",
     "ALTER TABLE crm_tasks ADD COLUMN flow_error TEXT",
     // Biblioteca GLOBAL de plantillas de flujos (creadas por el super admin; instalables

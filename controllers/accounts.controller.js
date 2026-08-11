@@ -298,7 +298,7 @@ async function loadPublicAccount(accId) {
     // Google conectado (Sheets/Calendar): el frontend bloquea DeepSeek en el prompt.
     google: { connected: await require('../services/google').isGoogleConnected(accId) },
     // Conciencia temporal de la IA (zona horaria + fecha/hora base opcional).
-    aiTimezone: acc.ai_timezone || 'America/Lima',
+    aiTimezone: acc.ai_timezone || 'America/Bogota',
     aiDatetimeEnabled: acc.ai_datetime_enabled == null ? true : !!acc.ai_datetime_enabled,
     aiBaseDatetime: acc.ai_base_datetime || '',
     payments: paymentsSvc.publicConfig(parseJ(acc.payments, null)),
@@ -409,7 +409,7 @@ const getAccount = async (req, res) => {
       orders: await ordersSvc.publicConfigAsync(accId).catch(() => ({ connected: false })),
       google: { connected: await require('../services/google').isGoogleConnected(accId) },
       copilotWa: (() => { const c = parseJ(acc.copilot_wa, {}) || {}; return { enabled: !!c.enabled, hasPassword: !!c.password } })(),
-      aiTimezone: acc.ai_timezone || 'America/Lima',
+      aiTimezone: acc.ai_timezone || 'America/Bogota',
       aiDatetimeEnabled: acc.ai_datetime_enabled == null ? true : !!acc.ai_datetime_enabled,
       aiBaseDatetime: acc.ai_base_datetime || '',
       payments: paymentsSvc.publicConfig(parseJ(acc.payments, null)),
@@ -459,7 +459,7 @@ const updateAccount = async (req, res) => {
   try {
     const sets = []; const vals = []
     if (chatTheme               !== undefined) { sets.push('chat_theme=?');                vals.push(chatTheme === null ? null : JSON.stringify(chatTheme)) }
-    if (aiTimezone              !== undefined) { sets.push('ai_timezone=?');               vals.push(String(aiTimezone || 'America/Lima').slice(0, 64)) }
+    if (aiTimezone              !== undefined) { sets.push('ai_timezone=?');               vals.push(String(aiTimezone || 'America/Bogota').slice(0, 64)) }
     if (aiDatetimeEnabled       !== undefined) { sets.push('ai_datetime_enabled=?');       vals.push(aiDatetimeEnabled ? 1 : 0) }
     if (aiBaseDatetime          !== undefined) { sets.push('ai_base_datetime=?');          vals.push(aiBaseDatetime ? String(aiBaseDatetime).slice(0, 40) : null) }
     if (openaiKey               !== undefined) { sets.push('openai_key=?');                vals.push(openaiKey) }

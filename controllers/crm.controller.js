@@ -725,7 +725,7 @@ const taskTool = async (req, res) => {
   if (!convId) return res.status(400).json({ error: 'Falta convId' })
   try {
     const [[acc]] = await pool.query('SELECT ai_timezone FROM accounts WHERE id=?', [accId])
-    const out = await require('../services/aiTasks').createAiTask(accId, convId, args, { timezone: acc?.ai_timezone || 'America/Lima' })
+    const out = await require('../services/aiTasks').createAiTask(accId, convId, args, { timezone: acc?.ai_timezone || 'America/Bogota' })
     res.json(out)
   } catch (err) { res.json({ text: `No se pudo crear la tarea: ${err.message}` }) }
 }

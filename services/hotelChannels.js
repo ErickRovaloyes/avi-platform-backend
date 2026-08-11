@@ -302,7 +302,7 @@ async function getOrCreateOtaCalendar(accId) {
   await pool.query(
     `INSERT INTO calendars (id, account_id, type, vertical, name, description, timezone, color, status, availability, exceptions, appointment, form_config, flow_id, shared_group, created_at, updated_at)
      VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`,
-    [id, accId, 'booking', 'hotel', 'Alojamientos (OTAs)', 'Sincronización de Airbnb/Booking por iCal', 'America/Lima', '#e1306c', 'active',
+    [id, accId, 'booking', 'hotel', 'Alojamientos (OTAs)', 'Sincronización de Airbnb/Booking por iCal', 'America/Bogota', '#e1306c', 'active',
      JSON.stringify({}), JSON.stringify([]), JSON.stringify({}), JSON.stringify({}), null, 'ota_quick', ts, ts]
   )
   return id

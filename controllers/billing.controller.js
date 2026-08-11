@@ -21,6 +21,10 @@ const getCatalog = async (req, res) => {
       .map(p => ({
         id: p.id, name: p.name, family: p.family,
         contactLimit: p.contactLimit || 0, aiEnabled: p.aiEnabled,
+        // Tope de conversaciones atendidas por el Agente IA. En la familia `agente` es EL
+        // número del plan (400/1.500/3.000/5.000) y lo que se cobra: sin él, la tarjeta no
+        // tenía qué enseñar y salía un guion.
+        aiContactLimit: p.aiContactLimit || 0,
         priceCop: p.priceCop || 0, priceUsd: toUsd(p.priceCop || 0),
         isCustomContact: p.isCustomContact, gracePeriodDays: p.gracePeriodDays,
       }))

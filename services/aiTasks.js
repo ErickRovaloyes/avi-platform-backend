@@ -59,7 +59,7 @@ async function createAiTask(accId, convId, args = {}, opts = {}) {
   if (!title) return { ok: false, text: 'No se creó la tarea: falta el título.' }
   if (!convId) return { ok: false, text: 'No se creó la tarea: no hay conversación activa.' }
 
-  const tz = opts.timezone || 'America/Lima'
+  const tz = opts.timezone || 'America/Bogota'
   const description = String(args.descripcion || '').slice(0, 2000)
   const type = TYPES.includes(String(args.tipo || '').toLowerCase()) ? String(args.tipo).toLowerCase() : 'general'
   const priority = PRIORITIES.includes(String(args.prioridad || '').toLowerCase()) ? String(args.prioridad).toLowerCase() : 'normal'

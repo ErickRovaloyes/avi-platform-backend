@@ -33,13 +33,13 @@ async function publicConfig(accId) {
     connected: cals.length > 0,
     calendarIds: cals.map(c => c.id),
     calendars: cals.map(c => ({ id: c.id, name: c.name, description: c.description || '', timezone: c.timezone, bookingVars: Array.isArray(c.bookingVars) ? c.bookingVars : [] })),
-    timezone: cals[0]?.timezone || cfg.timezone || 'America/Lima',
+    timezone: cals[0]?.timezone || cfg.timezone || 'America/Bogota',
   }
 }
 
 // ── Helpers de fecha (en la zona horaria del calendario) ───────────────────────
 function todayInTz(tz) {
-  try { return new Date().toLocaleDateString('en-CA', { timeZone: tz || 'America/Lima' }) } // YYYY-MM-DD
+  try { return new Date().toLocaleDateString('en-CA', { timeZone: tz || 'America/Bogota' }) } // YYYY-MM-DD
   catch { return new Date().toISOString().slice(0, 10) }
 }
 function addDays(dateStr, n) { const d = new Date(`${dateStr}T12:00:00Z`); d.setUTCDate(d.getUTCDate() + n); return d.toISOString().slice(0, 10) }
@@ -271,7 +271,7 @@ const STATUS_ES = { pending: 'pendiente', confirmed: 'confirmada', rescheduled: 
 async function bookingsForConv(accId, convId) {
   const cals = await allowedCalendars(accId)
   if (!cals.length) return { enabled: false, customer: null, upcoming: [], past: [] }
-  const tz = cals[0].timezone || 'America/Lima'
+  const tz = cals[0].timezone || 'America/Bogota'
   const today = todayInTz(tz)
   const cust = await customerFromConv(accId, convId)
   const allowed = new Set(cals.map(c => c.id))
@@ -321,7 +321,7 @@ async function bookingsForConv(accId, convId) {
 async function toolCall(accId, fn, args = {}, meta = {}) {
   const cals = await allowedCalendars(accId)
   if (!cals.length) return { text: 'No hay calendarios configurados para la agenda. El cliente debe seleccionarlos en su panel (Zona IA → Agenda).' }
-  const tz = cals[0].timezone || 'America/Lima'
+  const tz = cals[0].timezone || 'America/Bogota'
   const today = todayInTz(tz)
   // Duración de cada cita/turno del calendario (min). El asistente la necesita para
   // no inventarse la duración (ej. decir 1h cuando son 30 min).

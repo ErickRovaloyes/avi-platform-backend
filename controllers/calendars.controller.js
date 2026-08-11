@@ -41,7 +41,7 @@ const create = async (req, res) => {
       `INSERT INTO calendars (id, account_id, type, vertical, name, description, timezone, color, status, availability, exceptions, appointment, form_config, flow_id, shared_group, created_at, updated_at)
        VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`,
       [id, accId, b.type || 'booking', b.vertical || 'appointment', b.name || 'Calendario', b.description || '',
-       b.timezone || 'America/Lima', b.color || '#7c6fff', b.status || 'active',
+       b.timezone || 'America/Bogota', b.color || '#7c6fff', b.status || 'active',
        JSON.stringify(b.availability || DEFAULT_AVAILABILITY),
        JSON.stringify(b.exceptions || []),
        JSON.stringify(b.appointment || DEFAULT_APPOINTMENT),

@@ -50,7 +50,7 @@ function mapCalendar(r) {
   return {
     id: r.id, accountId: r.account_id, type: r.type || 'booking',
     vertical: r.vertical || 'appointment',
-    name: r.name, description: r.description || '', timezone: r.timezone || 'America/Lima',
+    name: r.name, description: r.description || '', timezone: r.timezone || 'America/Bogota',
     color: r.color || '#7c6fff', status: r.status || 'active',
     availability: parseJ(r.availability, {}),
     exceptions:   parseJ(r.exceptions, []),

@@ -85,6 +85,9 @@ const updatePlan = async (req, res) => {
     name: 'name', monthlyConversationLimit: 'monthly_conversation_limit', isCustomLimit: 'is_custom_limit',
     gracePeriodDays: 'grace_period_days', monthlyPrice: 'monthly_price', sortOrder: 'sort_order',
     family: 'family', contactLimit: 'contact_limit', priceCop: 'price_cop', aiEnabled: 'ai_enabled', isCustomContact: 'is_custom_contact',
+      // Tope de conversaciones con IA: es EL número de los planes Agente (400/1.500/…) y
+      // faltaba aquí, así que no había forma de cambiarlo desde el panel.
+      aiContactLimit: 'ai_contact_limit',
   }
   const boolKeys = new Set(['isCustomLimit', 'aiEnabled', 'isCustomContact'])
   const sets = [], vals = []
