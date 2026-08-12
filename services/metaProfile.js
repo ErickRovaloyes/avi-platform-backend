@@ -25,6 +25,26 @@ const TTL = 6 * 60 * 60 * 1000   // 6 h  (un nombre acertado no cambia)
 // pasajero envenenaba la jornada entera.
 const NEG_TTL = 5 * 60 * 1000   // 5 min
 
+/**
+ * ¿La respuesta guardada está COMPLETA, o solo a medias?
+ *
+ * En Instagram hacen falta dos datos y no siempre llegan juntos: el nombre y el @usuario.
+ * El usuario es lo único con lo que se compone el enlace al perfil (instagram.com/usuario),
+ * y hay vías que devuelven el nombre y no el usuario.
+ *
+ * Una respuesta a medias valía igual que una completa, así que se quedaba fija 6 horas: el
+ * nombre aparecía, el enlace no, y no se volvía a preguntar en toda la jornada aunque Meta
+ * ya estuviera dando el usuario. Marcándola como incompleta se reintenta a los pocos
+ * minutos, sin dejar de servir el nombre mientras tanto.
+ *
+ * En Messenger no aplica: allí no existe @usuario ni URL pública de perfil.
+ */
+function esCompleto(hit, kind) {
+  if (!hit || !(hit.name || hit.photo)) return false
+  if (kind !== 'instagram') return true
+  return !!hit.username
+}
+
 // Nombres que NO son un nombre: los marcadores que genera la plataforma cuando no lo sabe.
 //
 // El límite de palabra (\b) no es un detalle: sin él, "Guestavo Ríos" o "Visitantes SA"
@@ -82,7 +102,13 @@ async function fetchProfile(psid, token, kind = 'messenger', pageId = '') {
   if (!psid || !token) return null
   const hit = cache.get(psid)
   if (hit) {
-    const vigente = (hit.name || hit.photo) ? TTL : NEG_TTL
+    // Una respuesta a MEDIAS no debe quedarse fija seis horas. En Instagram hacen falta dos
+    // datos —el nombre y el @usuario— y se pueden obtener por caminos distintos: si se
+    // guardó el nombre sin usuario, servir eso durante toda la jornada significa que el
+    // enlace al perfil no se puede completar aunque Meta ya lo esté dando. Se reintenta a
+    // los pocos minutos, y mientras tanto se sigue sirviendo el nombre para que el chat no
+    // se quede sin él.
+    const vigente = esCompleto(hit, kind) ? TTL : NEG_TTL
     if (Date.now() - hit.at < vigente) return (hit.name || hit.photo) ? hit : null
   }
 
@@ -169,11 +195,14 @@ async function fetchInstagramNative(igsid, token) {
   if (!igsid || !token) return null
   const hit = cache.get(igsid)
   if (hit) {
-    const vigente = (hit.name || hit.photo) ? TTL : NEG_TTL
+    // Igual que arriba: sin el @usuario la respuesta está a medias y no puede quedarse fija
+    // seis horas, o el enlace al perfil nunca llegaría a completarse.
+    const vigente = esCompleto(hit, 'instagram') ? TTL : NEG_TTL
     if (Date.now() - hit.at < vigente) return (hit.name || hit.photo) ? hit : null
   }
   try {
     const r = await fetch(`https://graph.instagram.com/${encodeURIComponent(igsid)}?fields=name,username,profile_pic&access_token=${encodeURIComponent(token)}`)
+    // (la validez de la entrada guardada se decide arriba con esCompleto)
     const d = await r.json().catch(() => ({}))
     if (!r.ok) {
       console.warn('[metaProfile instagram nativo]', igsid, d?.error?.message || `HTTP ${r.status}`)

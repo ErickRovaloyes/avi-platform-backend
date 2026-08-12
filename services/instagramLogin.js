@@ -191,7 +191,12 @@ async function rellenarUsuarios(agentId, cfg) {
       let ex = {}; try { ex = JSON.parse(ct.extra || '{}') } catch {}
       if (ex.instagramUsername) continue          // ya lo tiene
 
-      const perfil = await metaProfile.fetchInstagramNative(c.ig_from, cfg.igAccessToken)
+      // Se lee por la MISMA vía que usaría un mensaje de ese canal: la nativa va por
+      // graph.instagram.com con su token propio, y la de Página por graph.facebook.com.
+      // Usar la que no toca devuelve null y el repaso no rellenaría nunca nada.
+      const perfil = cfg.mode === 'instagram'
+        ? await metaProfile.fetchInstagramNative(c.ig_from, cfg.igAccessToken)
+        : await metaProfile.fetchProfile(c.ig_from, cfg.pageAccessToken, 'instagram', cfg.pageId)
       hechos++
       if (!perfil?.username) continue             // Meta no lo da para este; ya se reintentará
 
@@ -215,7 +220,16 @@ async function tick() {
       let cambio = false
       for (const ch of chans) {
         const cfg = ch?.config
-        if (ch?.type !== 'instagram' || cfg?.mode !== 'instagram' || !cfg?.igAccessToken) continue
+        if (ch?.type !== 'instagram' || !cfg) continue
+
+        // El repaso de @usuarios vale para CUALQUIER canal de Instagram. Estaba dentro del
+        // bloque de solo-nativos, así que en los canales conectados por Página no se
+        // ejecutaba nunca — y son justo los que más se quedan sin el usuario, porque su vía
+        // de respaldo (la lista de conversaciones) devuelve el nombre y no siempre el resto.
+        await rellenarUsuarios(ag.id, cfg)
+
+        // De aquí para abajo, solo lo del inicio de sesión nativo: token propio y su renovación.
+        if (cfg.mode !== 'instagram' || !cfg.igAccessToken) continue
 
         // Los canales conectados ANTES de añadir messaging_seen se quedaron suscritos solo a
         // `messages`, y sin eso no llega el aviso de leído. Se resuscriben aquí, una vez, en

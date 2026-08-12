@@ -550,6 +550,34 @@ const diagnose = async (req, res) => {
             } catch (e) { add(false, 'Qué hay guardado en los contactos', 'No se pudo consultar: ' + e.message) }
           }
 
+          // LA MISMA LLAMADA QUE HACE EL WEBHOOK, no una parecida.
+          //
+          // probeProfile va sin caché y por la vía que le digo yo; el mensaje real usa otra
+          // función y SÍ pasa por la caché. Comparar las dos separa tres cosas que desde
+          // fuera se ven idénticas: que Meta no dé el usuario, que la caché esté sirviendo
+          // una respuesta vieja sin él, o que el canal esté usando la vía equivocada.
+          if (esIg) {
+            try {
+              const mpv = require('../services/metaProfile')
+              const psid = mejor.c.psid
+              const vivo = igNativo
+                ? await mpv.fetchInstagramNative(psid, cfgCanal.igAccessToken)
+                : await mpv.fetchProfile(psid, pageAccessToken, 'instagram', pageId)
+              const via = igNativo ? 'Instagram nativo' : 'Página de Facebook'
+              const coincide = !!vivo?.username
+              add(coincide, 'Lo que recibe el webhook al llegar un mensaje',
+                `Vía: ${via}. Devuelve: ${vivo ? `nombre «${vivo.name || '(vacío)'}» · usuario «${vivo.username || '(vacío)'}»` : 'NADA (null)'}. `
+                + (coincide
+                    ? 'Con esto el usuario se guarda al llegar el próximo mensaje.'
+                    : !vivo
+                      ? 'Por eso no se guarda nada: con la vía de este canal no se lee el perfil. '
+                        + (igNativo ? '' : 'El canal NO está en modo Instagram nativo; si lo conectaste con el inicio de sesión de Instagram, reconéctalo.')
+                      : probe.username
+                        ? `Aquí falta el usuario pero la prueba directa SÍ lo trae (@${probe.username}): es una respuesta vieja guardada en memoria. Se limpia sola en 6 h, o reiniciando el servicio.`
+                        : 'Meta no da el usuario por esta vía.'))
+            } catch (e) { add(false, 'Lo que recibe el webhook al llegar un mensaje', 'No se pudo comprobar: ' + e.message) }
+          }
+
           if (esIg) {
             add(!!probe.username, 'Enlace al perfil de Instagram',
               probe.username
