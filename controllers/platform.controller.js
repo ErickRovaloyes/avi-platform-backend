@@ -414,6 +414,12 @@ const listAccounts = async (req, res) => {
       modules: parseJ(a.modules, null),
       cmsStorageQuotaMb: a.cms_storage_quota_mb ?? null,
       changeAgentTokenQuota: a.change_agent_token_quota ?? null,
+      // Si la cuenta tiene clave propia, y una pista para reconocerla. La clave ENTERA no
+      // sale de aquí: es un secreto, y para saber si está puesta basta con el booleano.
+      hasOpenaiKey: !!a.openai_key,
+      hasDeepseekKey: !!a.deepseek_key,
+      openaiKeyHint: a.openai_key ? '···' + String(a.openai_key).slice(-4) : '',
+      deepseekKeyHint: a.deepseek_key ? '···' + String(a.deepseek_key).slice(-4) : '',
       channelLimitsOverride: parseJ(a.channel_limits_override, {}),
       changeAgentLimitOverride: a.change_agent_limit_override ?? null,
       changeAgentTokenLimitsOverride: parseJ(a.change_agent_token_limits_override, null),
@@ -469,7 +475,7 @@ const createAccount = async (req, res) => {
 const updateSAAccount = async (req, res) => {
   if (req.user.type !== 'superadmin') return res.status(403).json({ error: 'Solo super admin' })
   const { accId } = req.params
-  const { plan, status, channelLimitsOverride, changeAgentLimitOverride, changeAgentTokenLimitsOverride, changeAgentTokenQuota, changeAgentTokensUsed, modules, cmsStorageQuotaMb, nickname, name } = req.body
+  const { plan, status, channelLimitsOverride, changeAgentLimitOverride, changeAgentTokenLimitsOverride, changeAgentTokenQuota, changeAgentTokensUsed, modules, cmsStorageQuotaMb, nickname, name, openaiKey, deepseekKey } = req.body
   try {
     const sets = []; const vals = []
     if (plan                     !== undefined) { sets.push('plan=?');                      vals.push(plan) }
@@ -488,6 +494,10 @@ const updateSAAccount = async (req, res) => {
     }
     // Override de almacenamiento del CMS (plan "personalizado"): MB, o null = usar el plan.
     if (cmsStorageQuotaMb        !== undefined) { sets.push('cms_storage_quota_mb=?');      vals.push(cmsStorageQuotaMb === null || cmsStorageQuotaMb === '' ? null : Number(cmsStorageQuotaMb)) }
+    // Claves de IA: se administran desde el super panel porque el coste de los modelos es de
+    // la plataforma, no del cliente, que paga por plan. Vacío = usar la clave global.
+    if (openaiKey                !== undefined) { sets.push('openai_key=?');               vals.push(String(openaiKey || '').trim() || null) }
+    if (deepseekKey              !== undefined) { sets.push('deepseek_key=?');             vals.push(String(deepseekKey || '').trim() || null) }
     if (channelLimitsOverride    !== undefined) { sets.push('channel_limits_override=?');   vals.push(JSON.stringify(channelLimitsOverride)) }
     // Módulos override por cuenta: array de ids habilitados, o null = heredar del tipo / todos.
     if (modules                  !== undefined) { sets.push('modules=?');                   vals.push(Array.isArray(modules) ? JSON.stringify(modules) : null) }
