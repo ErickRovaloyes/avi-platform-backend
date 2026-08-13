@@ -1,6 +1,6 @@
 'use strict'
 const pool = require('../db')
-const { sign } = require('../auth')
+const { sign, emitirSesion, quitarCookie } = require('../auth')
 const { parseJ } = require('../utils')
 const { loadEmailConfig, isConfigured, sendEmail } = require('../services/email')
 const { issueCode, verifyCode } = require('../services/verifyCodes')
@@ -119,7 +119,7 @@ const login = async (req, res) => {
       if (r.ok) return res.json({ twoFactorRequired: true, email: session.email })
       console.error('[LOGIN 2FA] envío falló, fail-open:', r.error)
     }
-    res.json({ token: sign(session), session })
+    res.json(emitirSesion(req, res, session))
   } catch (err) {
     console.error('[LOGIN]', err)
     res.status(500).json({ error: 'Error interno' })
@@ -144,7 +144,7 @@ const verify2fa = async (req, res) => {
     const v = await verifyCode(session.email, 'login', code)
     if (!v.ok) return res.status(401).json({ error: v.error })
     await guard.clear(email)
-    res.json({ token: sign(session), session })
+    res.json(emitirSesion(req, res, session))
   } catch (err) {
     console.error('[VERIFY 2FA]', err)
     res.status(500).json({ error: 'Error interno' })
@@ -247,7 +247,7 @@ const switchAccount = async (req, res) => {
       roleId: mem.role_id, permissions: parseJ(role?.permissions, {}),
       agentAccess: parseJ(mem.agent_access, []),
     }
-    res.json({ token: sign(session), session })
+    res.json(emitirSesion(req, res, session))
   } catch (err) {
     console.error('[SWITCH]', err)
     res.status(500).json({ error: 'Error interno' })
@@ -287,7 +287,7 @@ const impersonate = async (req, res) => {
       // Identidad del super admin que está en la vista (para acciones que la necesitan).
       saId, saEmail, saName,
     }
-    res.json({ token: sign(session), session })
+    res.json(emitirSesion(req, res, session))
   } catch (err) {
     res.status(500).json({ error: 'Error interno' })
   }
@@ -301,7 +301,7 @@ const refreshSession = async (req, res) => {
   try {
     if (req.user.type === 'superadmin') {
       // Super admins keep their type as-is; just re-sign the existing session
-      return res.json({ token: sign(req.user), session: req.user })
+      return res.json(emitirSesion(req, res, req.user))
     }
     const email = req.user.email
     const [rows] = await pool.query(
@@ -324,7 +324,7 @@ const refreshSession = async (req, res) => {
       roleId: active.role_id, permissions: parseJ(role?.permissions, {}),
       agentAccess: parseJ(active.agent_access, []),
     }
-    res.json({ token: sign(session), session })
+    res.json(emitirSesion(req, res, session))
   } catch (err) {
     console.error('[REFRESH]', err)
     res.status(500).json({ error: 'Error interno' })
@@ -378,7 +378,7 @@ const updateMyProfile = async (req, res) => {
       email: newEmail || req.user.email,
       photo: photo !== undefined ? (photo || null) : (req.user.photo || null),
     }
-    res.json({ token: sign(session), session })
+    res.json(emitirSesion(req, res, session))
   } catch (err) {
     console.error('[PROFILE]', err)
     res.status(500).json({ error: 'Error interno' })
@@ -424,4 +424,45 @@ const notifTestEmail = async (req, res) => {
   } catch (err) { res.status(500).json({ error: 'Error interno' }) }
 }
 
-module.exports = { login, verify2fa, resend2fa, forgot, resetPassword, switchAccount, impersonate, refreshSession, updateMyProfile, getMyNotifPrefs, saveMyNotifPrefs, notifTestEmail }
+
+
+/**
+ * Cierre de sesión.
+ *
+ * Hasta ahora el navegador solo se limpiaba a sí mismo, y bastaba porque el token vivía en
+ * localStorage. La cookie es httpOnly: JavaScript no puede tocarla, así que borrarla tiene
+ * que ordenarlo el servidor.
+ *
+ * No exige autenticación a propósito: cerrar sesión con un token ya caducado —o inválido—
+ * debe funcionar igual, o el usuario se quedaría con una cookie que no puede quitarse.
+ */
+const logout = async (req, res) => {
+  quitarCookie(req, res)
+  res.json({ ok: true })
+}
+
+/**
+ * Salir de una cuenta suplantada y volver a la sesión real de super admin.
+ *
+ * Antes lo hacía el navegador restaurando una copia del token que guardaba en localStorage.
+ * Con la sesión en una cookie httpOnly eso ya no vale —el navegador no puede escribirla— y
+ * tampoco convenía: era una credencial completa de super admin guardada donde cualquier XSS
+ * podía leerla.
+ *
+ * No hace falta ningún respaldo: la sesión suplantada lleva `isImpersonating` y el `id` del
+ * super admin real, que es todo lo necesario para reconstruirla desde la base.
+ */
+const stopImpersonating = async (req, res) => {
+  if (!req.user?.isImpersonating) return res.status(400).json({ error: 'No estás dentro de ninguna cuenta' })
+  try {
+    const [[sa]] = await pool.query('SELECT id, name, email, photo FROM super_admins WHERE id=?', [req.user.id])
+    if (!sa) return res.status(403).json({ error: 'La sesión de super admin ya no existe' })
+    const session = { type: 'superadmin', id: sa.id, name: sa.name, email: sa.email, photo: sa.photo || null }
+    res.json(emitirSesion(req, res, session))
+  } catch (err) {
+    console.error('[stopImpersonating]', err)
+    res.status(500).json({ error: 'Error interno' })
+  }
+}
+
+module.exports = { login, verify2fa, resend2fa, forgot, resetPassword, switchAccount, impersonate, refreshSession, updateMyProfile, getMyNotifPrefs, saveMyNotifPrefs, notifTestEmail, logout, stopImpersonating }

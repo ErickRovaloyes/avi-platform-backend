@@ -1,7 +1,7 @@
 'use strict'
 const pool = require('../db')
 const { uid, parseJ } = require('../utils')
-const { sign } = require('../auth')
+const { sign, emitirSesion } = require('../auth')
 const guard = require('../services/demoGuard')
 const subs = require('../services/subscriptions')
 const provision = require('../services/demoProvision')
@@ -138,7 +138,8 @@ const signup = async (req, res) => {
       webchatLink: prov.webchatLink, webchatUrl,
       // Plan Gratuito: acceso completo con un tope de conversaciones mensuales.
       planFamily: 'free', freeStartedAt, conversationLimit,
-      token: sign(session), session,
+      // La cookie va aparte porque aquí el token viaja dentro de una respuesta más grande.
+      ...emitirSesion(req, res, session),
     })
   } catch (err) { console.error('[demo signup]', err); res.status(500).json({ error: 'No se pudo crear la cuenta Demo' }) }
 }

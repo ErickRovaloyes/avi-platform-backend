@@ -24,9 +24,73 @@ function verify(token) {
   try { return jwt.verify(token, SECRET) } catch { return null }
 }
 
-function authMiddleware(req, res, next) {
+const COOKIE = 'avi_jwt'
+
+/**
+ * El token de la petición: PRIMERO la cookie, luego la cabecera de siempre.
+ *
+ * La cookie es `httpOnly`, así que ningún script de la página puede leerla — que es el
+ * objetivo: con el token en localStorage, cualquier XSS (propio o de una dependencia) se lo
+ * llevaba y podía suplantar al usuario sin caducidad ni forma de revocarlo.
+ *
+ * Se sigue aceptando `Authorization: Bearer` a propósito, y no debilita nada: si el token ya
+ * no se guarda en el navegador, no hay nada que robar. Lo que sí evita es romper la app móvil
+ * y cualquier integración por API, que mandan la cabecera y no tienen cookies.
+ */
+function tokenDe(req) {
+  const cookies = req.headers.cookie || ''
+  for (const trozo of cookies.split(';')) {
+    const [k, ...resto] = trozo.trim().split('=')
+    if (k === COOKIE && resto.length) return decodeURIComponent(resto.join('='))
+  }
   const header = req.headers.authorization || ''
-  const token  = header.startsWith('Bearer ') ? header.slice(7) : null
+  return header.startsWith('Bearer ') ? header.slice(7) : null
+}
+
+/**
+ * Deja la sesión en una cookie httpOnly.
+ *
+ * `Secure` se decide por la conexión REAL del usuario: Traefik termina TLS y nos habla en
+ * claro, así que mirar el protocolo de esta conexión daría siempre http y el navegador
+ * descartaría la cookie. Por eso se mira X-Forwarded-Proto, que es quien sabe la verdad.
+ *
+ * `SameSite=Lax` y no `Strict`: con Strict el navegador NO manda la cookie al llegar desde un
+ * enlace externo (un correo, un WhatsApp), así que el usuario aterriza deslogueado y tiene
+ * que navegar una vez para «recuperar» la sesión. Lax sigue bloqueando el POST entre sitios,
+ * que es el vector de CSRF que importa.
+ */
+function ponerCookie(req, res, token) {
+  const seguro = (req.headers['x-forwarded-proto'] || req.protocol) === 'https'
+  // La misma vida que el token (365d, ver sign). Ponerle menos —la auditoría sugería un
+  // día— desconectaría a todo el mundo a diario sin cerrar sesión, que es un cambio de
+  // comportamiento del producto y no lo que el hallazgo pedía: lo que resolvía era que un
+  // XSS pudiera robar el token, y eso lo arregla `HttpOnly`, dure lo que dure.
+  const partes = [
+    `${COOKIE}=${encodeURIComponent(token)}`,
+    'HttpOnly', 'Path=/', 'SameSite=Lax',
+    `Max-Age=${365 * 24 * 60 * 60}`,
+  ]
+  if (seguro) partes.push('Secure')
+  res.append('Set-Cookie', partes.join('; '))
+}
+
+/** Cierra la sesión del navegador. Max-Age=0 pide al navegador que la borre ya. */
+function quitarCookie(req, res) {
+  const seguro = (req.headers['x-forwarded-proto'] || req.protocol) === 'https'
+  const partes = [`${COOKIE}=`, 'HttpOnly', 'Path=/', 'SameSite=Lax', 'Max-Age=0']
+  if (seguro) partes.push('Secure')
+  res.append('Set-Cookie', partes.join('; '))
+}
+
+/** Emite la sesión: cookie para el navegador + token en el JSON para los clientes de API. */
+function emitirSesion(req, res, session) {
+  const token = sign(session)
+  ponerCookie(req, res, token)
+  return { token, session }
+}
+
+function authMiddleware(req, res, next) {
+  const token = tokenDe(req)
   if (!token) return res.status(401).json({ error: 'Token requerido' })
   const payload = verify(token)
   if (!payload) return res.status(401).json({ error: 'Token inválido o expirado' })
@@ -34,10 +98,24 @@ function authMiddleware(req, res, next) {
   next()
 }
 
+/**
+ * Solo super administradores.
+ *
+ * `authMiddleware` comprueba que HAY sesión, no QUIÉN es: cualquier usuario de cualquier
+ * cuenta cliente la pasa. Las rutas de administración necesitan además esto, y varias lo
+ * daban por hecho — estaban comentadas como «Superadmin: …» pero sin ninguna comprobación,
+ * así que quedaban abiertas a todo el que hubiera iniciado sesión.
+ *
+ * Se usa DESPUÉS de authMiddleware, que es quien rellena req.user.
+ */
+function soloSuperadmin(req, res, next) {
+  if (req.user?.type !== 'superadmin') return res.status(403).json({ error: 'Solo super admin' })
+  next()
+}
+
 // Optional auth — attaches user if token present but does not block
 function optionalAuth(req, res, next) {
-  const header = req.headers.authorization || ''
-  const token  = header.startsWith('Bearer ') ? header.slice(7) : null
+  const token = tokenDe(req)
   if (token) req.user = verify(token) || null
   next()
 }
@@ -75,4 +153,5 @@ function apiKeyAuth(requiredScope = null) {
   }
 }
 
-module.exports = { sign, verify, authMiddleware, optionalAuth, apiKeyAuth, hashApiKey }
+module.exports = { sign, verify, authMiddleware, soloSuperadmin, optionalAuth, apiKeyAuth, hashApiKey,
+  tokenDe, ponerCookie, quitarCookie, emitirSesion, COOKIE }

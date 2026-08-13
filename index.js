@@ -5,7 +5,7 @@ const express    = require('express')
 const http       = require('http')
 const { Server } = require('socket.io')
 const cors       = require('cors')
-const { verify } = require('./auth')
+const { verify, tokenDe: leerToken } = require('./auth')
 const socket     = require('./services/socket')
 
 const app    = express()
@@ -22,7 +22,10 @@ app.use(express.json({ limit: '25mb', verify: (req, _res, buf) => { req.rawBody 
 // ── Socket.io: auth + room management ────────────────────────────────────────
 
 io.use((sock, next) => {
-  const token = sock.handshake.auth?.token
+  // La cookie httpOnly viaja sola en el handshake —el socket es del mismo origen— y el
+  // navegador ya no puede leer el token para ponerlo en `auth`. Se sigue aceptando `auth.token`
+  // para la app móvil y para las sesiones que aún no han migrado a cookie.
+  const token = leerToken({ headers: sock.handshake.headers, protocol: 'https' }) || sock.handshake.auth?.token
   sock.user = token ? verify(token) : null
   next()
 })

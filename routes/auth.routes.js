@@ -13,6 +13,11 @@ router.post('/reset',           ctrl.resetPassword)
 router.post('/switch',          authMiddleware, ctrl.switchAccount)
 router.post('/impersonate',     authMiddleware, ctrl.impersonate)
 router.post('/refresh',         authMiddleware, ctrl.refreshSession)
+// La cookie es httpOnly: JavaScript no puede borrarla, así que cerrar sesión tiene que
+// pedírselo al servidor. Sin autenticación a propósito: cerrar sesión con un token ya
+// caducado debe funcionar igual.
+router.post('/logout',          ctrl.logout)
+router.post('/stop-impersonating', authMiddleware, ctrl.stopImpersonating)
 router.put('/me',               authMiddleware, ctrl.updateMyProfile)
 router.get('/me/notif-prefs',   authMiddleware, ctrl.getMyNotifPrefs)
 router.put('/me/notif-prefs',   authMiddleware, ctrl.saveMyNotifPrefs)
