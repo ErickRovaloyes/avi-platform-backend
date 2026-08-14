@@ -18,6 +18,38 @@ async function signupVerifyActive() {
   } catch { return false }
 }
 
+/**
+ * La plantilla activa, ya decodificada.
+ *
+ * Cambia muy de tanto en tanto —solo cuando un superadmin sube o activa otra— y la pide
+ * cualquiera sin autenticación, así que era el punto perfecto para saturar el servidor: cada
+ * petición sacaba el documento completo de MySQL y lo decodificaba bloqueando el proceso.
+ *
+ * Se guarda el buffer YA decodificado y su firma, para que las descargas repetidas acaben en
+ * un 304 sin tocar la base ni volver a decodificar nada.
+ */
+let plantillaCache = null
+
+function olvidarPlantilla() { plantillaCache = null }
+
+async function plantillaActiva() {
+  if (plantillaCache) return plantillaCache
+  const [[t]] = await pool.query('SELECT * FROM demo_templates WHERE active=1 LIMIT 1')
+  if (!t || t.data_base64 == null || t.data_base64 === '') { plantillaCache = { vacia: true }; return plantillaCache }
+  let buf
+  try { buf = Buffer.from(String(t.data_base64), 'base64') }
+  catch { plantillaCache = { vacia: true }; return plantillaCache }
+  plantillaCache = {
+    buf,
+    filename: t.filename,
+    mime: t.mime,
+    // La firma identifica ESTA versión del archivo: si cambia la plantilla, cambia el ETag y
+    // el navegador se baja la nueva en vez de quedarse con la vieja.
+    etag: '"' + require('crypto').createHash('sha1').update(buf).digest('hex').slice(0, 24) + '"',
+  }
+  return plantillaCache
+}
+
 const requireSA = (req, res) => {
   if (req.user?.type !== 'superadmin') { res.status(403).json({ error: 'Solo superadmin' }); return false }
   return true
@@ -256,21 +288,37 @@ const getDashboard = async (req, res) => {
 }
 
 // ── Estado público del registro Demo (lo consulta el asistente) ────────────────
+// Dos consultas por petición para devolver dos booleanos que cambian una vez al mes. Es
+// público y sin autenticación, así que basta con repetirlo para hacer trabajar a la base.
+let estadoCache = null
+const ESTADO_TTL = 10 * 1000
+
 const publicStatus = async (req, res) => {
   try {
+    if (estadoCache && Date.now() - estadoCache.at < ESTADO_TTL) return res.json(estadoCache.datos)
     const enabled = await registrationEnabled()
     const [[t]] = await pool.query('SELECT id, name FROM demo_templates WHERE active=1 LIMIT 1')
-    res.json({ enabled, hasTemplate: !!t, templateName: t?.name || null })
+    const datos = { enabled, hasTemplate: !!t, templateName: t?.name || null }
+    estadoCache = { at: Date.now(), datos }
+    res.json(datos)
   } catch { res.json({ enabled: true, hasTemplate: false }) }
 }
 
 // Descarga PÚBLICA de la plantilla activa (la usa el asistente de onboarding).
 const downloadActiveTemplate = async (req, res) => {
   try {
-    const [[t]] = await pool.query('SELECT * FROM demo_templates WHERE active=1 LIMIT 1')
-    if (!t) return res.status(404).json({ error: 'No hay plantilla activa' })
-    sendTemplate(res, t)
-  } catch { res.status(500).json({ error: 'Error interno' }) }
+    const p = await plantillaActiva()
+    if (p.vacia) return res.status(404).json({ error: 'No hay plantilla activa' })
+
+    // Si el navegador ya la tiene, se le dice y no se manda nada. Es lo que convierte una
+    // descarga de varios MB en una respuesta vacía, y el motivo por el que este endpoint
+    // dejaba el servidor de rodillas cuando alguien lo repetía.
+    res.setHeader('ETag', p.etag)
+    res.setHeader('Cache-Control', 'public, max-age=300')
+    if (req.headers['if-none-match'] === p.etag) return res.status(304).end()
+
+    enviarBuffer(res, p.buf, p.filename, p.mime)
+  } catch (err) { console.error('[downloadActiveTemplate]', err); res.status(500).json({ error: 'Error interno' }) }
 }
 
 function sendTemplate(res, t) {
@@ -289,6 +337,16 @@ function sendTemplate(res, t) {
   const rawName   = String(t.filename || 'plantilla')
   const asciiName = rawName.replace(/[^\x20-\x7e]/g, '_').replace(/["\\]/g, '')
   res.setHeader('Content-Type', String(t.mime || 'application/octet-stream').replace(/[^\x20-\x7e]/g, ''))
+  res.setHeader('Content-Disposition',
+    `attachment; filename="${asciiName}"; filename*=UTF-8''${encodeURIComponent(rawName)}`)
+  res.send(buf)
+}
+
+/** Igual que sendTemplate pero partiendo del buffer ya decodificado (el de la caché). */
+function enviarBuffer(res, buf, filename, mime) {
+  const rawName   = String(filename || 'plantilla')
+  const asciiName = rawName.replace(/[^\x20-\x7e]/g, '_').replace(/["\\]/g, '')
+  res.setHeader('Content-Type', String(mime || 'application/octet-stream').replace(/[^\x20-\x7e]/g, ''))
   res.setHeader('Content-Disposition',
     `attachment; filename="${asciiName}"; filename*=UTF-8''${encodeURIComponent(rawName)}`)
   res.send(buf)
@@ -321,6 +379,7 @@ const uploadTemplate = async (req, res) => {
       [id, name, fname.slice(0, 200), mime.slice(0, 120), (okByExt ? ext : (mime.includes('pdf') ? 'pdf' : 'docx')).slice(0, 10),
        req.file.size, req.file.buffer.toString('base64'), String(req.user?.email || 'superadmin').slice(0, 120), Date.now()]
     )
+    olvidarPlantilla()
     res.json({ id })
   } catch (err) {
     console.error('[uploadTemplate]', err)
@@ -330,12 +389,12 @@ const uploadTemplate = async (req, res) => {
 }
 const activateTemplate = async (req, res) => {
   if (!requireSA(req, res)) return
-  try { await pool.query('UPDATE demo_templates SET active=0'); await pool.query('UPDATE demo_templates SET active=1 WHERE id=?', [req.params.id]); res.json({ ok: true }) }
+  try { await pool.query('UPDATE demo_templates SET active=0'); await pool.query('UPDATE demo_templates SET active=1 WHERE id=?', [req.params.id]); olvidarPlantilla(); res.json({ ok: true }) }
   catch { res.status(500).json({ error: 'Error interno' }) }
 }
 const deleteTemplate = async (req, res) => {
   if (!requireSA(req, res)) return
-  try { await pool.query('DELETE FROM demo_templates WHERE id=?', [req.params.id]); res.json({ ok: true }) }
+  try { await pool.query('DELETE FROM demo_templates WHERE id=?', [req.params.id]); olvidarPlantilla(); res.json({ ok: true }) }
   catch { res.status(500).json({ error: 'Error interno' }) }
 }
 const downloadTemplate = async (req, res) => {
