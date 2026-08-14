@@ -136,8 +136,41 @@ function rowMatches(values, filter, columns) {
   }
   return true
 }
-function rowToText(values, columns) {
-  return columns.map(c => `${c.label}: ${values[c.key] ?? ''}`).join(' · ')
+/**
+ * Los archivos de una fila, resueltos.
+ *
+ * Una columna de tipo `file` guarda el ID del recurso del CMS, no su URL: asi, si se
+ * reemplaza el archivo en el CMS, todas las filas que lo referencian pasan a apuntar al nuevo
+ * sin tocar la base. El precio es que hay que resolverlo al leer — y sobre todo antes de
+ * ensenarselo a la IA, a la que un identificador suelto no le dice nada.
+ */
+async function archivosDe(accId, columns) {
+  const cols = (columns || []).filter(c => c.type === 'file')
+  if (!cols.length) return null
+  const [assets] = await pool.query(
+    'SELECT id, name, filename, media_id, kind FROM cms_assets WHERE account_id=?', [accId])
+  return new Map(assets.map(a => [a.id, a]))
+}
+
+/** URL publica de un recurso del CMS. Misma forma que usan los flujos. */
+function urlDeRecurso(accId, a) {
+  const base = process.env.PUBLIC_URL || process.env.BASE_URL || ''
+  return `${base}/api/media/${accId}/${a.media_id}/raw`
+}
+
+function rowToText(values, columns, archivos = null, accId = null) {
+  return columns.map(c => {
+    if (c.type === 'file') {
+      const id = values[c.key]
+      if (!id) return `${c.label}: (sin archivo)`
+      const a = archivos?.get(id)
+      // Si el recurso ya no esta, se dice: mejor eso que un identificador que la IA repetiria
+      // al cliente como si fuera un dato.
+      if (!a) return `${c.label}: (archivo no disponible)`
+      return `${c.label}: ${a.name || a.filename} (${urlDeRecurso(accId, a)})`
+    }
+    return `${c.label}: ${values[c.key] ?? ''}`
+  }).join(' · ')
 }
 
 async function toolCall(accId, fn, args = {}) {
@@ -146,6 +179,9 @@ async function toolCall(accId, fn, args = {}) {
     const t = await resolveTable(accId, tabla)
     if (!t) return { text: `No encontré la tabla "${tabla || ''}". Tablas disponibles: ${(await publicConfig(accId)).tables.map(x => x.name).join(', ') || 'ninguna'}.` }
     const columns = t.columns
+    // Se resuelven una sola vez por llamada: si la tabla no tiene columnas de archivo,
+    // `archivosDe` devuelve null sin tocar la base.
+    const _arch = await archivosDe(accId, columns)
 
     if (fn === 'consultar_tabla') {
       const [rows] = await pool.query('SELECT values_json FROM data_table_rows WHERE table_id=? AND account_id=? ORDER BY created_at ASC LIMIT 2000', [t.id, accId])
@@ -155,13 +191,13 @@ async function toolCall(accId, fn, args = {}) {
       const limit = Math.min(30, Math.max(1, Number(args.limite) || 20))
       const shown = vals.slice(0, limit)
       if (!shown.length) return { text: `Sin resultados en "${t.name}".` }
-      return { text: `"${t.name}" (${vals.length} coincidencia(s), muestro ${shown.length}):\n${shown.map(v => '• ' + rowToText(v, columns)).join('\n')}` }
+      return { text: `"${t.name}" (${vals.length} coincidencia(s), muestro ${shown.length}):\n${shown.map(v => '• ' + rowToText(v, columns, _arch, accId)).join('\n')}` }
     }
 
     if (fn === 'agregar_fila') {
       if (!args.valores || typeof args.valores !== 'object') return { text: 'Faltan los "valores" de la fila (un objeto columna→valor).' }
       const r = await createRow(accId, t.id, args.valores)
-      return { text: `✅ Fila agregada a "${t.name}": ${rowToText(r.values, columns)}` }
+      return { text: `✅ Fila agregada a "${t.name}": ${rowToText(r.values, columns, _arch, accId)}` }
     }
 
     if (fn === 'editar_fila') {
@@ -170,7 +206,7 @@ async function toolCall(accId, fn, args = {}) {
       const match = rows.find(r => rowMatches(parseJ(r.values_json, {}), args.buscar, columns))
       if (!match) return { text: `No encontré una fila en "${t.name}" que coincida con ${JSON.stringify(args.buscar)}.` }
       const r = await updateRow(accId, t.id, match.id, args.valores || {})
-      return { text: `✅ Fila actualizada en "${t.name}": ${rowToText(r.values, columns)}` }
+      return { text: `✅ Fila actualizada en "${t.name}": ${rowToText(r.values, columns, _arch, accId)}` }
     }
 
     if (fn === 'eliminar_fila') {
@@ -208,10 +244,13 @@ async function flowOp(accId, op, params = {}) {
     const t = await resolveAnyTable(accId, params.tabla)
     if (!t) return { ok: false, found: false, count: 0, rows: [], error: `No existe la base de datos "${params.tabla || ''}"` }
     const columns = t.columns
+    // Se resuelven una sola vez por llamada: si la tabla no tiene columnas de archivo,
+    // `archivosDe` devuelve null sin tocar la base.
+    const _arch = await archivosDe(accId, columns)
 
     if (op === 'agregar') {
       const r = await createRow(accId, t.id, params.valores || {})
-      return { ok: true, found: true, count: 1, row: r.values, rows: [r.values], columns, text: rowToText(r.values, columns) }
+      return { ok: true, found: true, count: 1, row: r.values, rows: [r.values], columns, text: rowToText(r.values, columns, _arch, accId) }
     }
 
     const [raw] = await pool.query('SELECT * FROM data_table_rows WHERE table_id=? AND account_id=? ORDER BY created_at ASC LIMIT 5000', [t.id, accId])
@@ -224,14 +263,14 @@ async function flowOp(accId, op, params = {}) {
       return {
         ok: true, found: vals.length > 0, count: matches.length,
         row: vals[0] || null, rows: vals, columns,
-        text: vals.length ? vals.map(v => rowToText(v, columns)).join('\n') : '',
+        text: vals.length ? vals.map(v => rowToText(v, columns, _arch, accId)).join('\n') : '',
       }
     }
 
     if (op === 'actualizar') {
       if (!matches.length) return { ok: true, found: false, count: 0, rows: [], columns, text: '' }
       const r = await updateRow(accId, t.id, matches[0].id, params.valores || {})
-      return { ok: true, found: true, count: 1, row: r.values, rows: [r.values], columns, text: rowToText(r.values, columns) }
+      return { ok: true, found: true, count: 1, row: r.values, rows: [r.values], columns, text: rowToText(r.values, columns, _arch, accId) }
     }
 
     if (op === 'eliminar') {
