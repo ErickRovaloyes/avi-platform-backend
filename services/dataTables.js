@@ -15,6 +15,12 @@ function slug(label) {
   return norm(label).replace(/[^a-z0-9]+/g, '_').replace(/^_+|_+$/g, '').slice(0, 40) || ('col_' + uid().slice(0, 4))
 }
 // Normaliza el array de columnas: [{key,label,type}]. Genera key desde label si falta.
+// Tipos de columna admitidos. Lo que no esté aquí se guarda como texto.
+//   number → se coacciona a numero
+//   file   → ID de un recurso del CMS (no la URL: si se reemplaza el archivo, todas las filas
+//            que lo referencian pasan a apuntar al nuevo sin tocar la base)
+const TIPOS_COLUMNA = new Set(['text', 'number', 'file'])
+
 function normColumns(cols) {
   const out = [], seen = new Set()
   for (const c of (Array.isArray(cols) ? cols : [])) {
@@ -23,7 +29,7 @@ function normColumns(cols) {
     let key = c?.key ? slug(c.key) : slug(label)
     while (seen.has(key)) key += '_'
     seen.add(key)
-    out.push({ key, label, type: c?.type === 'number' ? 'number' : 'text' })
+    out.push({ key, label, type: TIPOS_COLUMNA.has(c?.type) ? c.type : 'text' })
   }
   return out.slice(0, 40)
 }
@@ -32,6 +38,7 @@ function coerce(col, v) {
   if (col.type === 'number') { const n = Number(String(v).replace(',', '.')); return Number.isFinite(n) ? n : null }
   return String(v)
 }
+
 // Solo conserva las claves que son columnas de la tabla (coaccionadas por tipo).
 function cleanValues(columns, values) {
   const out = {}
