@@ -45,18 +45,40 @@ function apiBase(cfg) { return `${String(cfg.storeUrl).replace(/\/$/, '')}/wp-js
 function authHeader(cfg) {
   return 'Basic ' + Buffer.from(`${cfg.consumerKey}:${cfg.consumerSecret}`).toString('base64')
 }
+// Tope de espera. Sin esto, una tienda lenta o caída dejaba la petición colgada hasta que
+// nginx la cortaba a los 120 s: el usuario veía la pantalla en blanco dos minutos y ningún
+// mensaje. Woo suele estar en hostings compartidos, así que pasa más de lo que parece.
+const ESPERA_MS = 20000
+
 async function wooFetch(cfg, path, { method = 'GET', body = null, query = null } = {}) {
   let url = `${apiBase(cfg)}${path}`
   if (query) { const qs = new URLSearchParams(query).toString(); url += (url.includes('?') ? '&' : '?') + qs }
-  const res = await fetch(url, {
-    method,
-    headers: { 'Content-Type': 'application/json', 'Authorization': authHeader(cfg) },
-    body: body ? JSON.stringify(body) : undefined,
-  })
+  let res
+  try {
+    res = await fetch(url, {
+      method,
+      headers: { 'Content-Type': 'application/json', 'Authorization': authHeader(cfg) },
+      body: body ? JSON.stringify(body) : undefined,
+      signal: AbortSignal.timeout(ESPERA_MS),
+    })
+  } catch (e) {
+    // Se distingue «no contesta» de «contesta que no»: son dos problemas distintos y el
+    // usuario no puede arreglar el segundo si le decimos el primero.
+    const causa = e?.name === 'TimeoutError' || e?.name === 'AbortError'
+      ? `la tienda no respondió en ${ESPERA_MS / 1000} s`
+      : `no se pudo conectar con la tienda (${e?.cause?.code || e?.message || 'error de red'})`
+    const err = new Error(`[WooCommerce] ${causa}. Revisa que la URL sea correcta y que la tienda esté en línea: ${apiBase(cfg)}`)
+    err.status = 504
+    throw err
+  }
   const text = await res.text()
   let data = null; try { data = text ? JSON.parse(text) : null } catch { data = null }
   if (!res.ok) {
-    const msg = data?.message || `HTTP ${res.status}`
+    // 401/403 casi siempre son las llaves (o un plugin de seguridad que bloquea la API REST);
+    // decirlo ahorra buscar en el sitio equivocado.
+    let msg = data?.message || `HTTP ${res.status}`
+    if (res.status === 401 || res.status === 403) msg += ' — revisa la consumer key y el secret, y que la API REST de WooCommerce esté habilitada.'
+    if (res.status === 404) msg += ` — la ruta ${apiBase(cfg)} no existe; comprueba la URL de la tienda.`
     const err = new Error(`[WooCommerce] ${msg}`); err.status = res.status; err.data = data
     throw err
   }

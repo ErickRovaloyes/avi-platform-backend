@@ -11,8 +11,17 @@ const woo = require('./woocommerce')
 const shopify = require('./shopify')
 
 async function loadConfig(accId) {
-  try { const [[a]] = await pool.query('SELECT woocommerce FROM accounts WHERE id=?', [accId]); return parseJ(a?.woocommerce, null) }
-  catch { return null }
+  try {
+    const [[a]] = await pool.query('SELECT woocommerce FROM accounts WHERE id=?', [accId])
+    return parseJ(a?.woocommerce, null)
+  } catch (e) {
+    // Antes esto devolvía null en silencio, y aguas abajo se convertía en «La tienda no está
+    // conectada» — el mismo mensaje que si el usuario no hubiera puesto las llaves. Cualquier
+    // otra causa (columna que falta, JSON corrupto, base caída) quedaba disfrazada de
+    // problema de configuración, que es lo que hace imposible diagnosticarlo.
+    console.error('[store] no se pudo leer la configuración de la tienda de', accId, '→', e.message)
+    return null
+  }
 }
 async function saveConfig(accId, cfg) { await pool.query('UPDATE accounts SET woocommerce=? WHERE id=?', [JSON.stringify(cfg || {}), accId]) }
 
