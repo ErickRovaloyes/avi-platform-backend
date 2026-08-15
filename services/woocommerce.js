@@ -72,7 +72,8 @@ async function wooFetch(cfg, path, { method = 'GET', body = null, query = null }
     throw err
   }
   const text = await res.text()
-  let data = null; try { data = text ? JSON.parse(text) : null } catch { data = null }
+  let data = null, noEsJson = false
+  try { data = text ? JSON.parse(text) : null } catch { noEsJson = true }
   if (!res.ok) {
     // 401/403 casi siempre son las llaves (o un plugin de seguridad que bloquea la API REST);
     // decirlo ahorra buscar en el sitio equivocado.
@@ -82,6 +83,23 @@ async function wooFetch(cfg, path, { method = 'GET', body = null, query = null }
     const err = new Error(`[WooCommerce] ${msg}`); err.status = res.status; err.data = data
     throw err
   }
+  // Respuesta correcta (2xx) pero con un cuerpo que NO es JSON: pasa cuando la URL no
+  // apunta a la API REST y contesta un WordPress normal, o cuando un plugin de seguridad o
+  // un CDN devuelven su propia pagina con estado 200.
+  //
+  // Antes esto devolvia `null` y cada llamador rompia por su cuenta —lista de productos
+  // vacia, `wh.id` sobre null— sin que nadie dijera lo unico util: que la tienda no esta
+  // contestando la API. Se ensena un trozo de lo que llego, que es lo que permite
+  // reconocer de un vistazo si es HTML, una redireccion o un aviso de Cloudflare.
+  if (noEsJson) {
+    const muestra = String(text).replace(/\s+/g, ' ').trim().slice(0, 120)
+    const err = new Error(
+      `[WooCommerce] la tienda respondio ${res.status} pero lo que devolvio no es JSON, asi que esa URL no es la API REST. ` +
+      `Comprueba ${apiBase(cfg)} en el navegador (deberia devolver JSON, no una pagina). Recibido: "${muestra}${text.length > 120 ? '…' : ''}"`)
+    err.status = 502
+    throw err
+  }
+  // Un cuerpo VACIO si es valido: los DELETE responden 204 sin contenido.
   return data
 }
 
@@ -91,7 +109,13 @@ async function testConnection(cfg) {
   }
   try {
     const data = await wooFetch(cfg, '/products', { query: { per_page: 1, status: 'publish' } })
-    return { ok: true, sample: Array.isArray(data) ? data.length : 0 }
+    // Se exige una LISTA. Antes se devolvia ok:true igualmente, asi que la pantalla decia
+    // "Conectada" mientras la tienda no habia devuelto ni un producto ni una lista: de ahi
+    // que pareciera conectada y no llegara nada.
+    if (!Array.isArray(data)) {
+      return { ok: false, error: `la tienda respondio, pero no devolvio una lista de productos. Comprueba que ${apiBase(cfg)}/products sea la API de WooCommerce.` }
+    }
+    return { ok: true, sample: data.length }
   } catch (e) { return { ok: false, error: e.message } }
 }
 
@@ -148,7 +172,11 @@ async function fetchProductsPage(accId, { page = 1, perPage = 24, search = '' } 
   const query = { per_page: Math.min(Math.max(perPage, 1), 100), page, orderby: 'title', order: 'asc' }
   if (search) query.search = String(search).slice(0, 120)
   const data = await wooFetch(cfg, '/products', { query })
-  const list = (Array.isArray(data) ? data : []).map(p => ({ ...mapProduct(p), currency: mapProduct(p).currency || cur, status: p.status || 'publish', manageStock: !!p.manage_stock, stockQuantity: p.stock_quantity }))
+  // Una lista vacia es legitima (tienda sin productos publicados). Que NO sea una lista no
+  // lo es: se dice, en vez de mostrar "No se encontraron productos" y dejar buscando donde
+  // no es.
+  if (!Array.isArray(data)) throw new Error(`[WooCommerce] la tienda no devolvio una lista de productos. Comprueba la URL: ${apiBase(cfg)}`)
+  const list = data.map(p => ({ ...mapProduct(p), currency: mapProduct(p).currency || cur, status: p.status || 'publish', manageStock: !!p.manage_stock, stockQuantity: p.stock_quantity }))
   return { products: list, hasMore: list.length >= query.per_page, page }
 }
 
