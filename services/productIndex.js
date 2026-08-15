@@ -46,6 +46,21 @@ function normalizeSettings(vi = {}) {
 
 // Contexto por fuente: config, plataforma efectiva y cómo persistir vectorIndex.
 async function loadCtx(accId, source = 'store') {
+  if (source === 'pms') {
+    // Los alojamientos de un hotel. Solo se indexa lo que los DESCRIBE: tarifas y
+    // disponibilidad se siguen pidiendo a la API, porque cambian por fecha.
+    const pms = require('./pms')
+    const cfg = await pms.loadConfig(accId)
+    return {
+      cfg, platform: 'pms',
+      connected: !!pms.publicConfig(cfg).connected,
+      save: async (viNew) => {
+        const cur = await pms.loadConfig(accId) || {}
+        cur.vectorIndex = viNew
+        await pms.saveConfig(accId, cur)
+      },
+    }
+  }
   if (source === 'meta') {
     const cfg = await metaCatalog.getStored(accId)
     return {
@@ -145,6 +160,7 @@ const _syncing = new Set()   // `${accId}:${source}` en curso
 function isSyncing(accId, source = 'store') { return _syncing.has(`${accId}:${source}`) }
 
 async function fetchAll(accId, source, platform) {
+  if (source === 'pms') return require('./pms').listRoomsForIndex(accId)
   if (source === 'meta') return metaCatalog.fetchAllProducts(accId)
   return platform === 'shopify' ? shopify.fetchAllProducts(accId) : woo.fetchAllProducts(accId)
 }
@@ -231,6 +247,9 @@ async function fullSync(accId, source = 'store') {
 
 // Upsert individual (webhook). `payload` = producto crudo del webhook (si vino).
 async function syncOne(accId, source, productId, payload = null) {
+  // El PMS no manda webhooks de habitacion: sus cambios entran por la sincronizacion
+  // completa. Sin esta guarda, un id de habitacion acabaria pidiendoselo a WooCommerce.
+  if (source === 'pms') return
   const ctx = await loadCtx(accId, source)
   if (!ctx.connected) return
   const apiKey = await resolveOpenaiKey(accId)
@@ -410,11 +429,11 @@ async function tick() {
   let rows = []
   try {
     ;[rows] = await pool.query(
-      "SELECT id, woocommerce, meta_catalog FROM accounts WHERE woocommerce LIKE '%vectorIndex%' OR meta_catalog LIKE '%vectorIndex%'")
+      "SELECT id, woocommerce, meta_catalog, pms FROM accounts WHERE woocommerce LIKE '%vectorIndex%' OR meta_catalog LIKE '%vectorIndex%' OR pms LIKE '%vectorIndex%'")
   } catch { return }
   const now = Date.now()
   for (const a of rows) {
-    for (const [source, raw] of [['store', a.woocommerce], ['meta', a.meta_catalog]]) {
+    for (const [source, raw] of [['store', a.woocommerce], ['meta', a.meta_catalog], ['pms', a.pms]]) {
       const vi = normalizeSettings(parseJ(raw, {})?.vectorIndex)
       if (!vi.enabled || isSyncing(a.id, source)) continue
       const due = vi.mode === 'scheduled'

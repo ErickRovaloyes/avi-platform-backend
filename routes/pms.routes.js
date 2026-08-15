@@ -19,4 +19,14 @@ router.get('/pms/:accId/debug',              authMiddleware, ctrl.debug)
 // Proxy del asistente (webchat-en-navegador y motor): mismo patrón que scheduling.
 router.post('/pms/:accId/tool',  ctrl.tool)
 
+// Índice vectorial de alojamientos: MISMO controlador que la tienda y el catálogo de Meta,
+// con la fuente fijada a `pms`. El motor del índice no sabe de hoteles; solo cambia de dónde
+// sale el catálogo (services/pms.js → listRoomsForIndex).
+const pix = require('../controllers/productIndex.controller')
+const pmsSrc = (req, _res, next) => { req.query.source = 'pms'; next() }
+router.get('/pms/:accId/vector-index',         authMiddleware, pmsSrc, pix.vectorStatus)
+router.put('/pms/:accId/vector-index',         authMiddleware, pmsSrc, pix.vectorSaveSettings)
+router.post('/pms/:accId/vector-index/sync',   authMiddleware, pmsSrc, pix.vectorSyncNow)
+router.post('/pms/:accId/vector-index/search', authMiddleware, pmsSrc, pix.vectorTestSearch)
+
 module.exports = router

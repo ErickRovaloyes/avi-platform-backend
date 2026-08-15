@@ -315,8 +315,20 @@ async function toolCall(accId, fn, args = {}, { convId, agId } = {}) {
 
     const wanted = norm(args.habitacion || '')
     if (wanted && rooms.length) {
-      const room = rooms.find(r => norm(r.name).includes(wanted) || wanted.includes(norm(r.name))) ||
+      // 1) Por nombre, que es lo barato y lo exacto.
+      let room = rooms.find(r => norm(r.name).includes(wanted) || wanted.includes(norm(r.name))) ||
         rooms.find(r => norm(r.name).split(/\s+/).some(w => wanted.includes(w) && w.length > 3))
+      // 2) Si no cuadra, por CONCEPTO en el índice vectorial. Aquí está la diferencia: el
+      //    cliente rara vez dice «Suite Deluxe»; dice «la del jacuzzi» o «una para cuatro».
+      //    Si el índice no está activo, `searchRoomsSmart` cae a la API y devuelve la lista
+      //    de siempre, así que este camino nunca deja al cliente peor que antes.
+      if (!room) {
+        try {
+          const cand = await searchRoomsSmart(accId, args.habitacion, { propertyId: scoped.propertyId, limit: 1 })
+          const elegido = cand[0]
+          if (elegido) room = rooms.find(r => String(r.id) === String(elegido.roomId || elegido.id))
+        } catch (e) { console.warn('[pms] búsqueda semántica de habitación falló:', e.message) }
+      }
       if (!room) return { text: `No encontré una habitación llamada "${args.habitacion}". Las disponibles son: ${rooms.map(r => r.name).join(', ')}.` }
       const plans = (room.rates || []).map(rt => `• ${rt.name}${rt.mealType === 'breakfast' ? ' (con desayuno)' : ''}`).join('\n')
       const ficha = `Ficha: capacidad ${room.capacity} persona(s). ${room.description || ''}${plans ? `\nPlanes: \n${plans}` : ''}`
@@ -747,4 +759,96 @@ async function debug(accId) {
   return s.length > 60000 ? { truncated: true, sample: s.slice(0, 60000) } : raw
 }
 
-module.exports = { loadConfig, saveConfig, publicConfig, testConnection, toolCall, listProperties, listRooms, rangeAvailability, monthAvailability, debug, buildOptions }
+// ── Indice vectorial de alojamientos ──────────────────────────────────────────
+//
+// Se indexa lo que DESCRIBE el alojamiento —nombre, capacidad, descripcion, planes— y nada
+// mas. Las tarifas y la disponibilidad NO entran: cambian por fecha y temporada, y un precio
+// indexado se queda viejo entre sincronizaciones. Esas dos cosas se siguen pidiendo a la API
+// en cada consulta, que es donde vive la verdad.
+//
+// Es el mismo reparto que ya hace la tienda: buildStableText() del indice excluye precio y
+// stock a proposito, para que sus cambios no obliguen a volver a calcular los embeddings.
+
+/**
+ * Todos los alojamientos de la cuenta, en la forma que espera el indice.
+ *
+ * El id lleva la propiedad delante (`propiedad::habitacion`) porque la clave unica del
+ * indice es (cuenta, plataforma, id) y en una cuenta con varios hoteles los ids de
+ * habitacion se repiten entre ellos.
+ *
+ * NO se filtran aqui los alojamientos bloqueados: el bloqueo se aplica al BUSCAR. Si se
+ * filtrara al indexar, bloquear una habitacion no la sacaria del indice hasta la siguiente
+ * sincronizacion y el asistente se la seguiria ofreciendo a un cliente.
+ */
+async function listRoomsForIndex(accId) {
+  const cfg = await loadConfig(accId)
+  if (!publicConfig(cfg).connected) throw new Error('El PMS no está conectado.')
+  const props = await listProperties(accId)
+  const objetivos = props.length ? props : [{ id: cfg?.propertyId || 'default', name: cfg?.hotelName || '' }]
+  const out = []
+  for (const prop of objetivos) {
+    let datos
+    try { datos = await listRooms(accId, { propertyId: prop.id }) }
+    catch (e) { console.warn('[pms index] no se pudieron leer los alojamientos de', prop.id, '→', e.message); continue }
+    for (const r of datos.rooms || []) {
+      out.push({
+        id: roomBlockKey(datos.propertyId, r.id),
+        name: r.name,
+        // El nombre de la propiedad va como «categoria»: asi el indice puede responder
+        // «que tienen en el hotel del centro» y el texto embebido lo incluye.
+        categories: [prop.name || datos.property?.name || ''].filter(Boolean),
+        shortDescription: r.capacity ? `Capacidad: ${r.capacity} persona(s)` : '',
+        descriptionFull: [
+          r.description || '',
+          (r.rates || []).length ? 'Planes: ' + r.rates.map(rt => rt.name + (rt.mealType === 'breakfast' ? ' (con desayuno)' : '')).join(', ') : '',
+        ].filter(Boolean).join('\n'),
+        images: Array.isArray(r.photos) ? r.photos : [],
+        // Se guardan para poder filtrar por bloqueo y volver a la API sin recalcular nada.
+        propertyId: String(datos.propertyId),
+        roomId: String(r.id),
+        propertyName: prop.name || datos.property?.name || '',
+        capacity: r.capacity ?? null,
+      })
+    }
+    // Pausa corta entre propiedades: los PMS suelen tener limites de rafaga.
+    if (objetivos.length > 1) await new Promise(r => setTimeout(r, 250))
+  }
+  return out
+}
+
+/**
+ * Busca alojamientos por CONCEPTO («algo con jacuzzi para 4»).
+ *
+ * Con el indice activo va por ahi; si esta vacio, desactivado o falla, cae a la lista de la
+ * API sin decir nada — el cliente nunca se queda sin respuesta por un indice a medias.
+ *
+ * En los dos casos se filtran los bloqueados con la config del MOMENTO, no con la que habia
+ * al indexar.
+ */
+async function searchRoomsSmart(accId, consulta, { propertyId = '', limit = 8 } = {}) {
+  const cfg = await loadConfig(accId)
+  const bloqueadas = (Array.isArray(cfg?.blockedProperties) ? cfg.blockedProperties : []).map(String)
+  const permitido = r => !bloqueadas.includes(String(r.propertyId))
+    && !isRoomBlocked(cfg || {}, r.propertyId, r.roomId)
+    && (!propertyId || String(r.propertyId) === String(propertyId))
+
+  const productIndex = require('./productIndex')
+  const vi = await productIndex.getSettings(accId, 'pms').catch(() => ({}))
+  if (vi.enabled && vi.count > 0 && String(consulta || '').trim()) {
+    try {
+      const r = await productIndex.searchVector(accId, consulta, { limit: limit * 3, source: 'pms' })
+      if (Array.isArray(r) && r.length) {
+        const vivas = r.filter(permitido).slice(0, limit)
+        if (vivas.length) return vivas
+      }
+    } catch (e) { console.warn('[pms index] búsqueda vectorial falló, se usa la API:', e.message) }
+  }
+  // Respaldo: la API de siempre.
+  const datos = await listRooms(accId, propertyId ? { propertyId } : {})
+  return (datos.rooms || [])
+    .map(r => ({ ...r, propertyId: String(datos.propertyId), roomId: String(r.id), propertyName: datos.property?.name || '' }))
+    .filter(permitido)
+    .slice(0, limit)
+}
+
+module.exports = { loadConfig, saveConfig, publicConfig, testConnection, toolCall, listProperties, listRooms, rangeAvailability, monthAvailability, debug, buildOptions, listRoomsForIndex, searchRoomsSmart }

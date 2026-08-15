@@ -52,6 +52,15 @@ const saveConfig = async (req, res) => {
     if (blockedRooms !== undefined) next.blockedRooms = (Array.isArray(blockedRooms) ? blockedRooms : []).map(String)
     if (notifyTeam !== undefined) next.notifyTeam = !!notifyTeam
     if (postBookingFlowId !== undefined) next.postBookingFlowId = String(postBookingFlowId || '')
+    // Si se cambia de PMS (otro proveedor u otro token), el índice vectorial que había
+    // describía los alojamientos del hotel ANTERIOR. Dejarlo sería peor que no tenerlo: el
+    // asistente ofrecería habitaciones de un hotel que ya no es el de esta cuenta.
+    const cambioDeHotel = (provider !== undefined && next.provider !== cur.provider)
+      || (next.token && next.token !== cur.token)
+    if (cambioDeHotel) {
+      next.vectorIndex = { ...(next.vectorIndex || {}), lastSyncAt: 0, count: 0, error: '' }
+      try { await require('../services/productIndex').purge(accId, 'pms') } catch {}
+    }
     await pms.saveConfig(accId, next)
     res.json({ ok: true, config: { ...pms.publicConfig(next), hasToken: !!next.token, hasApiKey: !!next.apiKey, username: next.username || '', hasPassword: !!next.password, propertyId: next.propertyId || '', pricingPlanId: next.pricingPlanId || '' } })
   } catch (e) { console.error('[pms saveConfig]', e); res.status(500).json({ error: 'Error interno' }) }

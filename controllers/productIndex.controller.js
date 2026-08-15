@@ -8,7 +8,13 @@ const productIndex = require('../services/productIndex')
 const woo = require('../services/woocommerce')
 const shopify = require('../services/shopify')
 
-const srcOf = req => (req.query.source === 'meta' || req.body?.source === 'meta') ? 'meta' : 'store'
+// Fuente del índice: 'store' (Woo/Shopify), 'meta' (catálogo de Meta) o 'pms' (alojamientos
+// de un hotel). El motor es el mismo; solo cambia de dónde sale el catálogo.
+const FUENTES = new Set(['meta', 'pms'])
+const srcOf = req => {
+  const s = req.query.source || req.body?.source
+  return FUENTES.has(s) ? s : 'store'
+}
 
 // GET /woocommerce/:accId/vector-index (?source=meta)
 const vectorStatus = async (req, res) => {
@@ -23,8 +29,11 @@ const vectorSaveSettings = async (req, res) => {
   try {
     const b = req.body || {}
     const prev = await productIndex.getSettings(accId, source)
-    // El Catálogo Meta no tiene webhooks de producto → siempre programado.
-    const mode = source === 'meta' ? 'scheduled' : (b.mode === 'scheduled' ? 'scheduled' : 'realtime')
+    // Ni el Catálogo de Meta ni el PMS mandan webhooks cuando cambia una ficha, así que su
+    // índice solo puede refrescarse por reloj. Se fuerza aquí para que el modo guardado no
+    // prometa algo que nunca va a ocurrir.
+    const sinWebhooks = source === 'meta' || source === 'pms'
+    const mode = sinWebhooks ? 'scheduled' : (b.mode === 'scheduled' ? 'scheduled' : 'realtime')
     const vi = await productIndex.saveSettings(accId, source, {
       enabled: b.enabled !== undefined ? !!b.enabled : prev.enabled,
       mode,

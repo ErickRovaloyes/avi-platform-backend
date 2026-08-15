@@ -1054,9 +1054,9 @@ function buildPmsToolDefs(account) {
   )
   defs.push(
     { type: 'function', function: { name: 'ver_habitaciones',
-      description: `Lista las habitaciones/tipos${hotel} (nombre, capacidad y descripción) EN TEXTO. Úsalo cuando el cliente pregunte "qué habitaciones tienen" y enuméraselas por su NOMBRE. NO envía fotos por defecto. Envía FOTOS solo si el cliente las pide: "habitacion"=<nombre> para las fotos+ficha de una, o "fotos"=true para el panorama. Cada envío de fotos manda fotos NUEVAS; si el cliente pide "más fotos", vuelve a llamarlo; con desde_inicio=true reenvía desde el principio.`,
+      description: `Lista las habitaciones/tipos${hotel} (nombre, capacidad y descripción) EN TEXTO. Es tu ÚNICA fuente sobre qué alojamientos existen: tú no los conoces. Úsalo cuando el cliente pregunte "qué habitaciones tienen" —y enuméraselas por su NOMBRE— y TAMBIÉN cuando describa lo que BUSCA sin nombrar ninguna ("algo para 4", "una con jacuzzi", "la más económica", "que tenga vista al mar"): pon esa descripción en "habitacion" y te devuelve la que encaja. NUNCA menciones una habitación que no haya salido de aquí. NO envía fotos por defecto. Envía FOTOS solo si el cliente las pide: "habitacion"=<nombre> para las fotos+ficha de una, o "fotos"=true para el panorama. Cada envío de fotos manda fotos NUEVAS; si el cliente pide "más fotos", vuelve a llamarlo; con desde_inicio=true reenvía desde el principio.`,
       parameters: { type: 'object', properties: {
-        habitacion: { type: 'string', description: 'Nombre de una habitación concreta para enviar sus FOTOS y ficha (vacío = solo lista/panorama)' },
+        habitacion: { type: 'string', description: 'Nombre de una habitación concreta, O lo que el cliente busca descrito con sus palabras ("con jacuzzi", "para 4 personas"), para enviar sus FOTOS y ficha (vacío = solo lista/panorama)' },
         fotos: { type: 'boolean', description: 'true SOLO si el cliente pide ver fotos (envía el panorama). Por defecto (false) la función solo lista las habitaciones en texto.' },
         desde_inicio: { type: 'boolean', description: 'true para reenviar las fotos desde el principio (cuando el cliente ya vio todas y quiere verlas otra vez)' },
         ...propParam,
