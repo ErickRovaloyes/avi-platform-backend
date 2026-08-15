@@ -20,6 +20,7 @@ const getConfig = async (req, res) => {
       pricingPlanId: cfg.pricingPlanId || '',
       blockedProperties: Array.isArray(cfg.blockedProperties) ? cfg.blockedProperties : [],
       blockedRooms: Array.isArray(cfg.blockedRooms) ? cfg.blockedRooms : [],
+      roomFeatures: (cfg.roomFeatures && typeof cfg.roomFeatures === 'object') ? cfg.roomFeatures : {},
       providers: providers.listProviders(),
     })
   } catch { res.status(500).json({ error: 'Error interno' }) }
@@ -28,7 +29,7 @@ const getConfig = async (req, res) => {
 // Guarda la configuración. El token solo se actualiza si llega uno nuevo no vacío.
 const saveConfig = async (req, res) => {
   const { accId } = req.params
-  const { provider, token, apiKey, username, password, propertyId, pricingPlanId, baseUrl, currency, maxPhotos, photoSkip, notifyTeam, postBookingFlowId, blockedProperties, blockedRooms } = req.body || {}
+  const { provider, token, apiKey, username, password, propertyId, pricingPlanId, baseUrl, currency, maxPhotos, photoSkip, notifyTeam, postBookingFlowId, blockedProperties, blockedRooms, roomFeatures } = req.body || {}
   try {
     const cur = await pms.loadConfig(accId) || {}
     const next = { ...cur }
@@ -49,6 +50,15 @@ const saveConfig = async (req, res) => {
     if (maxPhotos !== undefined) next.maxPhotos = Math.max(1, Math.min(10, Number(maxPhotos) || 4))
     if (photoSkip !== undefined) next.photoSkip = Math.max(0, Math.min(20, parseInt(photoSkip) || 0))
     if (blockedProperties !== undefined) next.blockedProperties = (Array.isArray(blockedProperties) ? blockedProperties : []).map(String)
+    // Caracteristicas por habitacion, escritas por el hotel: { "prop::hab": "jacuzzi, terraza" }
+    if (roomFeatures !== undefined && roomFeatures && typeof roomFeatures === 'object') {
+      const limpio = {}
+      for (const [k, v] of Object.entries(roomFeatures)) {
+        const txt = String(v || '').trim().slice(0, 500)
+        if (txt) limpio[String(k).slice(0, 120)] = txt
+      }
+      next.roomFeatures = limpio
+    }
     if (blockedRooms !== undefined) next.blockedRooms = (Array.isArray(blockedRooms) ? blockedRooms : []).map(String)
     if (notifyTeam !== undefined) next.notifyTeam = !!notifyTeam
     if (postBookingFlowId !== undefined) next.postBookingFlowId = String(postBookingFlowId || '')

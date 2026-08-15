@@ -146,6 +146,29 @@ function sendPhotoBatch(pool, key, { maxPhotos, reset, label, extra }) {
 
 // Bloqueo: propiedad completa o alojamiento (habitación) dentro de una propiedad.
 const roomBlockKey = (propId, roomId) => `${propId || 'default'}::${roomId}`
+
+/**
+ * El id de propiedad con el que se guardan bloqueos y características.
+ *
+ * TIENE que ser el mismo en los tres sitios que lo tocan —el panel, el índice y el
+ * asistente—, o las claves no cuadran y los ajustes del hotel no surten efecto.
+ */
+const propIdDe = cfg => String(cfg?.propertyId || (Array.isArray(cfg?.properties) && cfg.properties[0]?.id) || 'default')
+/**
+ * Caracteristicas que el hotel escribio a mano para una habitacion.
+ *
+ * Los PMS no exponen un campo de amenidades utilizable, asi que lo unico que hay es la
+ * descripcion libre — y si el hotelero no escribio «jacuzzi» ahi, no existe en ningun sitio.
+ * Este campo es donde puede decirlo, con la misma clave `propiedad::habitacion` que ya usan
+ * los bloqueos.
+ */
+function featuresDe(cfg, propId, roomId) {
+  const mapa = (cfg && typeof cfg.roomFeatures === 'object' && cfg.roomFeatures) || {}
+  const v = mapa[roomBlockKey(propId, roomId)]
+  if (Array.isArray(v)) return v.map(String).filter(Boolean)
+  return String(v || '').split(/[,;\n]/).map(x => x.trim()).filter(Boolean)
+}
+
 function isRoomBlocked(cfg, propId, roomId) {
   return (Array.isArray(cfg.blockedRooms) ? cfg.blockedRooms : []).includes(roomBlockKey(propId, roomId))
 }
@@ -180,6 +203,68 @@ function nightsBetween(checkin, checkout) {
 function addDays(dateStr, n) { const d = new Date(`${dateStr}T12:00:00Z`); d.setUTCDate(d.getUTCDate() + n); return d.toISOString().slice(0, 10) }
 const isDate = s => /^\d{4}-\d{2}-\d{2}$/.test(String(s || '').trim())
 const norm = s => String(s || '').toLowerCase().normalize('NFD').replace(/[̀-ͯ]/g, '')
+
+// ── Verificar que lo pedido APARECE, no que se le parezca ──────────────────────
+//
+// La busqueda vectorial ordena por PARECIDO. Para «¿tienen jacuzzi?» eso no vale: devuelve
+// las mas cercanas aunque ninguna lo mencione, y afirmarlo le cuesta una reserva al hotel.
+// Aqui la busqueda solo PROPONE candidatas; la afirmacion la sostiene esta comprobacion.
+//
+// Es el patron que el resto del proyecto ya usa (metaCatalog descarta lo que no contiene
+// ningun token; pickBest exige un minimo; pickCalendar devuelve null si nadie puntua).
+
+// Palabras sin contenido: aparecen en cualquier descripcion y por tanto no distinguen nada.
+// Sin esta lista, «habitacion con jacuzzi» acertaba 2 de 3 tokens sin mencionar jacuzzi.
+const VACIAS = new Set([
+  'algo', 'alguna', 'alguno', 'algun', 'una', 'uno', 'unas', 'unos', 'que', 'con', 'sin',
+  'para', 'por', 'las', 'los', 'del', 'de', 'la', 'el', 'y', 'o', 'en', 'tiene', 'tienen',
+  'tenes', 'hay', 'quiero', 'busco', 'buscar', 'necesito', 'me', 'gustaria', 'gustaría',
+  'habitacion', 'habitaciones', 'alojamiento', 'alojamientos', 'cuarto', 'cuartos',
+  'disponible', 'disponibles', 'mas', 'muy', 'este', 'esta', 'ese', 'esa', 'su', 'sus',
+  'persona', 'personas', 'huesped', 'huespedes', 'noche', 'noches', 'favor', 'porfavor',
+])
+
+/**
+ * Los terminos de la consulta que DE VERDAD distinguen una habitacion de otra.
+ * Devuelve { palabras, numeros } — los numeros van aparte porque «para 4» se resuelve
+ * contra la capacidad, no buscando el caracter «4» en un texto.
+ */
+function terminosDe(consulta) {
+  const palabras = [], numeros = []
+  for (const t of norm(consulta).split(/[^a-z0-9ñ]+/).filter(Boolean)) {
+    if (/^\d+$/.test(t)) { const n = Number(t); if (n > 0 && n < 100) numeros.push(n); continue }
+    if (t.length < 4 || VACIAS.has(t)) continue
+    palabras.push(t)
+  }
+  return { palabras: [...new Set(palabras)], numeros: [...new Set(numeros)] }
+}
+
+/** Todo el texto conocido de una habitacion, para buscar dentro. */
+function textoDe(hab, extra = '') {
+  return norm([
+    hab.name, hab.description, extra,
+    (hab.rates || []).map(rt => `${rt.name || ''} ${rt.description || ''}`).join(' '),
+    (hab.features || []).join(' '),
+  ].filter(Boolean).join(' '))
+}
+
+/**
+ * ¿Esta habitacion cumple lo que pide la consulta?
+ *
+ * Se compara con LIMITES DE PALABRA: sin eso, «con» hacia match dentro de «acondicionado» y
+ * «balcon», que es como una consulta de jacuzzi acababa puntuando en habitaciones que no lo
+ * tienen. Se exigen TODOS los terminos con contenido: quien pregunta por «jacuzzi privado»
+ * no se conforma con que haya un jacuzzi comunitario.
+ */
+function cumple(hab, terminos, extra = '') {
+  const texto = textoDe(hab, extra)
+  for (const p of terminos.palabras) {
+    if (!new RegExp(`(^|[^a-z0-9ñ])${p}([^a-z0-9ñ]|$)`).test(texto)) return false
+  }
+  // Un numero en la consulta se lee como ocupacion: «algo para 4» = capacidad >= 4.
+  for (const n of terminos.numeros) { if (!(Number(hab.capacity) >= n)) return false }
+  return true
+}
 
 // Identidad del huésped desde la conversación (nombre, teléfono, email).
 async function guestIdentity(accId, convId) {
@@ -306,35 +391,47 @@ async function toolCall(accId, fn, args = {}, { convId, agId } = {}) {
       getRoomsCached(accId, scoped),
       getPropertyCached(accId, scoped).catch(() => null),
     ])
-    const rooms = filterBlockedRooms(cfg, scoped.propertyId, roomsAll)   // oculta alojamientos bloqueados
+    const rooms = filterBlockedRooms(cfg, propIdDe(scoped), roomsAll)   // oculta alojamientos bloqueados
     const propPhotos = (property?.photos || []).filter(Boolean)
     const propName = property?.name || cfg.hotelName || ''
     const reset = args.desde_inicio === true || /^(true|1|si|sí)$/i.test(String(args.desde_inicio || ''))
     const wantPhotos = args.fotos === true || /^(true|1|si|sí)$/i.test(String(args.fotos || '')) || reset
     const maxPhotos = pub.maxPhotos
 
-    // Busqueda por CONCEPTO: responde en texto con las que encajan. Separada de
-    // `habitacion` a proposito, porque ese parametro dispara el envio de fotos.
+    // Busqueda por CARACTERISTICA. Responde en TEXTO y nunca manda fotos: `habitacion` es
+    // el parametro que las manda, y mezclarlos fue lo que hacia que preguntar «¿tienen
+    // jacuzzi?» acabara en una tanda de fotos.
     const busca = String(args.busco || '').trim()
     if (busca && rooms.length) {
-      let encajan = [], viaIndice = false
+      const conFeatures = rooms.map(r => ({ ...r, features: featuresDe(cfg, propIdDe(scoped), r.id) }))
+      const terminos = terminosDe(busca)
+      const ficha = r => `• ${r.name} — capacidad ${r.capacity} persona(s)${r.description ? ` — ${String(r.description).slice(0, 220)}` : ''}${(r.features || []).length ? ` — ${r.features.join(', ')}` : ''}`
+      const cola = 'Preséntaselas por su NOMBRE. NO mandes fotos salvo que el cliente las pida (entonces llama ver_habitaciones con "habitacion": <nombre EXACTO>). Para precios y cupo real, usa ver_disponibilidad_hotel con fechas.'
+
+      // Sin terminos con contenido («algo bonito») no hay nada que verificar: se devuelve la
+      // lista sin afirmar que encaja, en vez de inventarse un criterio.
+      if (!terminos.palabras.length && !terminos.numeros.length) {
+        return { text: `Estas son las habitaciones${propName ? ` de ${propName}` : ''}:\n${conFeatures.map(ficha).join('\n')}\n\n${cola}` }
+      }
+
+      // El indice ORDENA las candidatas; la comprobacion lexica decide cuales se afirman.
+      // Sin esta segunda puerta, la busqueda por parecido devolvia las mas cercanas aunque
+      // ninguna mencionara lo pedido — y el texto las presentaba como si encajaran.
+      let orden = conFeatures
       try {
-        const r = await searchRoomsSmart(accId, busca, { propertyId: scoped.propertyId, limit: 5 })
-        viaIndice = r.viaIndice
-        const ids = new Set(r.items.map(c => String(c.roomId || c.id)))
-        encajan = rooms.filter(r2 => ids.has(String(r2.id)))
-      } catch (e) { console.warn('[pms] búsqueda semántica falló:', e.message) }
-      const ficha = r => `• ${r.name} — capacidad ${r.capacity} persona(s)${r.description ? ` — ${String(r.description).slice(0, 220)}` : ''}`
-      const cola = 'Preséntaselas por su NOMBRE. NO mandes fotos salvo que el cliente las pida (entonces llama ver_habitaciones con "habitacion": <nombre>). Para precios y cupo real, usa ver_disponibilidad_hotel con fechas.'
-      // Sin indice no hubo BUSQUEDA: lo que vuelve es el hotel entero. Se dice tal cual, para
-      // que el modelo no le atribuya a esas habitaciones algo que nadie ha comprobado.
-      if (!viaIndice) {
-        return { text: `No pude buscar por características, así que estas son TODAS las habitaciones${propName ? ` de ${propName}` : ''}:\n${rooms.map(ficha).join('\n')}\n\nNO afirmes que alguna tiene "${busca}" salvo que aparezca en su descripción de arriba. Si ninguna lo dice, díselo con franqueza. ${cola}` }
-      }
+        const r = await searchRoomsSmart(accId, busca, { propertyId: scoped.propertyId, limit: 50 })
+        if (r.viaIndice) {
+          const pos = new Map(r.items.map((c, i) => [String(c.roomId || c.id), i]))
+          orden = [...conFeatures].sort((a, b) => (pos.get(String(a.id)) ?? 999) - (pos.get(String(b.id)) ?? 999))
+        }
+      } catch (e) { console.warn('[pms] búsqueda semántica falló, se verifica sobre la lista:', e.message) }
+
+      const encajan = orden.filter(r => cumple(r, terminos))
       if (!encajan.length) {
-        return { text: `Ninguna habitación${propName ? ` de ${propName}` : ''} encaja con "${busca}". Las que hay son: ${rooms.map(r => r.name).join(', ')}. Ofrécele estas, sin atribuirles características que no aparezcan en su descripción.` }
+        const pedido = [...terminos.palabras, ...terminos.numeros.map(n => `${n} personas`)].join(' + ')
+        return { text: `NINGUNA de las ${rooms.length} habitaciones${propName ? ` de ${propName}` : ''} menciona "${pedido}". Díselo con claridad: no tenemos eso. NO ofrezcas otra habitación como si lo tuviera ni digas que "podría" tenerlo. Las que hay son: ${rooms.map(r => r.name).join(', ')} — solo puedes describirlas por lo que dice su ficha.` }
       }
-      return { text: `Habitaciones que encajan con "${busca}":\n${encajan.map(ficha).join('\n')}\n\n${cola}` }
+      return { text: `Habitaciones que SÍ mencionan "${busca}":\n${encajan.slice(0, 8).map(ficha).join('\n')}\n\nSolo estas. De las demás NO afirmes que lo tengan. ${cola}` }
     }
 
     const wanted = norm(args.habitacion || '')
@@ -342,20 +439,11 @@ async function toolCall(accId, fn, args = {}, { convId, agId } = {}) {
       // 1) Por nombre, que es lo barato y lo exacto.
       let room = rooms.find(r => norm(r.name).includes(wanted) || wanted.includes(norm(r.name))) ||
         rooms.find(r => norm(r.name).split(/\s+/).some(w => wanted.includes(w) && w.length > 3))
-      // 2) Si no cuadra, por CONCEPTO en el índice vectorial. Aquí está la diferencia: el
-      //    cliente rara vez dice «Suite Deluxe»; dice «la del jacuzzi» o «una para cuatro».
-      //    Si el índice no está activo, `searchRoomsSmart` cae a la API y devuelve la lista
-      //    de siempre, así que este camino nunca deja al cliente peor que antes.
-      if (!room) {
-        try {
-          const cand = await searchRoomsSmart(accId, args.habitacion, { propertyId: scoped.propertyId, limit: 1 })
-          // Solo si vino del indice: el respaldo devuelve el hotel entero, y coger el
-          // primero seria mandarle al cliente las fotos de una habitacion al azar.
-          const elegido = cand.viaIndice ? cand.items[0] : null
-          if (elegido) room = rooms.find(r => String(r.id) === String(elegido.roomId || elegido.id))
-        } catch (e) { console.warn('[pms] búsqueda semántica de habitación falló:', e.message) }
-      }
-      if (!room) return { text: `No encontré una habitación llamada "${args.habitacion}". Las disponibles son: ${rooms.map(r => r.name).join(', ')}.` }
+      // 2) Y nada mas. Antes, si el nombre no cuadraba, se resolvia por parecido en el
+      //    indice — y con «la del jacuzzi» eso mandaba las fotos de la habitacion mejor
+      //    rankeada, que no tenia jacuzzi. Adivinar de QUE mandar fotos no es aceptable:
+      //    si el nombre no cuadra, se pregunta. Para buscar por caracteristica esta `busco`.
+      if (!room) return { text: `No hay ninguna habitación llamada "${args.habitacion}". Las que existen son: ${rooms.map(r => r.name).join(', ')}. Si el cliente describió lo que busca en vez de nombrarla, llama ver_habitaciones con "busco" en lugar de "habitacion".` }
       const plans = (room.rates || []).map(rt => `• ${rt.name}${rt.mealType === 'breakfast' ? ' (con desayuno)' : ''}`).join('\n')
       const ficha = `Ficha: capacidad ${room.capacity} persona(s). ${room.description || ''}${plans ? `\nPlanes: \n${plans}` : ''}`
       // Fotos del alojamiento: AUTORITATIVO las suyas propias. Kunas las expone por tipo
@@ -368,7 +456,7 @@ async function toolCall(accId, fn, args = {}, { convId, agId } = {}) {
       if (!ownPhotos.length) ownPhotos = room.photos || []
       const roomPool = ownPhotos.length ? ownPhotos : propPhotos
       if (!roomPool.length) return { text: `No hay fotos publicadas para "${room.name}" en el PMS. ${ficha}` }
-      return sendPhotoBatch(roomPool, photoKey(convId, scoped.propertyId, room.id), { maxPhotos, reset, label: room.name, extra: ficha })
+      return sendPhotoBatch(roomPool, photoKey(convId, propIdDe(scoped), room.id), { maxPhotos, reset, label: room.name, extra: ficha })
     }
 
     // Sin habitación concreta.
@@ -389,7 +477,7 @@ async function toolCall(accId, fn, args = {}, { convId, agId } = {}) {
     }
     const poolAll = [...perRoomPhotos.flat(), ...propPhotos]
     const extra = `Habitaciones:\n${list}\nPide ver_habitaciones con el nombre para la ficha de una.`
-    const res = sendPhotoBatch(poolAll, photoKey(convId, scoped.propertyId, 'all'), { maxPhotos, reset, label: propName, extra })
+    const res = sendPhotoBatch(poolAll, photoKey(convId, propIdDe(scoped), 'all'), { maxPhotos, reset, label: propName, extra })
     if (!res.media?.length && !poolAll.length) return { text: `Habitaciones${propName ? ` de ${propName}` : ''}:\n${list}\n\nEste PMS no tiene fotos publicadas; consulta disponibilidad con fechas.` }
     return res
   }
@@ -402,7 +490,7 @@ async function toolCall(accId, fn, args = {}, { convId, agId } = {}) {
     const adults = Math.max(1, Number(args.adultos) || 1)
     const children = Number(args.ninos) || 0
     const query = { checkin, checkout, adults, children, infants: Number(args.infantes) || 0, rooms: Number(args.habitaciones) || undefined, promoCode: args.codigo_promocional || undefined }
-    const availRooms = filterBlockedRooms(cfg, scoped.propertyId, (await prov.getAvailability(scoped, query)).rooms)
+    const availRooms = filterBlockedRooms(cfg, propIdDe(scoped), (await prov.getAvailability(scoped, query)).rooms)
 
     // Filtro opcional por alojamiento concreto: si el cliente pregunta por uno, se
     // responde SOLO por ese (y si está lleno, se dice que no está disponible, sin
@@ -433,7 +521,7 @@ async function toolCall(accId, fn, args = {}, { convId, agId } = {}) {
         const co = addDays(ci, nights)
         try {
           const r = await prov.getAvailability(scoped, { ...query, checkin: ci, checkout: co })
-          const opts = scopeOpts(buildOptions(filterBlockedRooms(cfg, scoped.propertyId, r.rooms), { adults, children }))
+          const opts = scopeOpts(buildOptions(filterBlockedRooms(cfg, propIdDe(scoped), r.rooms), { adults, children }))
           if (opts.length) { alts.push({ checkin: ci, checkout: co, best: opts[0] }); if (alts.length >= 2) break }
         } catch {}
       }
@@ -481,7 +569,7 @@ async function toolCall(accId, fn, args = {}, { convId, agId } = {}) {
     const cacheValid = cached && Date.now() - cached.at < OPTIONS_TTL && cached.checkin === checkin && cached.checkout === checkout
     let target = null
     if (args.opcion && cacheValid) target = cached.options.find(o => o.n === Number(args.opcion)) || null
-    const liveRooms = filterBlockedRooms(cfg, scoped.propertyId, (await prov.getAvailability(scoped, { checkin, checkout, adults, children, promoCode: args.codigo_promocional || cached?.promoCode || undefined })).rooms)
+    const liveRooms = filterBlockedRooms(cfg, propIdDe(scoped), (await prov.getAvailability(scoped, { checkin, checkout, adults, children, promoCode: args.codigo_promocional || cached?.promoCode || undefined })).rooms)
     const liveOptions = buildOptions(liveRooms, { adults, children })
     if (!liveOptions.length) return { text: `Ya no hay disponibilidad del ${checkin} al ${checkout}. Consulta otras fechas con ver_disponibilidad_hotel.` }
     if (target) {
@@ -655,7 +743,7 @@ async function listRooms(accId, { propertyId } = {}) {
   if (!publicConfig(cfg).connected) throw new Error('El PMS no está conectado.')
   const prov = providers.getProvider(cfg.provider)
   const c = propertyId ? { ...cfg, propertyId: String(propertyId) } : cfg
-  const propId = c.propertyId || (Array.isArray(cfg.properties) && cfg.properties[0]?.id) || 'default'
+  const propId = propIdDe(c) !== 'default' ? propIdDe(c) : propIdDe(cfg)
   const blockedProps = (Array.isArray(cfg.blockedProperties) ? cfg.blockedProperties : []).map(String)
   let property = null
   const p = await getPropertyCached(accId, c).catch(() => null)
@@ -824,9 +912,16 @@ async function listRoomsForIndex(accId) {
         // «que tienen en el hotel del centro» y el texto embebido lo incluye.
         categories: [prop.name || datos.property?.name || ''].filter(Boolean),
         shortDescription: r.capacity ? `Capacidad: ${r.capacity} persona(s)` : '',
+        // Todo lo que se sabe de la habitacion. Cuanto mas completo, mas honesto es negar:
+        // si el indice no lo tiene, el asistente dira que no existe.
         descriptionFull: [
           r.description || '',
-          (r.rates || []).length ? 'Planes: ' + r.rates.map(rt => rt.name + (rt.mealType === 'breakfast' ? ' (con desayuno)' : '')).join(', ') : '',
+          featuresDe(cfg, datos.propertyId, r.id).join(', '),
+          (r.features || []).join(', '),
+          (r.rates || []).length ? 'Planes: ' + r.rates.map(rt => [rt.name, rt.description, rt.mealType === 'breakfast' ? '(con desayuno)' : ''].filter(Boolean).join(' ')).join(', ') : '',
+          // La descripcion del HOTEL: sus servicios comunes (piscina, parking, spa) son parte
+          // de lo que se le ofrece a quien reserva esa habitacion.
+          datos.property?.description ? `Sobre el alojamiento: ${datos.property.description}` : '',
         ].filter(Boolean).join('\n'),
         images: Array.isArray(r.photos) ? r.photos : [],
         // Se guardan para poder filtrar por bloqueo y volver a la API sin recalcular nada.

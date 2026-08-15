@@ -133,7 +133,14 @@ function tokenScore(content, tokens) {
   if (!tokens.length) return 0
   const hay = String(content || '').toLowerCase()
   let sc = 0, max = 0
-  for (const t of tokens) { const w = t.length >= 4 ? 2 : 1; max += w; if (hay.includes(t)) sc += w }
+  for (const t of tokens) {
+    const w = t.length >= 4 ? 2 : 1
+    max += w
+    // Con LIMITES DE PALABRA. Antes era `hay.includes(t)`, subcadena pura: «con» puntuaba
+    // dentro de «acondicionado», «balcon» y «confort», y tres palabras funcionales bastaban
+    // para que algo pareciera una coincidencia sin serlo.
+    if (new RegExp(`(^|[^a-z0-9áéíóúñü])${t.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}([^a-z0-9áéíóúñü]|$)`, 'i').test(hay)) sc += w
+  }
   return max ? sc / max : 0
 }
 
@@ -148,7 +155,10 @@ function rankProducts(rows, qEmb, queryText) {
     let score = 0.65 * cos + 0.35 * tok
     const sku = String(r.product?.sku || '').toLowerCase()
     const name = String(r.product?.name || '').toLowerCase()
-    if ((sku && q.includes(sku) && sku.length > 2) || (name && (q === name || q.includes(name)))) score += 0.15
+    // El bonus por nombre exige longitud, igual que el del SKU: sin eso, una habitación
+    // llamada «Suite» se llevaba +0.15 con la consulta «suite con jacuzzi» por pura
+    // coincidencia de substring, sin que «jacuzzi» interviniera.
+    if ((sku && q.includes(sku) && sku.length > 2) || (name && (q === name || (name.length > 3 && q.includes(name))))) score += 0.15
     out.push({ product: r.product, score })
   }
   out.sort((a, b) => b.score - a.score)
@@ -352,7 +362,12 @@ async function searchVector(accId, query, { limit = 8, source = 'store' } = {}) 
   const picked = ranked.filter(r => r.score >= 0.30).slice(0, Math.max(1, limit))
   // Si el umbral dejó todo fuera pero hay algo razonable, devuelve el top igualmente
   // (el asistente decide); si ni eso, [] para que el llamador pruebe la API viva.
-  if (!picked.length && ranked.length && ranked[0].score >= 0.22) return ranked.slice(0, Math.max(1, limit)).map(r => r.product)
+  // Antes esto devolvia `ranked.slice(0, limit)` entero comprobando solo el PRIMERO: si el
+  // mejor sacaba 0.23 y el siguiente 0.04, el segundo salia igual. Ahora cada uno pasa el
+  // listón, y el llamador recibe solo lo que de verdad se le parece.
+  if (!picked.length && ranked.length && ranked[0].score >= 0.22) {
+    return ranked.filter(r => r.score >= 0.22).slice(0, Math.max(1, limit)).map(r => r.product)
+  }
   return picked.map(r => r.product)
 }
 
