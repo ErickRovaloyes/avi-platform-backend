@@ -313,6 +313,30 @@ async function toolCall(accId, fn, args = {}, { convId, agId } = {}) {
     const wantPhotos = args.fotos === true || /^(true|1|si|sí)$/i.test(String(args.fotos || '')) || reset
     const maxPhotos = pub.maxPhotos
 
+    // Busqueda por CONCEPTO: responde en texto con las que encajan. Separada de
+    // `habitacion` a proposito, porque ese parametro dispara el envio de fotos.
+    const busca = String(args.busco || '').trim()
+    if (busca && rooms.length) {
+      let encajan = [], viaIndice = false
+      try {
+        const r = await searchRoomsSmart(accId, busca, { propertyId: scoped.propertyId, limit: 5 })
+        viaIndice = r.viaIndice
+        const ids = new Set(r.items.map(c => String(c.roomId || c.id)))
+        encajan = rooms.filter(r2 => ids.has(String(r2.id)))
+      } catch (e) { console.warn('[pms] búsqueda semántica falló:', e.message) }
+      const ficha = r => `• ${r.name} — capacidad ${r.capacity} persona(s)${r.description ? ` — ${String(r.description).slice(0, 220)}` : ''}`
+      const cola = 'Preséntaselas por su NOMBRE. NO mandes fotos salvo que el cliente las pida (entonces llama ver_habitaciones con "habitacion": <nombre>). Para precios y cupo real, usa ver_disponibilidad_hotel con fechas.'
+      // Sin indice no hubo BUSQUEDA: lo que vuelve es el hotel entero. Se dice tal cual, para
+      // que el modelo no le atribuya a esas habitaciones algo que nadie ha comprobado.
+      if (!viaIndice) {
+        return { text: `No pude buscar por características, así que estas son TODAS las habitaciones${propName ? ` de ${propName}` : ''}:\n${rooms.map(ficha).join('\n')}\n\nNO afirmes que alguna tiene "${busca}" salvo que aparezca en su descripción de arriba. Si ninguna lo dice, díselo con franqueza. ${cola}` }
+      }
+      if (!encajan.length) {
+        return { text: `Ninguna habitación${propName ? ` de ${propName}` : ''} encaja con "${busca}". Las que hay son: ${rooms.map(r => r.name).join(', ')}. Ofrécele estas, sin atribuirles características que no aparezcan en su descripción.` }
+      }
+      return { text: `Habitaciones que encajan con "${busca}":\n${encajan.map(ficha).join('\n')}\n\n${cola}` }
+    }
+
     const wanted = norm(args.habitacion || '')
     if (wanted && rooms.length) {
       // 1) Por nombre, que es lo barato y lo exacto.
@@ -325,7 +349,9 @@ async function toolCall(accId, fn, args = {}, { convId, agId } = {}) {
       if (!room) {
         try {
           const cand = await searchRoomsSmart(accId, args.habitacion, { propertyId: scoped.propertyId, limit: 1 })
-          const elegido = cand[0]
+          // Solo si vino del indice: el respaldo devuelve el hotel entero, y coger el
+          // primero seria mandarle al cliente las fotos de una habitacion al azar.
+          const elegido = cand.viaIndice ? cand.items[0] : null
           if (elegido) room = rooms.find(r => String(r.id) === String(elegido.roomId || elegido.id))
         } catch (e) { console.warn('[pms] búsqueda semántica de habitación falló:', e.message) }
       }
@@ -826,6 +852,9 @@ async function listRoomsForIndex(accId) {
  * al indexar.
  */
 async function searchRoomsSmart(accId, consulta, { propertyId = '', limit = 8 } = {}) {
+  // Devuelve { items, viaIndice }. `viaIndice` importa: sin el, quien llama no distingue
+  // "estos encajan" de "no pude buscar, aqui tienes todos", y esa diferencia es justo la que
+  // separa una respuesta util de una invencion.
   const cfg = await loadConfig(accId)
   const bloqueadas = (Array.isArray(cfg?.blockedProperties) ? cfg.blockedProperties : []).map(String)
   const permitido = r => !bloqueadas.includes(String(r.propertyId))
@@ -839,16 +868,17 @@ async function searchRoomsSmart(accId, consulta, { propertyId = '', limit = 8 } 
       const r = await productIndex.searchVector(accId, consulta, { limit: limit * 3, source: 'pms' })
       if (Array.isArray(r) && r.length) {
         const vivas = r.filter(permitido).slice(0, limit)
-        if (vivas.length) return vivas
+        if (vivas.length) return { items: vivas, viaIndice: true }
       }
     } catch (e) { console.warn('[pms index] búsqueda vectorial falló, se usa la API:', e.message) }
   }
-  // Respaldo: la API de siempre.
+  // Respaldo: la API de siempre. Son TODOS los alojamientos, no los que encajan.
   const datos = await listRooms(accId, propertyId ? { propertyId } : {})
-  return (datos.rooms || [])
+  const items = (datos.rooms || [])
     .map(r => ({ ...r, propertyId: String(datos.propertyId), roomId: String(r.id), propertyName: datos.property?.name || '' }))
     .filter(permitido)
     .slice(0, limit)
+  return { items, viaIndice: false }
 }
 
 module.exports = { loadConfig, saveConfig, publicConfig, testConnection, toolCall, listProperties, listRooms, rangeAvailability, monthAvailability, debug, buildOptions, listRoomsForIndex, searchRoomsSmart }
