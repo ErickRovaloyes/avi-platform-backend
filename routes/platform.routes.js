@@ -29,6 +29,11 @@ router.post('/platform/email-preview',  authMiddleware, ctrl.emailPreview)
 // Superadmin aliases — /api/superadmin/settings (called by AccountContext)
 router.get('/superadmin/settings',                      authMiddleware, ctrl.getSettings)
 router.put('/superadmin/settings',                      authMiddleware, ctrl.updateSettings)
+// Exenciones del 2FA de login (solo super admin; el control está en el controlador).
+router.get('/superadmin/2fa-exempt',                    authMiddleware, ctrl.list2faExempt)
+router.post('/superadmin/2fa-exempt',                   authMiddleware, ctrl.add2faExempt)
+router.delete('/superadmin/2fa-exempt/:email',          authMiddleware, ctrl.remove2faExempt)
+
 router.get('/superadmin/super-admins',                  authMiddleware, ctrl.listSuperAdmins)
 router.post('/superadmin/super-admins',                 authMiddleware, ctrl.createSuperAdmin)
 router.put('/superadmin/super-admins/:saId',            authMiddleware, ctrl.updateSuperAdmin)

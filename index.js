@@ -428,6 +428,21 @@ app.use('/api',                flowTemplatesRoutes)
     "ALTER TABLE platform_settings ADD COLUMN email_from_name VARCHAR(160)",
     "ALTER TABLE platform_settings ADD COLUMN signup_verify_enabled TINYINT(1) DEFAULT 0",
     "ALTER TABLE platform_settings ADD COLUMN login_2fa_enabled TINYINT(1) DEFAULT 0",
+    // Correos EXENTOS del 2FA de login.
+    //
+    // Va por correo y no por miembro a propósito: una misma persona puede ser miembro de
+    // varias cuentas (con la misma contraseña), y los super admins viven en otra tabla. El
+    // correo es lo único que identifica a quien inicia sesión, y es justo lo que mira la
+    // comprobación del 2FA — así la excepción se aplica exactamente donde se decide.
+    //
+    // Se guarda QUIÉN la concedió y CUÁNDO: es una excepción de seguridad, y sin rastro
+    // nadie puede responder después por qué esa cuenta no pedía el código.
+    `CREATE TABLE IF NOT EXISTS login_2fa_exempt (
+       email       VARCHAR(190) PRIMARY KEY,
+       reason      VARCHAR(300),
+       granted_by  VARCHAR(190),
+       created_at  BIGINT
+     )`,
     // Plantillas editables de los correos de código (login/registro): texto + diseño.
     "ALTER TABLE platform_settings ADD COLUMN email_templates JSON",
     // Modelo IA que ejecuta las acciones IA del CRM/negocio (clasificación, resúmenes, copiloto…).

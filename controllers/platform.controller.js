@@ -614,4 +614,52 @@ const getModuleUsage = async (req, res) => {
   } catch (err) { console.error('[module usage]', err); res.status(500).json({ error: 'Error interno' }) }
 }
 
-module.exports = { getSettings, updateSettings, getPublicIntegrations, listSuperAdmins, createSuperAdmin, updateSuperAdmin, deleteSuperAdmin, listAllUsers, listAccounts, createAccount, updateSAAccount, deleteAccount, getAccountNameHistory, testEmail, emailPreview, getModuleUsage }
+// ── Exenciones del 2FA de login ───────────────────────────────────────────────
+//
+// Quitarle a alguien el segundo factor es DEBILITAR su cuenta a propósito, y a veces hace
+// falta: una cuenta compartida por un equipo, una integración que entra con usuario y
+// contraseña, o alguien que perdió el acceso a su correo. Por eso se concede de una en una,
+// solo el super admin, y queda registrado quién la dio y cuándo.
+
+const normEmail = e => String(e || '').trim().toLowerCase()
+
+const list2faExempt = async (req, res) => {
+  if (req.user.type !== 'superadmin') return res.status(403).json({ error: 'Solo super admin' })
+  try {
+    const [rows] = await pool.query('SELECT email, reason, granted_by, created_at FROM login_2fa_exempt ORDER BY created_at DESC')
+    res.json(rows.map(r => ({ email: r.email, reason: r.reason || '', grantedBy: r.granted_by || '', createdAt: Number(r.created_at) || 0 })))
+  } catch (err) { console.error('[2fa exentos]', err); res.status(500).json({ error: 'Error interno' }) }
+}
+
+const add2faExempt = async (req, res) => {
+  if (req.user.type !== 'superadmin') return res.status(403).json({ error: 'Solo super admin' })
+  const email = normEmail(req.body?.email)
+  const reason = String(req.body?.reason || '').trim().slice(0, 300)
+  if (!/^[^@\s]+@[^@\s]+\.[^@\s]+$/.test(email)) return res.status(400).json({ error: 'Correo no válido' })
+  try {
+    // Se avisa si ese correo no corresponde a nadie: casi siempre es una errata, y una
+    // exencion sobre un correo inexistente no protege ni sirve — solo estorba en la lista.
+    const [[m]] = await pool.query('SELECT email FROM members WHERE email=? LIMIT 1', [email])
+    const [[sa]] = await pool.query('SELECT email FROM super_admins WHERE email=? LIMIT 1', [email])
+    const existe = !!(m || sa)
+
+    await pool.query(
+      'INSERT INTO login_2fa_exempt (email, reason, granted_by, created_at) VALUES (?,?,?,?) ' +
+      'ON DUPLICATE KEY UPDATE reason=VALUES(reason), granted_by=VALUES(granted_by), created_at=VALUES(created_at)',
+      [email, reason, req.user.email || req.user.id || '', Date.now()])
+    console.log(`[2FA] exención concedida a ${email} por ${req.user.email || req.user.id}${reason ? ' — ' + reason : ''}`)
+    res.json({ ok: true, existe })
+  } catch (err) { console.error('[2fa exentos]', err); res.status(500).json({ error: 'Error interno' }) }
+}
+
+const remove2faExempt = async (req, res) => {
+  if (req.user.type !== 'superadmin') return res.status(403).json({ error: 'Solo super admin' })
+  try {
+    const email = normEmail(req.params.email)
+    await pool.query('DELETE FROM login_2fa_exempt WHERE email=?', [email])
+    console.log(`[2FA] exención retirada a ${email} por ${req.user.email || req.user.id}`)
+    res.json({ ok: true })
+  } catch (err) { console.error('[2fa exentos]', err); res.status(500).json({ error: 'Error interno' }) }
+}
+
+module.exports = { list2faExempt, add2faExempt, remove2faExempt, getSettings, updateSettings, getPublicIntegrations, listSuperAdmins, createSuperAdmin, updateSuperAdmin, deleteSuperAdmin, listAllUsers, listAccounts, createAccount, updateSAAccount, deleteAccount, getAccountNameHistory, testEmail, emailPreview, getModuleUsage }

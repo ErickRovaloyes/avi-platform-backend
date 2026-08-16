@@ -94,6 +94,28 @@ async function twoFactorActive() {
   } catch { return false }
 }
 
+/**
+ * ¿Este correo está EXENTO del 2FA?
+ *
+ * Sirve para las identidades que no pueden recibir un código: cuentas compartidas de un
+ * equipo, integraciones que entran con usuario y contraseña, o una persona que perdió acceso
+ * a su correo. Lo concede el super admin, uno a uno, desde el Super Panel.
+ *
+ * Ante un error de base devuelve `false` — es decir, SÍ pide el código. Una excepción de
+ * seguridad no puede depender de que una consulta salga bien: si algo falla, lo seguro es
+ * pedir el segundo factor, no saltárselo.
+ */
+async function exentoDe2fa(email) {
+  if (!email) return false
+  try {
+    const [[r]] = await pool.query('SELECT email FROM login_2fa_exempt WHERE email=?', [String(email).trim().toLowerCase()])
+    return !!r
+  } catch (e) {
+    console.warn('[2FA] no se pudo leer la lista de exentos, se pide el código:', e.message)
+    return false
+  }
+}
+
 const login = async (req, res) => {
   const { email, password } = req.body
   if (!email || !password) return res.status(400).json({ error: 'Email y contraseña requeridos' })
@@ -114,7 +136,7 @@ const login = async (req, res) => {
     // 2FA opt-in: si está activo y la identidad tiene correo, se envía un código y
     // NO se entrega el token hasta verificarlo. Si el envío falla, se hace fail-open
     // (se entrega el token igual) para no dejar a nadie fuera por un problema de correo.
-    if (session.email && await twoFactorActive()) {
+    if (session.email && await twoFactorActive() && !(await exentoDe2fa(session.email))) {
       const r = await issueCode(session.email, 'login')
       if (r.ok) return res.json({ twoFactorRequired: true, email: session.email })
       console.error('[LOGIN 2FA] envío falló, fail-open:', r.error)
