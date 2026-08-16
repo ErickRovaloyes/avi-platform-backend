@@ -8,8 +8,32 @@ const OWNER_PERMS = { inbox: true, agents: true, channels: true, crm: true, pipe
 
 // ── Members ───────────────────────────────────────────────────────────────────
 
+/**
+ * ¿Puede esta sesión gestionar el equipo de ESTA cuenta?
+ *
+ * Faltaba por completo. `authMiddleware` comprueba que HAY sesión, no de quién es, y no
+ * existe ningún middleware que acote por cuenta: sin esta puerta, cualquier usuario con
+ * sesión —de la cuenta que fuera— podía crear, editar o borrar miembros de OTRA cuenta
+ * sabiendo sus identificadores. Apareció al añadir la baja voluntaria, tocando estas mismas
+ * rutas.
+ *
+ * Devuelve el motivo del rechazo, o null si puede.
+ */
+function puedeGestionarEquipo(user, accId) {
+  if (!user) return 'No hay sesión.'
+  // El super admin —directo o en modo vista— administra cualquier cuenta: es su función.
+  if (user.type === 'superadmin' || user.isImpersonating) return null
+  if (user.type !== 'member') return 'No tienes acceso a esta cuenta.'
+  if (String(user.accountId) !== String(accId)) return 'Esta cuenta no es la tuya.'
+  const esDueno = String(user.roleId || '').startsWith('role_owner')
+  if (!esDueno && !user.permissions?.admins) return 'No tienes permiso para gestionar el equipo.'
+  return null
+}
+
 const createMember = async (req, res) => {
   const { accId } = req.params
+  const noPuede = puedeGestionarEquipo(req.user, accId)
+  if (noPuede) return res.status(403).json({ error: noPuede })
   const { id: gId, name, email, password, roleId, agentAccess = [], avatar } = req.body
   const cleanEmail = String(email || '').trim()
   // Solo si viene contraseña: el alta puede crearse sin ella (se copia de otra cuenta).
@@ -46,6 +70,8 @@ const createMember = async (req, res) => {
 
 const updateMember = async (req, res) => {
   const { accId, memId } = req.params
+  const noPuede = puedeGestionarEquipo(req.user, accId)
+  if (noPuede) return res.status(403).json({ error: noPuede })
   const { name, email, roleId, agentAccess, status, password, avatar } = req.body
   try {
     if (password) { const v = pw.validate(password); if (!v.ok) return res.status(400).json({ error: v.error }) }
@@ -70,13 +96,65 @@ const updateMember = async (req, res) => {
 }
 
 // Quita a un miembro de UNA cuenta (nivel cuenta). El owner puede gestionar su equipo.
+/**
+ * Saca a un miembro de una cuenta y limpia lo que arrastra.
+ *
+ * El DELETE a secas dejaba dos cosas colgando, y una de ellas es una fuga: los tokens de push
+ * del móvil. `services/push.js` manda a TODOS los tokens de la cuenta sin comprobar la
+ * membresía, así que quien salía seguía recibiendo en su teléfono los avisos de mensajes de
+ * clientes de una cuenta que ya no es suya.
+ */
+async function sacarMiembro(accId, memId) {
+  await pool.query('DELETE FROM members WHERE id=? AND account_id=?', [memId, accId])
+  // El teléfono deja de recibir avisos de esta cuenta.
+  await pool.query('DELETE FROM push_tokens WHERE account_id=? AND member_id=?', [accId, memId]).catch(() => {})
+  // Y las conversaciones que tuviera asignadas vuelven a quedar sin asignar, en vez de
+  // apuntar a alguien que ya no existe.
+  await pool.query(
+    "UPDATE conversations SET assigned_to=NULL WHERE account_id=? AND JSON_EXTRACT(assigned_to,'$.id')=?",
+    [accId, memId]).catch(() => {})
+  socket.emit(accId, 'account:updated', { accId })
+}
+
 const deleteMember = async (req, res) => {
   const { accId, memId } = req.params
+  const noPuede = puedeGestionarEquipo(req.user, accId)
+  if (noPuede) return res.status(403).json({ error: noPuede })
   try {
-    await pool.query('DELETE FROM members WHERE id=? AND account_id=?', [memId, accId])
-    socket.emit(accId, 'account:updated', { accId })
+    await sacarMiembro(accId, memId)
     res.json({ ok: true })
-  } catch (err) { res.status(500).json({ error: 'Error interno' }) }
+  } catch (err) { console.error('[deleteMember]', err); res.status(500).json({ error: 'Error interno' }) }
+}
+
+/**
+ * Darse de baja UNO MISMO de la cuenta.
+ *
+ * Borra su usuario y su acceso; la cuenta, las conversaciones y el resto del equipo siguen
+ * igual. Es reversible: quien administra la cuenta puede volver a invitarle.
+ *
+ * El DUEÑO no puede usar esta vía. Si se sacara a sí mismo, la cuenta quedaría sin nadie que
+ * la administre —ni pueda invitar a nadie más— y solo se podría rescatar desde el Super
+ * Panel. Para él existe el borrado de la cuenta entera, que sí está pensado para eso.
+ */
+const leaveAccount = async (req, res) => {
+  const { accId } = req.params
+  const u = req.user
+  if (!u) return res.status(401).json({ error: 'No hay sesión.' })
+  // Un super admin en modo vista entra con rol de dueño para poder trabajar: sin esta
+  // comprobación se estaría dando de baja a sí mismo de la cuenta de un cliente.
+  if (u.isImpersonating) return res.status(403).json({ error: 'Estás viendo esta cuenta como super admin; no puedes darte de baja de ella.' })
+  if (u.type !== 'member') return res.status(403).json({ error: 'Solo un miembro de la cuenta puede darse de baja.' })
+  if (String(u.accountId) !== String(accId)) return res.status(403).json({ error: 'Esta cuenta no es la tuya.' })
+  if (u.roleId === 'role_owner') {
+    return res.status(400).json({ error: 'Eres el dueño de la cuenta: si te dieras de baja, nadie podría administrarla. Usa «Borrar la cuenta» si quieres eliminarla, o pásale la propiedad a otra persona antes.' })
+  }
+  try {
+    const [[m]] = await pool.query('SELECT id, email FROM members WHERE id=? AND account_id=?', [u.id, accId])
+    if (!m) return res.status(404).json({ error: 'Tu usuario ya no está en esta cuenta.' })
+    await sacarMiembro(accId, u.id)
+    console.log(`[baja] ${m.email} se dio de baja de la cuenta ${accId}`)
+    res.json({ ok: true })
+  } catch (err) { console.error('[leaveAccount]', err); res.status(500).json({ error: 'Error interno' }) }
 }
 
 // Un super admin se une a una cuenta como OWNER (crea/actualiza su membresía real).
@@ -255,7 +333,7 @@ const deleteLabel = async (req, res) => {
 }
 
 module.exports = {
-  createMember, updateMember, deleteMember, deleteUserEverywhere, joinAsOwner,
+  createMember, updateMember, deleteMember, leaveAccount, deleteUserEverywhere, joinAsOwner,
   createRole, updateRole, deleteRole,
   createTeam, updateTeam, deleteTeam,
   createLabel, updateLabel, deleteLabel,

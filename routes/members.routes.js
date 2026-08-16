@@ -11,7 +11,11 @@ router.post('/members/delete-user',                 authMiddleware, ctrl.deleteU
 router.post('/accounts/:accId/join-as-owner',       authMiddleware, ctrl.joinAsOwner)
 router.post('/accounts/:accId/members',             authMiddleware, ctrl.createMember)
 router.put('/accounts/:accId/members/:memId',       authMiddleware, ctrl.updateMember)
-router.delete('/accounts/:accId/members/:memId',    authMiddleware, ctrl.deleteMember)
+// Darse de baja uno mismo. Va ANTES de la ruta con :memId para que «me» no se lea como el id
+// de un miembro — si no, esta petición acabaría en `deleteMember`, que es la vía del
+// administrador y no comprueba que estés borrándote a ti.
+router.delete('/accounts/:accId/members/me',       authMiddleware, ctrl.leaveAccount)
+router.delete('/accounts/:accId/members/:memId',   authMiddleware, ctrl.deleteMember)
 router.post('/members/:accId',                      authMiddleware, ctrl.createMember)
 router.put('/members/:accId/:memId',                authMiddleware, ctrl.updateMember)
 router.delete('/members/:accId/:memId',             authMiddleware, ctrl.deleteMember)
