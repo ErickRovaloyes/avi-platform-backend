@@ -329,6 +329,22 @@ async function sendCmsResource(ctx, args) {
  * parecido, que es exactamente el fallo reportado. Devolver las categorías que SÍ existen
  * le da con qué ofrecer alternativas reales, y le recuerda que no puede tirar de memoria.
  */
+/**
+ * Lista de productos para el asistente, diciendo CUÁNTOS hay en total.
+ *
+ * El recorte a ocho estaba repetido aquí, en el catálogo Meta y en el motor del navegador.
+ * Preguntar «¿qué tienen dulce?» devolvía ocho por muchos dulces que hubiera en el catálogo, y
+ * el asistente los presentaba como si fueran todo. Decir el total es lo que lo evita.
+ */
+const TOPE_LISTADO = 24
+function listarProductos(products, linea) {
+  const mostrados = products.slice(0, TOPE_LISTADO)
+  const cabecera = products.length > TOPE_LISTADO
+    ? `Hay ${products.length} productos que encajan. Te paso los ${mostrados.length} más relevantes; si el cliente quiere más, vuelve a buscar afinando:\n`
+    : `Productos encontrados (${products.length} en total, están todos aquí):\n`
+  return cabecera + mostrados.map((p, i) => `${i + 1}. ${linea(p)}`).join('\n')
+}
+
 async function emptySearchHint(accId, consulta, cargarCategorias) {
   let cats = []
   try { cats = await cargarCategorias() } catch { cats = [] }
@@ -462,10 +478,10 @@ async function wooExec(ctx, fnName, args) {
       const list = await store.searchProductsSmart(accId, args?.consulta || args?.query || '')
       if (!list.length) return await emptySearchHint(accId, args?.consulta || args?.query || '', () => require('../../services/productIndex').listCategories(accId, 'store'))
       logDebug(ctx, 'tool_result', `🛒 ${list.length} producto(s) encontrados`, {})
-      return 'Productos encontrados:\n' + list.slice(0, 8).map((p, i) => {
-        const d = (p.shortDescription || p.description || '').slice(0, 200)
-        return `${i + 1}. ${p.name} — ${p.price} ${p.currency}${p.stockStatus === 'outofstock' ? ' (agotado)' : ''}${d ? `\n   ${d}` : ''}`
-      }).join('\n')
+      return listarProductos(list, p => {
+        const d = (p.shortDescription || p.description || '').slice(0, list.length > 12 ? 90 : 200)
+        return `${p.name} — ${p.price} ${p.currency}${p.stockStatus === 'outofstock' ? ' (agotado)' : ''}${d ? `\n   ${d}` : ''}`
+      })
     }
     if (fnName === 'enviar_producto') {
       const list = await store.searchProductsSmart(accId, args?.producto || args?.consulta || '')
@@ -583,14 +599,24 @@ async function catalogExec(ctx, fnName, args) {
   const accId = ctx.accId
   try {
     if (fnName === 'buscar_en_catalogo') {
-      const list = await require("../../services/productIndex").searchSmartMeta(accId, args?.consulta || args?.query || '')
-      if (!list.length) return await emptySearchHint(accId, args?.consulta || args?.query || '', () => require('../../services/productIndex').listCategories(accId, 'meta'))
-      logDebug(ctx, 'tool_result', `🛍 ${list.length} producto(s) en catálogo`, {})
-      return 'Productos encontrados:\n' + list.slice(0, 8).map((p, i) => {
-        const d = (p.description || '').slice(0, 160)
+      const consulta = args?.consulta || args?.query || ''
+      const idx = require('../../services/productIndex')
+      const { productos, total, recortado } = await idx.searchSmartMetaDetalle(accId, consulta)
+      if (!productos.length) return await emptySearchHint(accId, consulta, () => idx.listCategories(accId, 'meta'))
+      logDebug(ctx, 'tool_result', `🛍 ${productos.length} de ${total} producto(s) en catálogo`, {})
+      // La descripción se acorta más cuando hay muchos, para que quepan sin inflar el prompt.
+      const corte = productos.length > 12 ? 80 : 160
+      const lineas = productos.map((p, i) => {
+        const d = (p.description || '').slice(0, corte)
         const out = p.availability && !/in stock|available/i.test(p.availability) ? ' (no disponible)' : ''
         return `${i + 1}. ${p.name} — ${p.price || ''}${out}${d ? `\n   ${d}` : ''}`
       }).join('\n')
+      // Decirle CUÁNTOS hay evita que presente los primeros como si fueran el catálogo entero,
+      // que es justo lo que pasaba cuando el tope estaba en ocho y no se avisaba.
+      const cabecera = recortado
+        ? `Hay ${total} productos que encajan. Te paso los ${productos.length} más relevantes; si el cliente quiere más, vuelve a buscar afinando:\n`
+        : `Productos encontrados (${total} en total, están todos aquí):\n`
+      return cabecera + lineas
     }
     if (fnName === 'enviar_producto_catalogo') {
       const list = await require("../../services/productIndex").searchSmartMeta(accId, args?.producto || args?.consulta || '')

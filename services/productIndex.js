@@ -349,9 +349,25 @@ async function loadRows(accId, platform) {
   return parsed
 }
 
-// Búsqueda vectorial pura. Devuelve null si no es aplicable (sin filas / sin key)
-// para que el llamador haga fallback a la API viva.
-async function searchVector(accId, query, { limit = 8, source = 'store' } = {}) {
+/**
+ * Tope por defecto de resultados.
+ *
+ * Estaba en 8, y ese número era el fallo: preguntar «¿qué tienen dulce?» devolvía OCHO cosas
+ * por muchos dulces que hubiera en el catálogo, y el asistente contestaba como si esas ocho
+ * fueran todo. No era la búsqueda semántica flojeando; era un tope.
+ */
+const LIMITE_POR_DEFECTO = 24
+
+/**
+ * Búsqueda vectorial con el detalle que necesita quien la llama.
+ *
+ * → `{ productos, total, recortado }` · `total` es cuántos superan el listón, no cuántos se
+ * devuelven: con eso el asistente puede decir «tengo 25, te menciono estos» en vez de dar los
+ * primeros como si fueran el catálogo entero.
+ *
+ * Devuelve null si no es aplicable (sin filas / sin key) para que el llamador use la API viva.
+ */
+async function searchVectorDetalle(accId, query, { limit = LIMITE_POR_DEFECTO, source = 'store' } = {}) {
   const ctx = await loadCtx(accId, source)
   const rows = await loadRows(accId, ctx.platform)
   if (!rows.length) return null
@@ -359,16 +375,26 @@ async function searchVector(accId, query, { limit = 8, source = 'store' } = {}) 
   if (!apiKey) return null
   const qEmb = await rag.getEmbedding(String(query || '').slice(0, 500), apiKey)
   const ranked = rankProducts(rows, qEmb, query)
-  const picked = ranked.filter(r => r.score >= 0.30).slice(0, Math.max(1, limit))
-  // Si el umbral dejó todo fuera pero hay algo razonable, devuelve el top igualmente
-  // (el asistente decide); si ni eso, [] para que el llamador pruebe la API viva.
-  // Antes esto devolvia `ranked.slice(0, limit)` entero comprobando solo el PRIMERO: si el
-  // mejor sacaba 0.23 y el siguiente 0.04, el segundo salia igual. Ahora cada uno pasa el
-  // listón, y el llamador recibe solo lo que de verdad se le parece.
-  if (!picked.length && ranked.length && ranked[0].score >= 0.22) {
-    return ranked.filter(r => r.score >= 0.22).slice(0, Math.max(1, limit)).map(r => r.product)
+
+  // Cada resultado pasa el listón por su cuenta. Antes se comprobaba solo el PRIMERO y salía
+  // la lista entera: si el mejor sacaba 0.23 y el siguiente 0.04, el segundo colaba igual.
+  let coinciden = ranked.filter(r => r.score >= 0.30)
+  // Si el listón alto deja todo fuera pero hay algo razonable, se baja una vez.
+  if (!coinciden.length && ranked.length && ranked[0].score >= 0.22) {
+    coinciden = ranked.filter(r => r.score >= 0.22)
   }
-  return picked.map(r => r.product)
+  const tope = Math.max(1, limit)
+  return {
+    productos: coinciden.slice(0, tope).map(r => r.product),
+    total: coinciden.length,
+    recortado: coinciden.length > tope,
+  }
+}
+
+// Compatible con lo de antes: solo la lista.
+async function searchVector(accId, query, opts = {}) {
+  const r = await searchVectorDetalle(accId, query, opts)
+  return r && r.productos
 }
 
 // Búsqueda inteligente con fallback a la búsqueda viva (tienda Woo/Shopify).
@@ -416,14 +442,21 @@ async function listCategories(accId, source = 'store', limit = 12) {
 
 // Búsqueda inteligente del Catálogo Meta con fallback al scoring por tokens actual.
 async function searchSmartMeta(accId, query, opts = {}) {
+  const r = await searchSmartMetaDetalle(accId, query, opts)
+  return r.productos
+}
+
+/** Igual, pero diciendo cuántos hay en total (ver searchVectorDetalle). */
+async function searchSmartMetaDetalle(accId, query, opts = {}) {
   const vi = await getSettings(accId, 'meta')
   if (vi.enabled && vi.count > 0) {
     try {
-      const r = await searchVector(accId, query, { ...opts, source: 'meta' })
-      if (Array.isArray(r) && r.length) return r
+      const r = await searchVectorDetalle(accId, query, { ...opts, source: 'meta' })
+      if (r && r.productos.length) return r
     } catch (e) { console.warn('[product index] búsqueda meta vectorial falló, fallback:', e.message) }
   }
-  return metaCatalog.searchProducts(accId, query, { limit: 100 })
+  const lista = await metaCatalog.searchProducts(accId, query, { limit: 100 })
+  return { productos: lista, total: lista.length, recortado: false }
 }
 
 // ── Programación ──────────────────────────────────────────────────────────────
@@ -496,7 +529,8 @@ async function purge(accId, platform = null) {
 module.exports = {
   getSettings, saveSettings, normalizeSettings, resolveOpenaiKey,
   fullSync, syncOne, removeOne, enqueueChange, flushQueue,
-  searchVector, searchSmart, searchSmartMeta, listCategories,
+  searchVector, searchVectorDetalle, searchSmart, searchSmartMeta, searchSmartMetaDetalle, listCategories,
+  LIMITE_POR_DEFECTO,
   startWorker, tick, status, purge, isSyncing, indexedIds,
   // puras (tests):
   buildStableText, buildContentDoc, hashContent, tokenScore, rankProducts, shouldRunScheduledSync,
