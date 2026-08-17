@@ -269,7 +269,10 @@ const switchAccount = async (req, res) => {
     const esSuEntorno = acc.sandbox_of && acc.sandbox_of === req.user.accountId   // real → pruebas
     const esSuPadre   = actual?.sandbox_of && actual.sandbox_of === accountId     // pruebas → real
     if (esSuEntorno || esSuPadre) {
-      return res.json(emitirSesion(req, res, { ...req.user, accountId, accountName: acc.name }))
+      // `agentAccess` NO se arrastra: son ids de agente de la otra cuenta y ahí no existen, así
+      // que un miembro con acceso restringido se quedaría sin ver ningún agente —y por tanto
+      // ninguna conversación—. Vacío = acceso a todos los de la cuenta en la que se entra.
+      return res.json(emitirSesion(req, res, { ...req.user, accountId, accountName: acc.name, agentAccess: [] }))
     }
 
     if (!allIds.includes(accountId)) return res.status(403).json({ error: 'Sin acceso a esa cuenta' })

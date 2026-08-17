@@ -77,6 +77,68 @@ function desconectarCanales(channelsJson) {
   )))
 }
 
+/**
+ * Las columnas REALES de una tabla, preguntándoselas a la base de datos.
+ *
+ * Antes se listaban a mano, sacadas del esquema con una expresión regular, y esa lista se
+ * quedaba corta una y otra vez. La peor: `flows.trigger` va escrita entre comillas invertidas
+ * —es palabra reservada— y la expresión no casaba con esa línea, así que los flujos copiados
+ * quedaban SIN trigger. El motor elige los flujos por su trigger, de modo que en el entorno no
+ * se disparaba ninguno y el asistente no respondía a nada.
+ *
+ * Preguntando a la base de datos eso deja de poder pasar, y las migraciones futuras se copian
+ * solas.
+ */
+const _cacheCols = new Map()
+async function columnasDe(tabla) {
+  if (_cacheCols.has(tabla)) return _cacheCols.get(tabla)
+  const [rows] = await pool.query(
+    'SELECT COLUMN_NAME AS c FROM information_schema.COLUMNS WHERE TABLE_SCHEMA=DATABASE() AND TABLE_NAME=? ORDER BY ORDINAL_POSITION',
+    [tabla]
+  )
+  const cols = rows.map(r => r.c)
+  _cacheCols.set(tabla, cols)
+  return cols
+}
+
+/**
+ * Copia las filas de una tabla a la cuenta de pruebas.
+ *
+ * Se copian TODAS las columnas; `cambios` decide las que no viajan tal cual (el id nuevo, las
+ * referencias remapeadas, lo que debe ir vacío). Los nombres van entrecomillados para que
+ * `trigger` y cualquier otra palabra reservada dejen de ser un caso especial.
+ */
+async function copiarTabla(tabla, padreId, sandboxId, { prefijoId, cambios = {} } = {}) {
+  const cols = await columnasDe(tabla)
+  if (!cols.length) return new Map()
+  const [filas] = await pool.query(`SELECT * FROM \`${tabla}\` WHERE account_id=?`, [padreId])
+  const mapa = new Map()
+  const sql = `INSERT INTO \`${tabla}\` (${cols.map(c => `\`${c}\``).join(',')}) VALUES (${cols.map(() => '?').join(',')})`
+
+  const valorDe = (c, fila) => {
+    const v = cambios[c]
+    return typeof v === 'function' ? v(fila) : v
+  }
+  for (const fila of filas) {
+    // Los `cambios` mandan también sobre el id: cuando el id nuevo se calculó ANTES (los
+    // flujos, que se referencian entre sí) viene de ahí. Resolverlo después era el fallo:
+    // sin `prefijoId` la copia conservaba el id original y apuntaba a producción.
+    const idNuevo = Object.prototype.hasOwnProperty.call(cambios, 'id') ? valorDe('id', fila)
+      : prefijoId ? nuevoId(prefijoId)
+      : fila.id
+    mapa.set(fila.id, idNuevo)
+    const vals = cols.map(c => {
+      if (c === 'id') return idNuevo
+      if (c === 'account_id') return sandboxId
+      if (Object.prototype.hasOwnProperty.call(cambios, c)) return valorDe(c, fila)
+      // Nunca un valor crudo: mysql2 expande un array en varios valores y descuadra la consulta.
+      return fila[c] !== null && typeof fila[c] === 'object' ? JSON.stringify(fila[c]) : fila[c]
+    })
+    await pool.query(sql, vals).catch(e => console.warn(`[sandbox] ${tabla}:`, e.message))
+  }
+  return mapa
+}
+
 /** ¿Esta cuenta es un entorno de pruebas, y de quién? */
 async function infoDe(accId) {
   const [[a]] = await pool.query('SELECT id, name, sandbox_of FROM accounts WHERE id=?', [accId])
@@ -105,103 +167,70 @@ async function volcarConfig(padreId, sandboxId, { limpiarChats = false } = {}) {
     }
   }
 
-  // Los ids de flujo se remapean: los prompts y las herramientas los referencian, y si se
-  // copiaran tal cual el entorno de pruebas apuntaría a los flujos de la cuenta REAL.
-  const mapaFlujos = new Map()
-  const [flujos] = await pool.query('SELECT * FROM flows WHERE account_id=?', [padreId])
-  for (const f of flujos) mapaFlujos.set(f.id, nuevoId('flow'))
-  for (const f of flujos) {
-    // Un flujo puede saltar a otro: esas referencias también se remapean.
-    const nodos = remapear(comoTexto(f.nodes), mapaFlujos)
-    await pool.query(
-      'INSERT INTO flows (id,account_id,name,start_node_id,nodes,created_at) VALUES (?,?,?,?,?,?)',
-      [mapaFlujos.get(f.id), sandboxId, f.name, f.start_node_id, nodos, Date.now()]
-    )
-  }
+  // 1) Los FLUJOS primero: todo lo demás los referencia por id.
+  //    Se necesitan los ids nuevos ANTES de insertar, porque un flujo puede saltar a otro y esas
+  //    referencias viven dentro de sus propios nodos.
+  const [flujos] = await pool.query('SELECT id FROM flows WHERE account_id=?', [padreId])
+  const mapaFlujos = new Map(flujos.map(f => [f.id, nuevoId('flow')]))
+  await copiarTabla('flows', padreId, sandboxId, {
+    cambios: {
+      id: f => mapaFlujos.get(f.id),
+      nodes: f => remapear(comoTexto(f.nodes), mapaFlujos),
+    },
+  })
 
-  const [herramientas] = await pool.query('SELECT * FROM ai_tools WHERE account_id=?', [padreId])
-  const mapaTools = new Map()
-  for (const t of herramientas) {
-    const id = nuevoId('tool')
-    mapaTools.set(t.id, id)
-    await pool.query(
-      'INSERT INTO ai_tools (id,account_id,name,description,collect_fields,flow_id,action_type,catalog_id,catalog_version) VALUES (?,?,?,?,?,?,?,?,?)',
-      [id, sandboxId, t.name, t.description, comoTexto(t.collect_fields), mapaFlujos.get(t.flow_id) || null,
-       t.action_type || 'variable', t.catalog_id || null, t.catalog_version || null]
-    ).catch(e => console.warn('[sandbox] herramienta:', e.message))
-  }
+  // 2) Herramientas: apuntan a un flujo.
+  const mapaTools = await copiarTabla('ai_tools', padreId, sandboxId, {
+    prefijoId: 'tool',
+    cambios: { flow_id: t => mapaFlujos.get(t.flow_id) || null },
+  })
 
-  const [agentes] = await pool.query('SELECT * FROM agents WHERE account_id=?', [padreId])
-  for (const g of agentes) {
-    // Los prompts referencian herramientas y flujos; ambos ids se remapean.
-    const prompts = remapear(remapear(comoTexto(g.prompts), mapaTools), mapaFlujos)
-    const idsTools = typeof g.ai_tool_ids === 'string' ? parseJ(g.ai_tool_ids, []) : (g.ai_tool_ids || [])
-    // `fallback_flow_id` es el FLUJO DE ENTRADA y `test_flow_id` el del canal de pruebas. Sin
-    // copiarlos el entorno se quedaba sin flujo que ejecutar: el asistente no respondía a nada.
-    // Y hay que remapearlos, porque los flujos copiados tienen ids nuevos.
-    await pool.query(
-      `INSERT INTO agents (id,account_id,name,status,system_prompt,model,welcome_message,prompts,channels,rag,ai_tool_ids,
-                           fallback_flow_id,test_flow_id,routing,interrupt_enabled,created_at)
-       VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`,
-      [nuevoId('ag'), sandboxId, g.name, g.status, g.system_prompt, g.model, g.welcome_message,
-       prompts, desconectarCanales(g.channels), comoTexto(g.rag, '{}'),
-       JSON.stringify((Array.isArray(idsTools) ? idsTools : []).map(x => mapaTools.get(x) || x)),
-       mapaFlujos.get(g.fallback_flow_id) || null,
-       mapaFlujos.get(g.test_flow_id) || null,
-       comoTexto(g.routing, '{}'),
-       g.interrupt_enabled == null ? 1 : g.interrupt_enabled,
-       Date.now()]
-    )
-  }
+  // 3) Agentes: referencian herramientas y flujos por todos lados.
+  //    `fallback_flow_id` es el flujo de entrada y `test_flow_id` el del canal de pruebas: sin
+  //    remapearlos, el entorno se queda sin nada que ejecutar.
+  await copiarTabla('agents', padreId, sandboxId, {
+    prefijoId: 'ag',
+    cambios: {
+      prompts: g => remapear(remapear(comoTexto(g.prompts), mapaTools), mapaFlujos),
+      ai_tool_ids: g => {
+        const ids = typeof g.ai_tool_ids === 'string' ? parseJ(g.ai_tool_ids, []) : (g.ai_tool_ids || [])
+        return JSON.stringify((Array.isArray(ids) ? ids : []).map(x => mapaTools.get(x) || x))
+      },
+      channels: g => desconectarCanales(g.channels),
+      fallback_flow_id: g => mapaFlujos.get(g.fallback_flow_id) || null,
+      test_flow_id: g => mapaFlujos.get(g.test_flow_id) || null,
+      // Contadores del reparto IA/humano: el entorno empieza de cero.
+      rr_ai: 0, rr_total: 0,
+    },
+  })
 
-  for (const [tabla, cols] of [
-    ['labels',    ['id', 'account_id', 'name', 'color']],
-    ['variables', ['id', 'account_id', 'name', 'type', 'default_value', 'description', 'is_system']],
-  ]) {
-    const [filas] = await pool.query(`SELECT * FROM ${tabla} WHERE account_id=?`, [padreId])
-    for (const f of filas) {
-      // Nunca se pasa un valor crudo: si fuera un array, mysql2 lo expandiría en varios valores.
-      const vals = cols.map(c => (
-        c === 'id' ? nuevoId(tabla.slice(0, 3))
-        : c === 'account_id' ? sandboxId
-        : (f[c] !== null && typeof f[c] === 'object') ? JSON.stringify(f[c]) : f[c]
-      ))
-      await pool.query(`INSERT INTO ${tabla} (${cols.join(',')}) VALUES (${cols.map(() => '?').join(',')})`, vals)
-        .catch(e => console.warn(`[sandbox] ${tabla}:`, e.message))
+  await copiarTabla('labels', padreId, sandboxId, { prefijoId: 'lb' })
+  await copiarTabla('variables', padreId, sandboxId, { prefijoId: 'var' })
+  // Los pipelines conservan sus etapas pero NO sus tarjetas: las tarjetas son negocio real.
+  await copiarTabla('pipelines', padreId, sandboxId, { prefijoId: 'pipe', cambios: { cards: '[]' } })
+
+  // 4) La configuración de la CUENTA. Se copian todas sus columnas menos las que la identifican:
+  //    así el entorno hereda tienda, PMS, pedidos, pasarela, tema y zona horaria. Antes se
+  //    copiaban tres campos a mano y el entorno se quedaba sin ninguna de esas integraciones.
+  const NO_COPIAR_CUENTA = new Set(['id', 'name', 'sandbox_of', 'created_at'])
+  const colsCuenta = (await columnasDe('accounts')).filter(c => !NO_COPIAR_CUENTA.has(c))
+  if (colsCuenta.length) {
+    const [[padre]] = await pool.query('SELECT * FROM accounts WHERE id=?', [padreId])
+    if (padre) {
+      await pool.query(
+        `UPDATE accounts SET ${colsCuenta.map(c => `\`${c}\`=?`).join(', ')} WHERE id=?`,
+        [...colsCuenta.map(c => (padre[c] !== null && typeof padre[c] === 'object' ? JSON.stringify(padre[c]) : padre[c])), sandboxId]
+      ).catch(e => console.warn('[sandbox] config de cuenta:', e.message))
     }
   }
-
-  // Pipelines con sus etapas pero SIN tarjetas: las tarjetas son negocio real.
-  const [pipes] = await pool.query('SELECT * FROM pipelines WHERE account_id=?', [padreId])
-  for (const p of pipes) {
-    await pool.query('INSERT INTO pipelines (id,account_id,name,stages,cards) VALUES (?,?,?,?,?)',
-      [nuevoId('pipe'), sandboxId, p.name, comoTexto(p.stages), '[]'])
-      .catch(e => console.warn('[sandbox] pipeline:', e.message))
-  }
-
-  // La configuración de la cuenta que SÍ viaja (prompts del negocio, recontactos, tienda…).
-  // Las claves de IA se copian para que el entorno funcione; los canales ya van desconectados.
-  await pool.query(
-    `UPDATE accounts SET openai_key=(SELECT openai_key FROM (SELECT openai_key FROM accounts WHERE id=?) x),
-            deepseek_key=(SELECT deepseek_key FROM (SELECT deepseek_key FROM accounts WHERE id=?) y),
-            recontact=(SELECT recontact FROM (SELECT recontact FROM accounts WHERE id=?) z)
-      WHERE id=?`,
-    [padreId, padreId, padreId, sandboxId]
-  ).catch(e => console.warn('[sandbox] config de cuenta:', e.message))
 }
 
 /** Copia a los miembros de la cuenta real para que entren al entorno con su mismo correo. */
 async function copiarMiembros(padreId, sandboxId) {
   await pool.query('DELETE FROM members WHERE account_id=?', [sandboxId]).catch(() => {})
-  const [ms] = await pool.query('SELECT * FROM members WHERE account_id=?', [padreId])
-  for (const m of ms) {
-    await pool.query(
-      'INSERT INTO members (id,account_id,name,email,password,avatar,role_id,agent_access,status,created_at) VALUES (?,?,?,?,?,?,?,?,?,?)',
-      // `agent_access` va vacío: los ids de agente del entorno son otros, así que copiarlo
-      // dejaría a la gente sin acceso a ningún agente. Vacío = acceso a todos.
-      [nuevoId('mem'), sandboxId, m.name, m.email, m.password, m.avatar, m.role_id, '[]', m.status, Date.now()]
-    ).catch(e => console.warn('[sandbox] miembro:', e.message))
-  }
+  // `agent_access` va vacío: los ids de agente del entorno son otros, así que copiarlo dejaría
+  // a la gente sin acceso a ningún agente. Vacío = acceso a todos.
+  await copiarTabla('members', padreId, sandboxId, { prefijoId: 'mem', cambios: { agent_access: '[]' } })
 }
 
 /**
@@ -217,6 +246,9 @@ async function crearOrehacer(padreId, { limpiarChats = false } = {}) {
   let creado = false
   if (!sandbox) {
     const id = nuevoId('acc')
+    // Fila mínima a propósito: solo lo que identifica a la cuenta. Todo lo demás —claves,
+    // tienda, PMS, pedidos, pasarela, tema— lo rellena `volcarConfig` copiando las columnas
+    // reales, así que aquí no hay ninguna lista que se pueda quedar corta.
     await pool.query(
       'INSERT INTO accounts (id,name,email,plan,status,sandbox_of,created_at) VALUES (?,?,?,?,?,?,?)',
       [id, `${padre.name} · Pruebas`, padre.email, padre.plan, 'active', padreId, Date.now()]

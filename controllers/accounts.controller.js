@@ -430,6 +430,12 @@ const getAccount = async (req, res) => {
       variables: variables.map(v => ({ id: v.id, name: v.name, type: v.type, defaultValue: v.default_value, description: v.description, isSystem: !!v.is_system, aiEnabled: v.ai_enabled == null ? true : !!v.ai_enabled })),
       aiTools:   [SPECIAL_CMS_TOOL, ...specialTools(), ...aiTools.map(t => ({ id: t.id, name: t.name, description: t.description, collectFields: parseJ(t.collect_fields, []), flowId: t.flow_id, actionType: t.action_type || 'variable', createdAt: t.created_at }))],
       woocommerce: storeSvc.publicConfig(parseJ(acc.woocommerce, null)),
+      // Los mismos dos campos que `loadPublicAccount`. Son DOS constructores distintos del
+      // objeto de cuenta y tienen que decir lo mismo: el panel carga por aquí, así que sin esto
+      // `account.sandboxOf` llegaba vacío —no salía la franja de modo pruebas ni se ocultaba el
+      // entorno del selector— y `recontact` tampoco llegaba a los flujos del navegador.
+      sandboxOf: acc.sandbox_of || null,
+      recontact: require('../services/recontact').publicConfig(acc.recontact),
       scheduling: schedulingCfg,
       pms: pmsSvc.publicConfig(parseJ(acc.pms, null)),
       orders: await ordersSvc.publicConfigAsync(accId).catch(() => ({ connected: false })),
