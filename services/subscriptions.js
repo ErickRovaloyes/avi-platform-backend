@@ -362,11 +362,13 @@ function effectiveMonthlyLimit(sub) {
  *
  * A propósito NO resuelve la cuenta de facturación: se escribe con el id que llega. Un entorno
  * de pruebas no tiene fila en `account_subscriptions`, así que esto no afecta a ninguna y el
- * consumo de las pruebas no gasta el cupo de la cuenta real. Lee su plan (getSubscription sí
- * resuelve), pero no consume contra él.
+ * Resuelve la cuenta de facturación: lo consumido en el entorno de pruebas cuenta como consumo
+ * REAL. El entorno no tiene fila propia, así que sin resolver no se contaría nada y las pruebas
+ * saldrían gratis.
  */
 async function incrementConversation(accId) {
   try {
+    accId = await cuentaDeFacturacion(accId)
     await pool.query(
       'UPDATE account_subscriptions SET conversation_count_current_period=conversation_count_current_period+1, updated_at=? WHERE account_id=?',
       [Date.now(), accId]
@@ -382,6 +384,8 @@ async function incrementConversation(accId) {
 async function markContactActive(accId, contactId) {
   if (!accId || !contactId) return
   try {
+    // Los contactos del entorno de pruebas cuentan contra el cupo de la cuenta real.
+    accId = await cuentaDeFacturacion(accId)
     const [[s]] = await pool.query('SELECT current_period_start FROM account_subscriptions WHERE account_id=?', [accId])
     if (!s) return
     const periodStart = s.current_period_start || 0
@@ -409,6 +413,8 @@ async function markContactActive(accId, contactId) {
 //   · contacto nuevo con el cupo lleno → se bloquea y NO se cuenta (no gasta plaza).
 async function claimAiContact(accId, contactId, limit) {
   if (!accId || !contactId) return { allowed: true, counted: false }
+  // Igual que los demás contadores: el entorno de pruebas consume del cupo de la cuenta real.
+  accId = await cuentaDeFacturacion(accId)
   const [[s]] = await pool.query('SELECT current_period_start FROM account_subscriptions WHERE account_id=?', [accId])
   if (!s) return { allowed: true, counted: false }
   const periodStart = s.current_period_start || 0

@@ -1,12 +1,13 @@
 'use strict'
 /**
- * El entorno de pruebas hereda el plan de su cuenta real, pero no le gasta el cupo.
+ * El entorno de pruebas comparte plan Y consumo con su cuenta real.
  *
  *   node pruebas/entorno-plan.test.js
  *
  * Si el entorno se quedara en el plan gratuito no serviría para nada: las funciones que se
- * quieren ensayar son justo las que da el plan de pago. Y al revés, si el consumo de las pruebas
- * descontara del cupo real, probar saldría caro.
+ * quieren ensayar son justo las que da el plan de pago. Y el consumo va al mismo sitio, porque
+ * el entorno no tiene fila propia en `account_subscriptions`: sin resolver la cuenta de
+ * facturación, las conversaciones de prueba no se contarían en ninguna parte.
  */
 const path = require('path')
 const Module = require('module')
@@ -35,6 +36,13 @@ const dobles = {
         escrituras.push(accId)
         return [{ affectedRows: SUSCRIPCIONES[accId] ? 1 : 0 }]
       }
+      // Un contacto nuevo en el ciclo (INSERT IGNORE que sí inserta) dispara el recuento.
+      if (/^\s*INSERT IGNORE INTO subscription_(contact|ai_contact)_activity/i.test(sql)) {
+        escrituras.push(params[0])
+        return [{ affectedRows: 1 }]
+      }
+      if (/COUNT\(\*\) AS n FROM subscription_/i.test(sql)) return [[{ n: 8 }]]
+      if (/AS x FROM subscription_ai_contact_activity/i.test(sql)) return [[]]   // aún no visto
       if (/sandbox_of FROM accounts/i.test(sql)) return [[CUENTAS[params[0]]].filter(Boolean)]
       if (/FROM account_subscriptions/i.test(sql)) return [[SUSCRIPCIONES[params[0]]].filter(Boolean)]
       if (/FROM account_types/i.test(sql))  return [[{ id: 'tipo1', name: 'Empresa', modules: null }]]
@@ -70,17 +78,26 @@ const ok = (cond, msg) => { console.log(`  ${cond ? '✓' : '✗'} ${msg}`); if 
   ok((await subs.getSubscription('acc_sola')) === null,
     'acc_sola devuelve null — la herencia no inventa planes')
 
-  console.log('\n· Pero el consumo de las pruebas NO gasta el cupo real')
+  console.log('\n· Y el consumo de las pruebas cuenta como consumo REAL')
   escrituras.length = 0
   await subs.incrementConversation('acc_test')
-  ok(escrituras.length === 1 && escrituras[0] === 'acc_test',
-    `el contador se escribe con el id del ENTORNO (${escrituras[0]}), no con el de la cuenta real`)
-  ok(!escrituras.includes('acc_real'), 'la cuenta real no recibe ninguna escritura')
+  ok(escrituras.length === 1 && escrituras[0] === 'acc_real',
+    `una conversación en el entorno suma a la cuenta real (escribió en ${escrituras[0]})`)
+  ok(!escrituras.includes('acc_test'),
+    'y NO al entorno, que no tiene fila: ahí no se contaría en ninguna parte')
 
-  // Y por el otro lado: la cuenta real sí suma lo suyo.
+  escrituras.length = 0
+  await subs.markContactActive('acc_test', 'contacto1')
+  ok(escrituras.includes('acc_real'), 'los contactos del entorno también cuentan en la cuenta real')
+
+  escrituras.length = 0
+  await subs.claimAiContact('acc_test', 'contacto2', 100)
+  ok(escrituras.includes('acc_real'), 'y los contactos con IA igual')
+
+  // Y por el otro lado: una cuenta normal sigue sumando a la suya.
   escrituras.length = 0
   await subs.incrementConversation('acc_real')
-  ok(escrituras[0] === 'acc_real', 'la cuenta real sí suma su propio consumo')
+  ok(escrituras[0] === 'acc_real', 'una cuenta normal suma a la suya, como siempre')
 
   console.log(`\n${fallos === 0 ? '✅' : '❌'}  ${fallos} comprobación(es) fallida(s)\n`)
   process.exit(fallos ? 1 : 0)
