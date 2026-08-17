@@ -86,21 +86,63 @@ function nthOccurrence(steps, repeat, k) {
   }
   return null
 }
+// Una secuencia: su nombre, PARA QUÉ sirve, y los pasos. La descripción no es decorativa —es
+// lo que lee el asistente para decidir cuál corresponde a cada conversación—, así que sin ella
+// una secuencia no se puede elegir automáticamente.
+function normalizeSequence(s, i = 0) {
+  const steps = (Array.isArray(s?.steps) ? s.steps : []).map(normalizeStep).slice(0, 10)
+  return {
+    id: String(s?.id || `seq_${i + 1}`),
+    name: String(s?.name || (i === 0 ? 'General' : `Secuencia ${i + 1}`)).slice(0, 60),
+    description: String(s?.description || '').slice(0, 400),
+    steps: steps.length ? steps : [{ ...DEFAULT_STEP }],
+    repeat: !!s?.repeat,
+    maxPerConversation: Math.max(1, Math.min(50, Math.round(Number(s?.maxPerConversation) || steps.length || 1))),
+  }
+}
+
+/**
+ * Deja la configuración en la forma de hoy, venga del formato que venga.
+ *
+ * Hay tres generaciones y se sigue leyendo las tres, porque están vivas en la base de datos:
+ *   1. un único recontacto suelto (`delayMinutes`/`mode`)
+ *   2. una lista de pasos (`steps`)
+ *   3. varias secuencias con nombre y descripción (`sequences`) ← la de ahora
+ *
+ * Las dos primeras se envuelven en una secuencia llamada «General». Así ninguna cuenta pierde
+ * lo que tenía configurado y no hace falta migrar nada en la base.
+ */
 function normalize(c) {
+  if (Array.isArray(c?.sequences) && c.sequences.length) {
+    return { enabled: !!c.enabled, sequences: c.sequences.map(normalizeSequence).slice(0, 12) }
+  }
   if (Array.isArray(c?.steps)) {
-    const steps = c.steps.map(normalizeStep).slice(0, 10)
+    return { enabled: !!c.enabled, sequences: [normalizeSequence({ ...c, name: 'General' })] }
+  }
+  if (c && (c.delayMinutes || c.mode)) {
     return {
       enabled: !!c.enabled,
-      steps: steps.length ? steps : [{ ...DEFAULT_STEP }],
-      repeat: !!c.repeat,
-      maxPerConversation: Math.max(1, Math.min(50, Math.round(Number(c.maxPerConversation) || steps.length || 1))),
+      sequences: [normalizeSequence({
+        name: 'General',
+        steps: [{ delayMinutes: c.delayMinutes, mode: c.mode, flowId: c.flowId }],
+        repeat: false,
+        maxPerConversation: Math.max(1, Math.round(Number(c.maxRecontacts) || 1)),
+      })],
     }
   }
-  // Compatibilidad con el formato antiguo (un solo recontacto).
-  if (c && (c.delayMinutes || c.mode)) {
-    return { enabled: !!c.enabled, steps: [normalizeStep({ delayMinutes: c.delayMinutes, mode: c.mode, flowId: c.flowId })], repeat: false, maxPerConversation: Math.max(1, Math.round(Number(c.maxRecontacts) || 1)) }
-  }
-  return { enabled: false, steps: [{ ...DEFAULT_STEP }], repeat: false, maxPerConversation: 3 }
+  return { enabled: false, sequences: [normalizeSequence({ name: 'General', steps: [{ ...DEFAULT_STEP }], maxPerConversation: 3 })] }
+}
+
+/**
+ * La secuencia que le toca a una conversación.
+ *
+ * El asistente guarda la elegida en `_recontact_seq` al marcar la conversación. Si no eligió
+ * ninguna —o la que eligió ya no existe porque se borró—, se usa la primera: es mejor
+ * recontactar con la secuencia general que no recontactar.
+ */
+function sequenceFor(cfg, localVars) {
+  const id = localVars?._recontact_seq
+  return (id && cfg.sequences.find(s => s.id === id)) || cfg.sequences[0] || null
 }
 
 async function getConfig(accId) {
@@ -114,7 +156,20 @@ async function saveConfig(accId, cfg) {
 }
 function publicConfig(raw) {
   const c = normalize(parseJ(raw, null))
-  return { enabled: c.enabled, steps: c.steps.length, repeat: c.repeat, maxPerConversation: c.maxPerConversation }
+  return {
+    enabled: c.enabled,
+    sequences: c.sequences.map(s => ({
+      id: s.id, name: s.name, description: s.description,
+      steps: s.steps.length, repeat: s.repeat, maxPerConversation: s.maxPerConversation,
+    })),
+  }
+}
+
+/** Lo que ve el asistente para elegir: nombre y para qué sirve cada secuencia. */
+function sequencesForAI(cfg) {
+  return cfg.sequences
+    .filter(s => s.description.trim())   // sin descripción no hay forma de saber cuándo usarla
+    .map(s => ({ id: s.id, name: s.name, description: s.description }))
 }
 
 // Genera, con IA, un mensaje de recontacto analizando dónde quedó la conversación.
@@ -175,9 +230,13 @@ async function processConversation(accId, conv, step, account) {
 async function diagnose(accId) {
   const cfg = await getConfig(accId)
   const now = Date.now()
-  const out = { enabled: cfg.enabled, steps: cfg.steps.length, repeat: cfg.repeat, maxPerConversation: cfg.maxPerConversation, candidates: [] }
+  const out = {
+    enabled: cfg.enabled,
+    sequences: cfg.sequences.map(s => ({ id: s.id, name: s.name, steps: s.steps.length, repeat: s.repeat, maxPerConversation: s.maxPerConversation })),
+    candidates: [],
+  }
   if (!cfg.enabled) { out.note = 'Los recontactos están DESACTIVADOS. Actívalos para que el worker los procese.'; return out }
-  const minDelay = Math.min(...cfg.steps.map(s => s.delayMinutes))
+  const minDelay = Math.min(...cfg.sequences.flatMap(s => s.steps.map(p => p.delayMinutes)))
   const cutoff = now - minDelay * 60000
   out.minDelayMin = minDelay
   // Conversaciones de los canales soportados, recientes, para explicar su estado.
@@ -199,7 +258,11 @@ async function diagnose(accId) {
     else if (last.sender === 'user') reasons.push('el ÚLTIMO mensaje es del cliente (solo se recontacta cuando el último fue del agente/IA)')
     if ((conv.updated_at || 0) > cutoff) reasons.push(`aún no cumple la espera mínima (${minDelay} min desde la última actividad)`)
     const count = conv.recontact_count || 0
-    if (count >= cfg.maxPerConversation && conv.recontact_at && conv.recontact_at >= (conv.updated_at || 0)) reasons.push(`alcanzó el máximo de recontactos (${cfg.maxPerConversation})`)
+    // Cada conversación se mide contra SU secuencia, no contra una global: el tope y los pasos
+    // dependen de cuál eligió el asistente.
+    const seq = sequenceFor(cfg, dlv)
+    if (seq) reasons.unshift(`secuencia: «${seq.name}»`)
+    if (seq && count >= seq.maxPerConversation && conv.recontact_at && conv.recontact_at >= (conv.updated_at || 0)) reasons.push(`alcanzó el máximo de recontactos (${seq.maxPerConversation})`)
     const agent = account?.agents?.find(a => a.id === conv.agent_id)
     if (!agent) reasons.push('agente no encontrado')
     else {
@@ -209,7 +272,7 @@ async function diagnose(accId) {
         const to = conv.wa_from || conv.messenger_from || conv.ig_from
         if (!buildOutbound(agent, conv.channel_type, conv.channel_id, to)) reasons.push(`canal "${conv.channel_type}" no enviable (faltan credenciales del canal o identificador del cliente)`)
       }
-      const step0 = cfg.steps[0]
+      const step0 = seq?.steps?.[0]
       if (step0?.mode === 'flow' && !step0.flowId && !agent.fallbackFlowId) reasons.push('paso por defecto = Flujo de entrada principal, pero el agente NO tiene flujo de entrada configurado')
     }
     out.candidates.push({ conv: label, recontactCount: count, eligible: reasons.length === 0, reasons })
@@ -225,10 +288,10 @@ async function testNow(accId, convId) {
   if (!account) return { ok: false, reason: 'No se pudo cargar la cuenta.' }
   let conv
   if (convId) {
-    const [[c]] = await pool.query('SELECT id, agent_id, channel_type, channel_id, wa_from, messenger_from, ig_from, guest_name FROM conversations WHERE id=? AND account_id=?', [convId, accId])
+    const [[c]] = await pool.query('SELECT id, agent_id, channel_type, channel_id, wa_from, messenger_from, ig_from, guest_name, local_vars FROM conversations WHERE id=? AND account_id=?', [convId, accId])
     conv = c
   } else {
-    const [[c]] = await pool.query(`SELECT id, agent_id, channel_type, channel_id, wa_from, messenger_from, ig_from, guest_name FROM conversations WHERE account_id=? AND channel_type IN (${CH_IN}) ORDER BY updated_at DESC LIMIT 1`, [accId, ...RECONTACT_CHANNELS])
+    const [[c]] = await pool.query(`SELECT id, agent_id, channel_type, channel_id, wa_from, messenger_from, ig_from, guest_name, local_vars FROM conversations WHERE account_id=? AND channel_type IN (${CH_IN}) ORDER BY updated_at DESC LIMIT 1`, [accId, ...RECONTACT_CHANNELS])
     conv = c
   }
   if (!conv) return { ok: false, reason: 'No hay conversaciones recontactables (WhatsApp, Messenger, Instagram, webchat o pruebas) para probar.' }
@@ -240,7 +303,9 @@ async function testNow(accId, convId) {
   // Externos: requieren outbound (API). Webchat/test: se entregan por socket (outbound null).
   const outbound = isExternal ? buildOutbound(agent, conv.channel_type, conv.channel_id, to) : null
   if (isExternal && !outbound) return { ok: false, conv: label, reason: `Canal "${conv.channel_type}" no enviable: el agente no tiene ese canal conectado con credenciales (token/ID) o falta el identificador del cliente (${to || 'vacío'}).` }
-  const step = cfg.steps[0] || { mode: 'flow', flowId: null, instructions: '' }
+  // La prueba usa el PRIMER paso de la secuencia que le tocaría a esta conversación.
+  const seqPrueba = sequenceFor(cfg, parseJ(conv.local_vars, {}))
+  const step = seqPrueba?.steps?.[0] || { mode: 'flow', flowId: null, instructions: '' }
 
   if (step.mode === 'flow') {
     const flowId = step.flowId || agent.fallbackFlowId || null
@@ -271,8 +336,12 @@ async function tick() {
     const now = Date.now()
     for (const a of accs) {
       const cfg = normalize(parseJ(a.recontact, null))
-      if (!cfg.enabled || !cfg.steps.length) continue
-      const minDelay = Math.min(...cfg.steps.map(s => s.delayMinutes))
+      if (!cfg.enabled || !cfg.sequences.length) continue
+      // El prefiltro tiene que ser el MÁS AMPLIO de todas las secuencias: el retraso más corto
+      // y el tope más alto. Afinar por secuencia se hace luego, ya con la conversación delante;
+      // si se filtrara aquí con los valores de una sola, las demás no llegarían a mirarse.
+      const minDelay = Math.min(...cfg.sequences.flatMap(s => s.steps.map(p => p.delayMinutes)))
+      const maxTope  = Math.max(...cfg.sequences.map(s => s.maxPerConversation))
       const cutoff = now - minDelay * 60000
       // Prefiltro: inactivas más que el paso más corto, y que aún no llegaron al tope
       // O donde el cliente respondió tras el último recontacto (recontact_at < updated_at → reinicio).
@@ -281,7 +350,7 @@ async function tick() {
          WHERE account_id=? AND ai_enabled=1 AND archived=0 AND channel_type IN (${CH_IN})
            AND updated_at <= ? AND (recontact_count < ? OR recontact_at IS NULL OR recontact_at < updated_at)
          ORDER BY updated_at ASC LIMIT ?`,
-        [a.id, ...RECONTACT_CHANNELS, cutoff, cfg.maxPerConversation, SCAN_LIMIT]
+        [a.id, ...RECONTACT_CHANNELS, cutoff, maxTope, SCAN_LIMIT]
       )
       if (!convos.length) continue
       const account = await store.loadAccount(a.id)
@@ -301,9 +370,12 @@ async function tick() {
           const [[lu]] = await pool.query("SELECT ts FROM messages WHERE conversation_id=? AND sender='user' ORDER BY ts DESC LIMIT 1", [conv.id])
           if (lu && lu.ts > conv.recontact_at) { count = 0; await pool.query('UPDATE conversations SET recontact_count=0, recontact_at=NULL WHERE id=?', [conv.id]) }
         }
-        if (count >= cfg.maxPerConversation) continue
+        // La secuencia que eligió el asistente para ESTA conversación (o la general).
+        const seq = sequenceFor(cfg, lv)
+        if (!seq) continue
+        if (count >= seq.maxPerConversation) continue
         // Paso actual según las vueltas en que aplica cada paso (repite o termina).
-        const occ = nthOccurrence(cfg.steps, cfg.repeat, count)
+        const occ = nthOccurrence(seq.steps, seq.repeat, count)
         if (!occ) continue   // secuencia terminada (no hay más ocurrencias)
         const step = occ.step
         // `Date.now()` recalculado, NO el `now` del principio del tick: entre uno y otro se
@@ -332,4 +404,4 @@ function startWorker() {
   setTimeout(() => tick().catch(() => {}), 5000) // primer pase a los 5 s
 }
 
-module.exports = { getConfig, saveConfig, publicConfig, tick, startWorker, diagnose, testNow }
+module.exports = { getConfig, saveConfig, publicConfig, normalize, sequenceFor, sequencesForAI, tick, startWorker, diagnose, testNow }

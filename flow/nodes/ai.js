@@ -55,7 +55,7 @@ function buildToolDefs(toolList, account) {
     else if (tool.actionType === 'pms') { if (account?.pms?.connected) defs.push(...buildPmsToolDefs(account)) }
     else if (tool.actionType === 'orders') { if (account?.orders?.connected) defs.push(...buildOrdersToolDefs(account)) }
     else if (tool.actionType === 'data_tables') { if (account?.dataTables?.connected) defs.push(...buildDataTableToolDefs(account)) }
-    else if (tool.actionType === 'recontact') { defs.push(...buildRecontactToolDefs()) }
+    else if (tool.actionType === 'recontact') { defs.push(...buildRecontactToolDefs((account?.recontact?.sequences || []).filter(s => s.description))) }
     else if (tool.actionType === 'labels') { defs.push(...buildLabelToolDefs(account)) }
     else if (tool.actionType === 'pipeline') { defs.push(...buildPipelineToolDefs(account)) }
     else if (tool.actionType === 'variables') { defs.push(...buildVariableToolDefs(account)) }
@@ -748,9 +748,9 @@ function buildDataTableToolDefs(account) {
   ]
 }
 // ── Recontacto: respetar la voluntad del cliente ──────────────────────────────
-const RECONTACT_FUNCS = new Set(['marcar_no_recontactable', 'reactivar_recontacto'])
-function buildRecontactToolDefs() {
-  return [
+const RECONTACT_FUNCS = new Set(['marcar_no_recontactable', 'reactivar_recontacto', 'elegir_secuencia_recontacto'])
+function buildRecontactToolDefs(secuencias = []) {
+  const defs = [
     { type: 'function', function: {
       name: 'marcar_no_recontactable',
       description: 'Marca esta conversación para que NO se le envíen más recontactos automáticos. Úsala cuando el cliente pida explícitamente que no le escriban o no le insistan más.',
@@ -764,9 +764,33 @@ function buildRecontactToolDefs() {
       parameters: { type: 'object', properties: {}, required: [] },
     } },
   ]
+  // La elección de secuencia solo se ofrece si hay MÁS DE UNA con descripción. Con una sola no
+  // hay nada que decidir, y una herramienta de un solo valor posible solo invita a llamarla.
+  if (secuencias.length > 1) {
+    const catalogo = secuencias.map(s => `- ${s.id}: «${s.name}» — ${s.description}`).join('\n')
+    defs.push({ type: 'function', function: {
+      name: 'elegir_secuencia_recontacto',
+      description:
+        'Elige QUÉ secuencia de recontactos se usará con este cliente si deja de responder. ' +
+        'Úsala en cuanto sepas de qué va la conversación, sin esperar a que se acabe. ' +
+        'Elige por la descripción de cada una:\n' + catalogo,
+      parameters: { type: 'object', properties: {
+        secuencia_id: { type: 'string', enum: secuencias.map(s => s.id), description: 'El id de la secuencia que corresponde.' },
+        motivo: { type: 'string', description: 'Por qué encaja esa y no otra. Opcional.' },
+      }, required: ['secuencia_id'] },
+    } })
+  }
+  return defs
 }
 async function recontactExec(ctx, fnName, args) {
   try {
+    if (fnName === 'elegir_secuencia_recontacto') {
+      const id = String(args?.secuencia_id || '').trim()
+      if (!id) return 'No me diste el id de la secuencia.'
+      await store.setLocalVar(ctx.accId, ctx.agId, ctx.convId, '_recontact_seq', id)
+      logDebug(ctx, 'flow_run', `🔁 Secuencia de recontacto: ${id}`, { motivo: args?.motivo || undefined })
+      return `Listo: si deja de responder, se usará la secuencia "${id}".`
+    }
     const stop = fnName === 'marcar_no_recontactable'
     // Se escribe UNA sola clave (setLocalVar), no el objeto entero: updateConvo({localVars})
     // sustituiría todas las variables de la conversación.

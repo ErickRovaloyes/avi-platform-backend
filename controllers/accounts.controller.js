@@ -290,6 +290,13 @@ async function loadPublicAccount(accId) {
     members: members.map(mapNamed),
     aiTools:   [SPECIAL_CMS_TOOL, ...specialTools(), ...aiTools.map(t => ({ id: t.id, name: t.name, description: t.description, collectFields: parseJ(t.collect_fields, []), flowId: t.flow_id, actionType: t.action_type || 'variable' }))],
     woocommerce: storeSvc.publicConfig(parseJ(acc.woocommerce, null)),
+    // Secuencias de recontacto: solo id, nombre y para qué sirve cada una. El asistente las
+    // necesita para elegir cuál corresponde a cada conversación; los pasos y los tiempos no
+    // salen de aquí (van en la configuración, no en el objeto de cuenta).
+    // Require PEREZOSO a propósito: `recontact` tira de flow/store, y flow/store vuelve aquí a
+    // buscar loadPublicAccount. Cargándolo arriba se cierra el ciclo y `loadAccount` llega sin
+    // definir en mitad del arranque — que rompería el motor de flujos entero.
+    recontact: require('../services/recontact').publicConfig(acc.recontact),
     scheduling: schedulingCfg,
     pms: pmsSvc.publicConfig(parseJ(acc.pms, null)),
     orders: await ordersSvc.publicConfigAsync(accId).catch(() => ({ connected: false })),
