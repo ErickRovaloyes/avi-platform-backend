@@ -254,23 +254,78 @@ const businessMetrics = async (req, res) => {
     const handedOff = convRows.filter(c => c.ai_enabled === 0).length
     const humanHandoffPct = totalConversations > 0 ? (handedOff / totalConversations * 100) : 0
 
-    // Avg response time: time between user msg and next ai msg, per conv
+    // Tiempo de respuesta: del mensaje del cliente al siguiente del negocio.
+    //
+    // Antes salía UN solo número que mezclaba IA y asesor, y eso no dice nada útil: la IA
+    // contesta en segundos y una persona puede tardar horas, así que el promedio conjunto no
+    // describe a ninguno de los dos. Se cuentan por separado.
     const byConv = {}
     for (const m of msgRows) {
       if (!byConv[m.conversation_id]) byConv[m.conversation_id] = []
       byConv[m.conversation_id].push(m)
     }
-    let respCount = 0, respSum = 0
+    const acum = { ai: { n: 0, suma: 0 }, human: { n: 0, suma: 0 } }
     for (const convId in byConv) {
       const msgs = byConv[convId]
       for (let i = 0; i < msgs.length - 1; i++) {
-        if (msgs[i].sender === 'user' && (msgs[i + 1].sender === 'ai' || msgs[i + 1].sender === 'human')) {
-          respSum += Number(msgs[i + 1].ts) - Number(msgs[i].ts)
-          respCount++
+        const quien = msgs[i + 1].sender
+        if (msgs[i].sender === 'user' && (quien === 'ai' || quien === 'human')) {
+          acum[quien].suma += Number(msgs[i + 1].ts) - Number(msgs[i].ts)
+          acum[quien].n++
         }
       }
     }
-    const avgResponseTimeMs = respCount ? Math.round(respSum / respCount) : 0
+    const media = a => (a.n ? Math.round(a.suma / a.n) : 0)
+    const avgResponseTimeAiMs    = media(acum.ai)
+    const avgResponseTimeHumanMs = media(acum.human)
+    // Se mantiene el combinado: hay pantallas que ya lo pintan.
+    const totalResp = acum.ai.n + acum.human.n
+    const avgResponseTimeMs = totalResp ? Math.round((acum.ai.suma + acum.human.suma) / totalResp) : 0
+
+    // ── Métricas de negocio ──────────────────────────────────────────────
+    // Cada consulta va protegida por su cuenta: estas tablas las crea el módulo que las usa
+    // (agendas, CRM, pedidos), así que una cuenta sin ese módulo no las tiene. Que falte una
+    // no puede tumbar el panel entero — se informa 0 y las demás siguen.
+    const contar = async (sql, params) => {
+      try { const [[r]] = await pool.query(sql, params); return Number(r?.n) || 0 }
+      catch { return null }   // null = la métrica no aplica en esta cuenta
+    }
+    const rango = [accId, fromMs, toMs]
+
+    // Citas agendadas: todo lo reservado en agendas, sin contar lo cancelado.
+    const appointments = await contar(
+      "SELECT COUNT(*) AS n FROM calendar_bookings WHERE account_id=? AND created_at BETWEEN ? AND ? AND (status IS NULL OR status NOT IN ('cancelled','canceled'))", rango)
+
+    // Reservas: las citas que además ocupan un recurso (habitación, mesa) — el caso de hotel
+    // y restaurante. Es lo que las distingue de una cita normal.
+    const reservations = await contar(
+      `SELECT COUNT(DISTINCT b.id) AS n FROM calendar_bookings b
+         JOIN booking_allocations a ON a.booking_id = b.id
+        WHERE b.account_id=? AND b.created_at BETWEEN ? AND ?
+          AND (b.status IS NULL OR b.status NOT IN ('cancelled','canceled'))`, rango)
+
+    // Seguimientos: tareas de CRM creadas en el periodo.
+    const followupTasks = await contar(
+      'SELECT COUNT(*) AS n FROM crm_tasks WHERE account_id=? AND created_at BETWEEN ? AND ?', rango)
+    // Y los chats marcados a mano con la estrella de seguimiento.
+    const followupChats = convRows.filter(c => c.followup).length
+
+    // Pedidos pagados o entregados: es la conversión de verdad, no una intención.
+    const ordersWon = await contar(
+      "SELECT COUNT(*) AS n FROM orders WHERE account_id=? AND created_at BETWEEN ? AND ? AND status IN ('paid','delivered')", rango)
+
+    // Oportunidades: conversaciones que llegaron a tener tarjeta en algún pipeline.
+    const opportunities = convRows.filter(c => (parseJ(c.pipeline_cards, []) || []).length > 0).length
+
+    // Consultas calificadas: el clasificador les vio intención de compra alta o media.
+    const qualifiedLeads = convRows.filter(c => c.buying_intent === 'alta' || c.buying_intent === 'media').length
+
+    // Tasa de conversión sobre las conversaciones del periodo. Se prefiere el pedido real; si
+    // la cuenta no vende por pedidos (hotel, servicios), se usa la cita/reserva conseguida.
+    const convertidas = ordersWon != null && ordersWon > 0
+      ? ordersWon
+      : (appointments || 0)
+    const conversionRate = totalConversations > 0 ? (convertidas / totalConversations * 100) : 0
 
     // ── Conversations by channel ─────────────────────────────────────────
     const channelMap = {}
@@ -354,6 +409,18 @@ const businessMetrics = async (req, res) => {
         totalMessages,
         humanHandoffPct: Math.round(humanHandoffPct * 10) / 10,
         avgResponseTimeMs,
+        // Separados: el promedio conjunto no describía ni a la IA ni al asesor.
+        avgResponseTimeAiMs,
+        avgResponseTimeHumanMs,
+        // Negocio. `null` = la cuenta no tiene ese módulo, y se distingue de un 0 real.
+        appointments,
+        reservations,
+        followupTasks,
+        followupChats,
+        opportunities,
+        qualifiedLeads,
+        ordersWon,
+        conversionRate: Math.round(conversionRate * 10) / 10,
         totalTokens: Number(tokenTotals.t),
         totalCostUsd: Number(tokenTotals.c),
       },
