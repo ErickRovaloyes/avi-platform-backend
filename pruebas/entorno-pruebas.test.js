@@ -14,22 +14,32 @@ const path = require('path')
 const Module = require('module')
 
 // ── Base de datos de mentira con estado por tabla ─────────────────────────────
+//
+// OJO con las columnas JSON: `db.js` no fija `typeCast`, así que mysql2 las devuelve YA
+// PARSEADAS —un array o un objeto, no una cadena—. La primera versión de esta prueba las
+// devolvía como texto, y por eso no cazó dos fallos reales: al pasar un array como parámetro
+// mysql2 lo expande en varios valores («Column count doesn't match value count»), y el remapeo
+// de ids, que iba tras un `typeof === 'string'`, no llegaba a ejecutarse nunca en producción.
+//
+// Aquí se devuelven parseadas, como en la realidad.
 const tablas = {
   accounts: [{ id: 'acc1', name: 'Panadería', email: 'a@b.c', plan: 'pro', status: 'active', sandbox_of: null,
                openai_key: 'sk-real', deepseek_key: '', recontact: '{"enabled":true}' }],
   agents: [{ id: 'ag1', account_id: 'acc1', name: 'Ana', status: 'active', system_prompt: 'sp', model: 'gpt-4o-mini',
-             welcome_message: 'hola', prompts: '[{"id":"pr1","toolIds":["tool1"]}]',
-             channels: '[{"id":"ch1","type":"whatsapp","name":"Principal","status":"connected","config":{"phoneNumberId":"111","accessToken":"SECRETO"}}]',
-             rag: '{}', ai_tool_ids: '["tool1"]', created_at: 1 }],
+             welcome_message: 'hola',
+             prompts: [{ id: 'pr1', toolIds: ['tool1'], flowId: 'flow1' }],          // ← parseado
+             channels: [{ id: 'ch1', type: 'whatsapp', name: 'Principal', status: 'connected',
+                          config: { phoneNumberId: '111', accessToken: 'SECRETO' } }],  // ← parseado
+             rag: {}, ai_tool_ids: ['tool1'], created_at: 1 }],
   flows: [{ id: 'flow1', account_id: 'acc1', name: 'Bienvenida', start_node_id: 'n1',
-            nodes: '[{"id":"n1","next":"flow2"}]', created_at: 1 }],
-  ai_tools: [{ id: 'tool1', account_id: 'acc1', name: 'Cotizar', description: 'd', collect_fields: '[]',
+            nodes: [{ id: 'n1', next: 'flow2' }], created_at: 1 }],
+  ai_tools: [{ id: 'tool1', account_id: 'acc1', name: 'Cotizar', description: 'd', collect_fields: [{ id: 'edad' }],
                flow_id: 'flow1', action_type: 'variable', catalog_id: null, catalog_version: null }],
   labels: [{ id: 'lb1', account_id: 'acc1', name: 'VIP', color: '#f00' }],
   variables: [{ id: 'v1', account_id: 'acc1', name: 'nombre', type: 'text', default_value: '', description: '', is_system: 0 }],
-  pipelines: [{ id: 'pp1', account_id: 'acc1', name: 'Ventas', stages: '[{"id":"s1"}]', cards: '[{"id":"card_real"}]' }],
+  pipelines: [{ id: 'pp1', account_id: 'acc1', name: 'Ventas', stages: [{ id: 's1' }], cards: [{ id: 'card_real' }] }],
   members: [{ id: 'm1', account_id: 'acc1', name: 'Erick', email: 'e@b.c', password: 'hash', avatar: null,
-              role_id: 'role_owner_1', agent_access: '["ag1"]', status: 'active', created_at: 1 }],
+              role_id: 'role_owner_1', agent_access: ['ag1'], status: 'active', created_at: 1 }],
   conversations: [{ id: 'cv1', account_id: 'acc1' }],
   contacts: [{ id: 'ct1', account_id: 'acc1' }],
   messages: [],
@@ -46,8 +56,19 @@ const COLS = {
   accounts: ['id', 'name', 'email', 'plan', 'status', 'sandbox_of', 'created_at'],
 }
 
+// Errores de parámetros detectados por el doble (se comprueban al final).
+const parametrosMalos = []
+
 const pool = {
   async query(sql, params = []) {
+    // mysql2 EXPANDE un array pasado a un `?` en una lista separada por comas, y entonces la
+    // consulta lleva más valores que columnas. Es el fallo que se coló en producción
+    // («Column count doesn't match value count at row 1»), así que aquí se caza en el sitio.
+    params.forEach((p, i) => {
+      if (p !== null && typeof p === 'object') {
+        parametrosMalos.push(`${sql.slice(0, 42).replace(/\s+/g, ' ')}… · parámetro ${i} es ${Array.isArray(p) ? 'un array' : 'un objeto'}`)
+      }
+    })
     const ins = sql.match(/^\s*INSERT INTO (\w+)/i)
     if (ins) {
       const t = ins[1]
@@ -97,6 +118,8 @@ const sandbox = require('../services/sandbox')
 let fallos = 0
 const ok = (cond, msg) => { console.log(`  ${cond ? '✓' : '✗'} ${msg}`); if (!cond) fallos++ }
 const de = (t, accId) => (tablas[t] || []).filter(r => r.account_id === accId)
+// Lo copiado se guarda como TEXTO (así se inserta) y lo original viene parseado, como mysql2.
+const obj = v => (typeof v === 'string' ? JSON.parse(v) : v)
 
 ;(async () => {
   console.log('\n· Se crea el entorno')
@@ -106,6 +129,12 @@ const de = (t, accId) => (tablas[t] || []).filter(r => r.account_id === accId)
   ok(sid && sid !== 'acc1', `con id propio (${sid})`)
   const cuenta = tablas.accounts.find(a => a.id === sid)
   ok(cuenta?.sandbox_of === 'acc1', 'enlazada a la cuenta real')
+
+  console.log('\n· Ningún parámetro se pasa sin serializar')
+  ok(parametrosMalos.length === 0,
+    parametrosMalos.length
+      ? `${parametrosMalos.length} parámetro(s) sin serializar → mysql2 los expandiría:\n      ${parametrosMalos.slice(0, 4).join('\n      ')}`
+      : 'todos los valores JSON van como texto')
 
   console.log('\n· Qué se copió')
   ok(de('agents', sid).length === 1,    'el agente')
@@ -119,10 +148,10 @@ const de = (t, accId) => (tablas[t] || []).filter(r => r.account_id === accId)
   console.log('\n· Qué NO se copió (lo que hace que sea un entorno de pruebas)')
   ok(de('conversations', sid).length === 0, 'ninguna conversación')
   ok(de('contacts', sid).length === 0,      'ningún contacto')
-  ok(JSON.parse(de('pipelines', sid)[0].cards).length === 0, 'los pipelines van SIN tarjetas')
+  ok(obj(de('pipelines', sid)[0].cards).length === 0, 'los pipelines van SIN tarjetas')
 
   console.log('\n· Los canales entran desconectados')
-  const canales = JSON.parse(de('agents', sid)[0].channels)
+  const canales = obj(de('agents', sid)[0].channels)
   ok(canales[0].status === 'disconnected', 'marcados como desconectados')
   ok(!canales[0].config.accessToken && !canales[0].config.phoneNumberId, 'y SIN credenciales')
   ok(!JSON.stringify(canales).includes('SECRETO'), 'el token real no aparece por ningún lado')
@@ -137,7 +166,7 @@ const de = (t, accId) => (tablas[t] || []).filter(r => r.account_id === accId)
   ok(toolS.flow_id === flujoS.id, 'y la herramienta apunta al flujo NUEVO, no al de producción')
   ok(!agenteS.prompts.includes('tool1'), 'el prompt ya no referencia la herramienta vieja')
   ok(agenteS.prompts.includes(toolS.id), 'sino la copiada')
-  ok(!JSON.parse(agenteS.ai_tool_ids).includes('tool1'), 'ni la lista de herramientas del agente')
+  ok(!obj(agenteS.ai_tool_ids).includes('tool1'), 'ni la lista de herramientas del agente')
 
   console.log('\n· Rehacer no duplica')
   const r2 = await sandbox.crearOrehacer('acc1')
@@ -148,7 +177,7 @@ const de = (t, accId) => (tablas[t] || []).filter(r => r.account_id === accId)
 
   console.log('\n· La cuenta real no se toca')
   ok(de('agents', 'acc1').length === 1 && de('agents', 'acc1')[0].id === 'ag1', 'su agente sigue igual')
-  ok(JSON.parse(de('agents', 'acc1')[0].channels)[0].config.accessToken === 'SECRETO', 'con su canal conectado')
+  ok(obj(de('agents', 'acc1')[0].channels)[0].config.accessToken === 'SECRETO', 'con su canal conectado')
   ok(de('conversations', 'acc1').length === 1, 'y sus conversaciones intactas')
 
   console.log('\n· No se anidan entornos')

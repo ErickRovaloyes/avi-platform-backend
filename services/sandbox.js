@@ -23,12 +23,38 @@ const { uid, parseJ } = require('../utils')
 const nuevoId = pre => `${pre}_${uid()}`
 
 /**
+ * Deja un valor de columna JSON como TEXTO.
+ *
+ * `db.js` no fija `typeCast`, así que mysql2 devuelve las columnas JSON **ya parseadas**: lo que
+ * sale de un SELECT es un array o un objeto, no una cadena. Y al pasar un array como parámetro
+ * de un `?`, mysql2 lo EXPANDE en una lista separada por comas — de ahí el
+ * «Column count doesn't match value count at row 1» al insertar.
+ *
+ * Además el remapeo de ids se hacía por texto y estaba guardado tras un `typeof === 'string'`,
+ * así que con valores parseados no llegaba a ejecutarse: la copia habría apuntado a los flujos
+ * y herramientas de PRODUCCIÓN. Normalizar aquí arregla las dos cosas a la vez.
+ */
+function comoTexto(v, porDefecto = '[]') {
+  if (v == null) return porDefecto
+  return typeof v === 'string' ? v : JSON.stringify(v)
+}
+
+/** Sustituye ids dentro de un JSON serializado, respetando las comillas para no pillar prefijos. */
+function remapear(texto, mapa) {
+  let out = texto
+  for (const [viejo, nuevo] of mapa) out = out.split(`"${viejo}"`).join(`"${nuevo}"`)
+  return out
+}
+
+/**
  * Deja los canales de un agente inertes: sin credenciales y marcados como desconectados.
  * Se conserva el tipo y el nombre para que la configuración se reconozca, pero no puede salir
  * ni un mensaje.
  */
 function desconectarCanales(channelsJson) {
-  const canales = parseJ(channelsJson, [])
+  // Vale tanto si llega como texto (lo que asumía la prueba) como ya parseado (lo que llega de
+  // verdad desde mysql2).
+  const canales = typeof channelsJson === 'string' ? parseJ(channelsJson, []) : (channelsJson || [])
   if (!Array.isArray(canales)) return '[]'
   return JSON.stringify(canales.map(c => ({
     id: c.id, type: c.type, name: c.name,
@@ -72,11 +98,8 @@ async function volcarConfig(padreId, sandboxId, { limpiarChats = false } = {}) {
   const [flujos] = await pool.query('SELECT * FROM flows WHERE account_id=?', [padreId])
   for (const f of flujos) mapaFlujos.set(f.id, nuevoId('flow'))
   for (const f of flujos) {
-    let nodos = f.nodes
     // Un flujo puede saltar a otro: esas referencias también se remapean.
-    if (typeof nodos === 'string') {
-      for (const [viejo, nuevo] of mapaFlujos) nodos = nodos.split(`"${viejo}"`).join(`"${nuevo}"`)
-    }
+    const nodos = remapear(comoTexto(f.nodes), mapaFlujos)
     await pool.query(
       'INSERT INTO flows (id,account_id,name,start_node_id,nodes,created_at) VALUES (?,?,?,?,?,?)',
       [mapaFlujos.get(f.id), sandboxId, f.name, f.start_node_id, nodos, Date.now()]
@@ -90,23 +113,21 @@ async function volcarConfig(padreId, sandboxId, { limpiarChats = false } = {}) {
     mapaTools.set(t.id, id)
     await pool.query(
       'INSERT INTO ai_tools (id,account_id,name,description,collect_fields,flow_id,action_type,catalog_id,catalog_version) VALUES (?,?,?,?,?,?,?,?,?)',
-      [id, sandboxId, t.name, t.description, t.collect_fields, mapaFlujos.get(t.flow_id) || null,
+      [id, sandboxId, t.name, t.description, comoTexto(t.collect_fields), mapaFlujos.get(t.flow_id) || null,
        t.action_type || 'variable', t.catalog_id || null, t.catalog_version || null]
-    ).catch(() => {})
+    ).catch(e => console.warn('[sandbox] herramienta:', e.message))
   }
 
   const [agentes] = await pool.query('SELECT * FROM agents WHERE account_id=?', [padreId])
   for (const g of agentes) {
-    // Los prompts referencian herramientas y ficheros; se remapean los ids de herramienta.
-    let prompts = g.prompts
-    if (typeof prompts === 'string') {
-      for (const [viejo, nuevo] of mapaTools) prompts = prompts.split(`"${viejo}"`).join(`"${nuevo}"`)
-    }
+    // Los prompts referencian herramientas y flujos; ambos ids se remapean.
+    const prompts = remapear(remapear(comoTexto(g.prompts), mapaTools), mapaFlujos)
+    const idsTools = typeof g.ai_tool_ids === 'string' ? parseJ(g.ai_tool_ids, []) : (g.ai_tool_ids || [])
     await pool.query(
       'INSERT INTO agents (id,account_id,name,status,system_prompt,model,welcome_message,prompts,channels,rag,ai_tool_ids,created_at) VALUES (?,?,?,?,?,?,?,?,?,?,?,?)',
       [nuevoId('ag'), sandboxId, g.name, g.status, g.system_prompt, g.model, g.welcome_message,
-       prompts, desconectarCanales(g.channels), g.rag,
-       JSON.stringify((parseJ(g.ai_tool_ids, []) || []).map(x => mapaTools.get(x) || x)),
+       prompts, desconectarCanales(g.channels), comoTexto(g.rag, '{}'),
+       JSON.stringify((Array.isArray(idsTools) ? idsTools : []).map(x => mapaTools.get(x) || x)),
        Date.now()]
     )
   }
@@ -117,8 +138,14 @@ async function volcarConfig(padreId, sandboxId, { limpiarChats = false } = {}) {
   ]) {
     const [filas] = await pool.query(`SELECT * FROM ${tabla} WHERE account_id=?`, [padreId])
     for (const f of filas) {
-      const vals = cols.map(c => (c === 'id' ? nuevoId(tabla.slice(0, 3)) : c === 'account_id' ? sandboxId : f[c]))
-      await pool.query(`INSERT INTO ${tabla} (${cols.join(',')}) VALUES (${cols.map(() => '?').join(',')})`, vals).catch(() => {})
+      // Nunca se pasa un valor crudo: si fuera un array, mysql2 lo expandiría en varios valores.
+      const vals = cols.map(c => (
+        c === 'id' ? nuevoId(tabla.slice(0, 3))
+        : c === 'account_id' ? sandboxId
+        : (f[c] !== null && typeof f[c] === 'object') ? JSON.stringify(f[c]) : f[c]
+      ))
+      await pool.query(`INSERT INTO ${tabla} (${cols.join(',')}) VALUES (${cols.map(() => '?').join(',')})`, vals)
+        .catch(e => console.warn(`[sandbox] ${tabla}:`, e.message))
     }
   }
 
@@ -126,7 +153,8 @@ async function volcarConfig(padreId, sandboxId, { limpiarChats = false } = {}) {
   const [pipes] = await pool.query('SELECT * FROM pipelines WHERE account_id=?', [padreId])
   for (const p of pipes) {
     await pool.query('INSERT INTO pipelines (id,account_id,name,stages,cards) VALUES (?,?,?,?,?)',
-      [nuevoId('pipe'), sandboxId, p.name, p.stages, '[]']).catch(() => {})
+      [nuevoId('pipe'), sandboxId, p.name, comoTexto(p.stages), '[]'])
+      .catch(e => console.warn('[sandbox] pipeline:', e.message))
   }
 
   // La configuración de la cuenta que SÍ viaja (prompts del negocio, recontactos, tienda…).
@@ -147,6 +175,8 @@ async function copiarMiembros(padreId, sandboxId) {
   for (const m of ms) {
     await pool.query(
       'INSERT INTO members (id,account_id,name,email,password,avatar,role_id,agent_access,status,created_at) VALUES (?,?,?,?,?,?,?,?,?,?)',
+      // `agent_access` va vacío: los ids de agente del entorno son otros, así que copiarlo
+      // dejaría a la gente sin acceso a ningún agente. Vacío = acceso a todos.
       [nuevoId('mem'), sandboxId, m.name, m.email, m.password, m.avatar, m.role_id, '[]', m.status, Date.now()]
     ).catch(e => console.warn('[sandbox] miembro:', e.message))
   }
