@@ -108,6 +108,7 @@ const metaPagesRoutes     = require('./routes/metaPages.routes')
 const optimizerRoutes     = require('./routes/promptOptimizer.routes')
 const recontactRoutes     = require('./routes/recontact.routes')
 const toolCatalogRoutes   = require('./routes/toolCatalog.routes')
+const sandboxRoutes       = require('./routes/sandbox.routes')
 const billingRoutes       = require('./routes/billing.routes')
 const flowTemplatesRoutes = require('./routes/flowTemplates.routes')
 const promptGenRoutes     = require('./routes/promptGenerator.routes')
@@ -196,6 +197,7 @@ app.use('/api',                metaPagesRoutes)
 app.use('/api',                optimizerRoutes)
 app.use('/api',                recontactRoutes)
 app.use('/api',                toolCatalogRoutes)
+app.use('/api',                sandboxRoutes)
 app.use('/api',                billingRoutes)
 app.use('/api',                flowTemplatesRoutes)
 
@@ -1642,6 +1644,8 @@ app.use('/api',                flowTemplatesRoutes)
     // cambio en el catálogo NO altera lo que el cliente ya tiene funcionando.
     "ALTER TABLE ai_tools ADD COLUMN catalog_id VARCHAR(60)",
     "ALTER TABLE ai_tools ADD COLUMN catalog_version INT",
+    // Entorno de pruebas: cuenta espejo enlazada a la real. NULL = cuenta normal.
+    "ALTER TABLE accounts ADD COLUMN sandbox_of VARCHAR(50)",
   ]
   for (const sql of migrations) {
     try { await pool.query(sql) } catch (e) { /* column exists or unsupported */ }
