@@ -107,6 +107,7 @@ const metaCatalogRoutes   = require('./routes/metaCatalog.routes')
 const metaPagesRoutes     = require('./routes/metaPages.routes')
 const optimizerRoutes     = require('./routes/promptOptimizer.routes')
 const recontactRoutes     = require('./routes/recontact.routes')
+const toolCatalogRoutes   = require('./routes/toolCatalog.routes')
 const billingRoutes       = require('./routes/billing.routes')
 const flowTemplatesRoutes = require('./routes/flowTemplates.routes')
 const promptGenRoutes     = require('./routes/promptGenerator.routes')
@@ -194,6 +195,7 @@ app.use('/api',                metaCatalogRoutes)
 app.use('/api',                metaPagesRoutes)
 app.use('/api',                optimizerRoutes)
 app.use('/api',                recontactRoutes)
+app.use('/api',                toolCatalogRoutes)
 app.use('/api',                billingRoutes)
 app.use('/api',                flowTemplatesRoutes)
 
@@ -1617,6 +1619,29 @@ app.use('/api',                flowTemplatesRoutes)
        created_at    BIGINT,
        updated_at    BIGINT
      )`,
+    // ── Catálogo de herramientas IA ──────────────────────────────────────────
+    // Herramientas que publica la PLATAFORMA y que cada cuenta puede instalar para ampliar
+    // lo que sabe hacer su asistente. Vive fuera de las cuentas: es un catálogo común.
+    `CREATE TABLE IF NOT EXISTS tool_catalog (
+       id             VARCHAR(60)  PRIMARY KEY,
+       name           VARCHAR(120) NOT NULL,
+       summary        VARCHAR(300),
+       description    TEXT,
+       icon           VARCHAR(60),
+       category       VARCHAR(60),
+       collect_fields JSON,
+       action_type    VARCHAR(30) DEFAULT 'variable',
+       flow_template  JSON,
+       version        INT    NOT NULL DEFAULT 1,
+       published      TINYINT(1) NOT NULL DEFAULT 0,
+       created_at     BIGINT,
+       updated_at     BIGINT
+     )`,
+    // De qué herramienta del catálogo salió una instalada, y con qué versión. Se guarda para
+    // poder avisar de una actualización; la copia es independiente a propósito, así que un
+    // cambio en el catálogo NO altera lo que el cliente ya tiene funcionando.
+    "ALTER TABLE ai_tools ADD COLUMN catalog_id VARCHAR(60)",
+    "ALTER TABLE ai_tools ADD COLUMN catalog_version INT",
   ]
   for (const sql of migrations) {
     try { await pool.query(sql) } catch (e) { /* column exists or unsupported */ }
