@@ -228,8 +228,26 @@ function effectivePlanState(sub) {
 }
 
 // Devuelve la suscripción de una cuenta con su tipo y plan resueltos (o null).
+/**
+ * La cuenta de la que salen el plan y los límites.
+ *
+ * Un entorno de pruebas no tiene suscripción propia: hereda la de su cuenta real. Si no, se
+ * quedaría en el plan gratuito y no serviría para probar —las funciones que se quieren ensayar
+ * son justo las que da el plan de pago—. Devuelve el id de la cuenta real, o el mismo si no es
+ * un entorno de pruebas.
+ */
+async function cuentaDeFacturacion(accId) {
+  try {
+    const [[a]] = await pool.query('SELECT sandbox_of FROM accounts WHERE id=?', [accId])
+    return a?.sandbox_of || accId
+  } catch { return accId }
+}
+
 async function getSubscription(accId) {
-  const [[s]] = await pool.query('SELECT * FROM account_subscriptions WHERE account_id=?', [accId])
+  // El entorno de pruebas lee la suscripción de su cuenta real: mismo plan, mismos límites,
+  // mismas funciones. Probar con un plan distinto al de producción no prueba nada.
+  const idFacturacion = await cuentaDeFacturacion(accId)
+  const [[s]] = await pool.query('SELECT * FROM account_subscriptions WHERE account_id=?', [idFacturacion])
   if (!s) return null
   const [[type]] = s.account_type_id ? await pool.query('SELECT * FROM account_types WHERE id=?', [s.account_type_id]) : [[null]]
   const [[plan]] = s.subscription_plan_id ? await pool.query('SELECT * FROM subscription_plans WHERE id=?', [s.subscription_plan_id]) : [[null]]
@@ -339,6 +357,14 @@ function effectiveMonthlyLimit(sub) {
 }
 
 // ── Conteo de consumo ─────────────────────────────────────────────────────────
+/**
+ * Suma una conversación al consumo del ciclo.
+ *
+ * A propósito NO resuelve la cuenta de facturación: se escribe con el id que llega. Un entorno
+ * de pruebas no tiene fila en `account_subscriptions`, así que esto no afecta a ninguna y el
+ * consumo de las pruebas no gasta el cupo de la cuenta real. Lee su plan (getSubscription sí
+ * resuelve), pero no consume contra él.
+ */
 async function incrementConversation(accId) {
   try {
     await pool.query(

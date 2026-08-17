@@ -297,6 +297,10 @@ async function loadPublicAccount(accId) {
     // buscar loadPublicAccount. Cargándolo arriba se cierra el ciclo y `loadAccount` llega sin
     // definir en mitad del arranque — que rompería el motor de flujos entero.
     recontact: require('../services/recontact').publicConfig(acc.recontact),
+    // Entorno de pruebas: null en una cuenta normal, el id de la cuenta real si ESTA es el
+    // entorno. La interfaz lo usa para ocultarlo del selector de cuentas —se entra por su
+    // boton en Cuenta, no mezclado con las cuentas de verdad— y para pintar el aviso.
+    sandboxOf: acc.sandbox_of || null,
     scheduling: schedulingCfg,
     pms: pmsSvc.publicConfig(parseJ(acc.pms, null)),
     orders: await ordersSvc.publicConfigAsync(accId).catch(() => ({ connected: false })),
