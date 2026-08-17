@@ -348,7 +348,11 @@ async function appendMessageCore(accId, agId, convId, body) {
 
   const msg = { id, sender, content, ts, ...rest }
   socket.emit(accId, 'message:new', { accId, agId, convId, message: msg })
-  socket.emitToConv(convId, 'message:new', { convId, message: msg })
+  // El eco a la sala del chat lleva TAMBIÉN cuenta y agente. No es información de más: al abrir
+  // un chat el asesor entra en `conv:<id>` (por la presencia), así que recibe este eco igual que
+  // el visitante — y el inbox indexa sus listas por `${accId}_${agId}`. Sin estos dos campos
+  // calculaba la clave `undefined_undefined`, que no existe, y el mensaje no se pintaba.
+  socket.emitToConv(convId, 'message:new', { accId, agId, convId, message: msg })
   return { id, ts }
 }
 

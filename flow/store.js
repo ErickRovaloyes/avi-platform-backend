@@ -107,7 +107,9 @@ async function appendMsg(accId, agId, convId, msg) {
 
   const out = { id, sender, content, ts, ...rest }
   socket.emit(accId, 'message:new', { accId, agId, convId, message: out })
-  socket.emitToConv(convId, 'message:new', { convId, message: out })
+  // Con cuenta y agente: el asesor está en `conv:<id>` mientras mira el chat y recibe este eco,
+  // y sin ellos el inbox no sabe en qué lista meter el mensaje. Igual que en appendMessageCore.
+  socket.emitToConv(convId, 'message:new', { accId, agId, convId, message: out })
   return { id, ts }
 }
 
