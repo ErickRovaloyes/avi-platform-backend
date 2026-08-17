@@ -46,22 +46,35 @@ function remapear(texto, mapa) {
   return out
 }
 
+// Canales INTERNOS: no salen a ningún proveedor y no llevan credenciales. El webchat vive en
+// una página propia (con la url del entorno, que ningún cliente conoce) y el de pruebas es el
+// chat interno del panel. Son justamente los que hay que dejar VIVOS: sin ellos no se puede
+// probar nada, que es para lo que existe el entorno.
+const CANALES_INTERNOS = new Set(['webchat', 'test'])
+
 /**
- * Deja los canales de un agente inertes: sin credenciales y marcados como desconectados.
- * Se conserva el tipo y el nombre para que la configuración se reconozca, pero no puede salir
- * ni un mensaje.
+ * Deja inertes los canales que SALEN AL MUNDO —WhatsApp, Messenger, Instagram—: sin
+ * credenciales y marcados como desconectados. Se conserva el tipo y el nombre para que la
+ * configuración se reconozca, pero no puede salir ni un mensaje a un cliente real.
+ *
+ * Los internos se copian tal cual. Desconectarlos también fue un error: dejaba el entorno sin
+ * canal de pruebas, así que el asistente no respondía y no se creaba ninguna conversación.
  */
 function desconectarCanales(channelsJson) {
   // Vale tanto si llega como texto (lo que asumía la prueba) como ya parseado (lo que llega de
   // verdad desde mysql2).
   const canales = typeof channelsJson === 'string' ? parseJ(channelsJson, []) : (channelsJson || [])
   if (!Array.isArray(canales)) return '[]'
-  return JSON.stringify(canales.map(c => ({
-    id: c.id, type: c.type, name: c.name,
-    status: 'disconnected',
-    config: {},              // fuera tokens, phoneNumberId, pageId… todo
-    sandboxNote: 'Canal desconectado en el entorno de pruebas',
-  })))
+  return JSON.stringify(canales.map(c => (
+    CANALES_INTERNOS.has(c.type)
+      ? c
+      : {
+          id: c.id, type: c.type, name: c.name,
+          status: 'disconnected',
+          config: {},              // fuera tokens, phoneNumberId, pageId… todo
+          sandboxNote: 'Canal desconectado en el entorno de pruebas',
+        }
+  )))
 }
 
 /** ¿Esta cuenta es un entorno de pruebas, y de quién? */
@@ -123,11 +136,20 @@ async function volcarConfig(padreId, sandboxId, { limpiarChats = false } = {}) {
     // Los prompts referencian herramientas y flujos; ambos ids se remapean.
     const prompts = remapear(remapear(comoTexto(g.prompts), mapaTools), mapaFlujos)
     const idsTools = typeof g.ai_tool_ids === 'string' ? parseJ(g.ai_tool_ids, []) : (g.ai_tool_ids || [])
+    // `fallback_flow_id` es el FLUJO DE ENTRADA y `test_flow_id` el del canal de pruebas. Sin
+    // copiarlos el entorno se quedaba sin flujo que ejecutar: el asistente no respondía a nada.
+    // Y hay que remapearlos, porque los flujos copiados tienen ids nuevos.
     await pool.query(
-      'INSERT INTO agents (id,account_id,name,status,system_prompt,model,welcome_message,prompts,channels,rag,ai_tool_ids,created_at) VALUES (?,?,?,?,?,?,?,?,?,?,?,?)',
+      `INSERT INTO agents (id,account_id,name,status,system_prompt,model,welcome_message,prompts,channels,rag,ai_tool_ids,
+                           fallback_flow_id,test_flow_id,routing,interrupt_enabled,created_at)
+       VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`,
       [nuevoId('ag'), sandboxId, g.name, g.status, g.system_prompt, g.model, g.welcome_message,
        prompts, desconectarCanales(g.channels), comoTexto(g.rag, '{}'),
        JSON.stringify((Array.isArray(idsTools) ? idsTools : []).map(x => mapaTools.get(x) || x)),
+       mapaFlujos.get(g.fallback_flow_id) || null,
+       mapaFlujos.get(g.test_flow_id) || null,
+       comoTexto(g.routing, '{}'),
+       g.interrupt_enabled == null ? 1 : g.interrupt_enabled,
        Date.now()]
     )
   }

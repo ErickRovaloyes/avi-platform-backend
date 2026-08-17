@@ -257,10 +257,22 @@ const resetPassword = async (req, res) => {
 const switchAccount = async (req, res) => {
   const { accountId } = req.body
   const allIds = req.user.allAccountIds || [req.user.accountId].filter(Boolean)
-  if (!allIds.includes(accountId)) return res.status(403).json({ error: 'Sin acceso a esa cuenta' })
   try {
     const [[acc]] = await pool.query('SELECT * FROM accounts WHERE id=?', [accountId])
     if (!acc) return res.status(404).json({ error: 'Cuenta no encontrada' })
+
+    // Entrar y salir del ENTORNO DE PRUEBAS de la cuenta en la que ya se está. Va aparte del
+    // camino normal porque un entorno no se reparte por membresías: quien tiene la cuenta real
+    // tiene el suyo. Sin esto, un super admin en modo vista no podía entrar (no es miembro de
+    // ninguna de las dos) y quedaba fuera de su propio entorno.
+    const [[actual]] = await pool.query('SELECT sandbox_of FROM accounts WHERE id=?', [req.user.accountId])
+    const esSuEntorno = acc.sandbox_of && acc.sandbox_of === req.user.accountId   // real → pruebas
+    const esSuPadre   = actual?.sandbox_of && actual.sandbox_of === accountId     // pruebas → real
+    if (esSuEntorno || esSuPadre) {
+      return res.json(emitirSesion(req, res, { ...req.user, accountId, accountName: acc.name }))
+    }
+
+    if (!allIds.includes(accountId)) return res.status(403).json({ error: 'Sin acceso a esa cuenta' })
     const [[mem]] = await pool.query('SELECT * FROM members WHERE account_id=? AND email=?', [accountId, req.user.email])
     if (!mem) return res.status(403).json({ error: 'No eres miembro de esa cuenta' })
     const [[role]] = await pool.query('SELECT * FROM roles WHERE id=?', [mem.role_id])
@@ -324,6 +336,17 @@ const refreshSession = async (req, res) => {
     if (req.user.type === 'superadmin') {
       // Super admins keep their type as-is; just re-sign the existing session
       return res.json(emitirSesion(req, res, req.user))
+    }
+    // MODO VISTA (super admin dentro de una cuenta): la sesión NO se reconstruye desde la tabla
+    // de miembros. Esa sesión lleva `isImpersonating` y la identidad del super admin, y
+    // rehacerla lo perdía todo: desaparecía el botón «Ir al panel superadmin» y quedaba
+    // atrapado como miembro normal. Peor aún, su correo puede no ser miembro de ninguna cuenta,
+    // así que la consulta devolvía 404. Solo se refresca la LISTA de cuentas, que es lo único
+    // que hace falta cuando aparece una nueva (una invitación aceptada, o el entorno de pruebas).
+    if (req.user.isImpersonating) {
+      const [ms] = await pool.query("SELECT DISTINCT account_id FROM members WHERE email=? AND status='active'", [req.user.email || ''])
+      const allAccountIds = [...new Set([req.user.accountId, ...ms.map(r => r.account_id)].filter(Boolean))]
+      return res.json(emitirSesion(req, res, { ...req.user, allAccountIds }))
     }
     const email = req.user.email
     const [rows] = await pool.query(

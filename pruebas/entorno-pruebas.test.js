@@ -29,8 +29,11 @@ const tablas = {
              welcome_message: 'hola',
              prompts: [{ id: 'pr1', toolIds: ['tool1'], flowId: 'flow1' }],          // ← parseado
              channels: [{ id: 'ch1', type: 'whatsapp', name: 'Principal', status: 'connected',
-                          config: { phoneNumberId: '111', accessToken: 'SECRETO' } }],  // ← parseado
-             rag: {}, ai_tool_ids: ['tool1'], created_at: 1 }],
+                          config: { phoneNumberId: '111', accessToken: 'SECRETO' } },
+                        { id: 'ch2', type: 'test', name: 'Pruebas', status: 'active', config: { modo: 'interno' } },
+                        { id: 'ch3', type: 'webchat', name: 'Web', status: 'active', config: { link: 'abc' } }],  // ← parseado
+             rag: {}, ai_tool_ids: ['tool1'], fallback_flow_id: 'flow1', test_flow_id: 'flow1',
+             routing: { enabled: false }, interrupt_enabled: 1, created_at: 1 }],
   flows: [{ id: 'flow1', account_id: 'acc1', name: 'Bienvenida', start_node_id: 'n1',
             nodes: [{ id: 'n1', next: 'flow2' }], created_at: 1 }],
   ai_tools: [{ id: 'tool1', account_id: 'acc1', name: 'Cotizar', description: 'd', collect_fields: [{ id: 'edad' }],
@@ -48,7 +51,7 @@ const tablas = {
 const COLS = {
   flows: ['id', 'account_id', 'name', 'start_node_id', 'nodes', 'created_at'],
   ai_tools: ['id', 'account_id', 'name', 'description', 'collect_fields', 'flow_id', 'action_type', 'catalog_id', 'catalog_version'],
-  agents: ['id', 'account_id', 'name', 'status', 'system_prompt', 'model', 'welcome_message', 'prompts', 'channels', 'rag', 'ai_tool_ids', 'created_at'],
+  agents: ['id', 'account_id', 'name', 'status', 'system_prompt', 'model', 'welcome_message', 'prompts', 'channels', 'rag', 'ai_tool_ids', 'fallback_flow_id', 'test_flow_id', 'routing', 'interrupt_enabled', 'created_at'],
   labels: ['id', 'account_id', 'name', 'color'],
   variables: ['id', 'account_id', 'name', 'type', 'default_value', 'description', 'is_system'],
   pipelines: ['id', 'account_id', 'name', 'stages', 'cards'],
@@ -150,12 +153,28 @@ const obj = v => (typeof v === 'string' ? JSON.parse(v) : v)
   ok(de('contacts', sid).length === 0,      'ningún contacto')
   ok(obj(de('pipelines', sid)[0].cards).length === 0, 'los pipelines van SIN tarjetas')
 
-  console.log('\n· Los canales entran desconectados')
+  console.log('\n· Los canales que SALEN al mundo entran desconectados')
   const canales = obj(de('agents', sid)[0].channels)
-  ok(canales[0].status === 'disconnected', 'marcados como desconectados')
-  ok(!canales[0].config.accessToken && !canales[0].config.phoneNumberId, 'y SIN credenciales')
+  const wa = canales.find(c => c.type === 'whatsapp')
+  ok(wa.status === 'disconnected', 'WhatsApp queda desconectado')
+  ok(!wa.config.accessToken && !wa.config.phoneNumberId, 'y SIN credenciales')
   ok(!JSON.stringify(canales).includes('SECRETO'), 'el token real no aparece por ningún lado')
-  ok(canales[0].type === 'whatsapp', 'pero se reconoce qué canal era')
+  ok(wa.type === 'whatsapp', 'pero se reconoce qué canal era')
+
+  console.log('\n· Los canales INTERNOS siguen vivos (si no, no se puede probar nada)')
+  const test = canales.find(c => c.type === 'test')
+  const web  = canales.find(c => c.type === 'webchat')
+  ok(test?.status === 'active', `el canal de pruebas sigue activo (${test?.status})`)
+  ok(test?.config?.modo === 'interno', 'con su configuración intacta')
+  ok(web?.status === 'active', `y el webchat también (${web?.status})`)
+
+  console.log('\n· Los flujos del agente se copian y se remapean')
+  const ag = de('agents', sid)[0]
+  const flujoNuevo = de('flows', sid)[0].id
+  ok(ag.fallback_flow_id === flujoNuevo,
+    `el flujo de entrada apunta al copiado (${ag.fallback_flow_id}) — sin esto el asistente no responde`)
+  ok(ag.test_flow_id === flujoNuevo, 'y el flujo del canal de pruebas igual')
+  ok(ag.fallback_flow_id !== 'flow1', 'y NO al flujo de producción')
 
   console.log('\n· Los ids se remapean (si no, se editaría la cuenta REAL)')
   const flujoS = de('flows', sid)[0]
