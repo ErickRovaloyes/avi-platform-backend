@@ -26,7 +26,16 @@ io.use((sock, next) => {
   // navegador ya no puede leer el token para ponerlo en `auth`. Se sigue aceptando `auth.token`
   // para la app móvil y para las sesiones que aún no han migrado a cookie.
   const token = leerToken({ headers: sock.handshake.headers, protocol: 'https' }) || sock.handshake.auth?.token
-  sock.user = token ? verify(token) : null
+  const usuario = token ? verify(token) : null
+  // Un token PRESENTE que no verifica (caducado, revocado) se rechaza. Dejarlo pasar abria un
+  // socket "conectado" que no entra en ninguna sala: la bandeja se quedaba muda y en pantalla
+  // no habia ni un aviso, porque para el navegador la conexion estaba bien. Rechazarlo hace que
+  // el cliente reciba connect_error y saque la franja de sin conexion.
+  //
+  // Los invitados del webchat no se ven afectados: no traen token y siguen entrando para
+  // unirse a su sala conv:.
+  if (token && !usuario) return next(new Error('sesion_invalida'))
+  sock.user = usuario
   next()
 })
 
