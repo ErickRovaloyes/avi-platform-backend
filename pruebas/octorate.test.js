@@ -171,35 +171,29 @@ const ok = (c, m) => { console.log('  ' + (c ? 'OK ' : 'XX ') + m); if (!c) fall
       .startsWith('https://admin.octorate.com/octobook/identity/oauth.xhtml'), 'y la URL de autorizacion es la suya')
 
 
-  console.log('\n· Herramientas instalables desde el catalogo')
-  // Se sustituye la carga de config para que los handlers vean una cuenta ya autorizada.
-  const pmsMod = require('../services/pms')
-  const cargarOrig = pmsMod.loadConfig
-  pmsMod.loadConfig = async () => CFG
+
+  console.log('\n· La herramienta del catalogo es un PERMISO, no una funcion')
   const registro = require('../services/toolHandlers')
+  const h = registro.obtener('octorate')
+  ok(!!h, 'existe una sola herramienta Octorate en el catalogo')
+  ok(h.tipo === 'pms_provider', 'marcada como permiso (' + h.tipo + ')')
+  ok(registro.listar().filter(x => x.clave.startsWith('octorate')).length === 1,
+    'y es UNA, no cuatro: las capacidades salen de la herramienta de PMS que ya existe')
 
-  const hDisp = registro.obtener('octorateDisponibilidad')
-  ok(!!hDisp, 'la herramienta de disponibilidad esta en el catalogo de handlers')
-  const t1 = await hDisp.ejecutar({ accId: 'acc1' }, { checkin: '2026-09-01', checkout: '2026-09-03', adultos: 2 })
-  ok(t1.includes('Suite Vista Mar') && t1.includes('430'), 'devuelve las opciones con el precio CON cargos')
-  ok(!/Est[aá]ndar/.test(t1), 'y no ofrece la habitacion llena')
+  const ai = require('../flow/nodes/ai')
+  const defs = ai.buildToolDefs([{ name: 'Octorate', description: 'd', actionType: 'pms_provider', handlerKey: 'octorate' }], {})
+  ok(defs.length === 0, 'el modelo NO la ve: una funcion invocable que no hace nada es peor que ninguna')
+  const otras = ai.buildToolDefs([{ name: 'Pedir datos', description: 'd', actionType: 'variable', collectFields: [{ label: 'Nombre' }] }], {})
+  ok(otras.length === 1, 'y las demas herramientas se siguen ofreciendo igual (contraste)')
 
-  const malaFecha = await hDisp.ejecutar({ accId: 'acc1' }, { checkin: '1 de septiembre', checkout: '2026-09-03', adultos: 2 })
-  ok(/AAAA-MM-DD/.test(malaFecha), 'una fecha mal escrita se corrige ANTES de llamar a la API')
-  const alReves = await hDisp.ejecutar({ accId: 'acc1' }, { checkin: '2026-09-05', checkout: '2026-09-01', adultos: 2 })
-  ok(/posterior/.test(alReves), 'y unas fechas al reves tambien')
-
-  const hRes = registro.obtener('octorateReservar')
-  const sinDatos = await hRes.ejecutar({ accId: 'acc1' }, { checkin: '2026-09-01', checkout: '2026-09-03', habitacion: 'R1:RP1', adultos: 2 })
-  ok(/nombre completo y el correo/.test(sinDatos), 'no reserva sin nombre ni correo: se los pide al cliente')
-  const hecha = await hRes.ejecutar({ accId: 'acc1' }, { checkin: '2026-09-01', checkout: '2026-09-03', habitacion: 'R1:RP1', adultos: 2, nombre: 'Ana', email: 'a@b.c' })
-  ok(/Reserva creada/.test(hecha), 'y con los datos crea la reserva')
-
-  console.log('\n· Contraste: sin conexion autorizada')
-  pmsMod.loadConfig = async () => ({ provider: 'octorate' })   // sin oauth
-  const sinConexion = await hDisp.ejecutar({ accId: 'acc1' }, { checkin: '2026-09-01', checkout: '2026-09-03', adultos: 2 })
-  ok(/no ha conectado/.test(sinConexion), 'lo dice con claridad en vez de fallar con un error de API')
-  pmsMod.loadConfig = cargarOrig
+  console.log('\n· El selector de PMS gatea por instalacion')
+  const provs = require('../services/pmsProviders')
+  const sin = provs.listProviders().map(p => p.id)
+  const con = provs.listProviders(['octorate']).map(p => p.id)
+  ok(!sin.includes('octorate'), 'sin instalar, Octorate no aparece')
+  ok(con.includes('octorate'), 'instalada, si aparece')
+  ok(sin.includes('hosroom') && sin.includes('kunas'), 'y HosRoom y Kunas siguen siempre disponibles')
+  ok(con.length === sin.length + 1, 'instalar solo anade Octorate, no cambia el resto')
 
   console.log('\n' + (fallos === 0 ? 'OK' : 'FALLA') + '  ' + fallos + ' comprobacion(es) fallida(s)\n')
   process.exit(fallos ? 1 : 0)

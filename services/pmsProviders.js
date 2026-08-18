@@ -1030,6 +1030,23 @@ const kunas = {
 const octorate = require('./pmsOctorate')
 const PROVIDERS = { hosroom, kunas, octorate }
 function getProvider(id) { return PROVIDERS[id] || null }
-function listProviders() { return Object.values(PROVIDERS).map(p => ({ id: p.id, label: p.label, comingSoon: !!p.comingSoon })) }
+// Proveedores que SIEMPRE estan disponibles. Los que no salen aqui se desbloquean instalando
+// su herramienta desde el catalogo: es lo que permite ofrecer una integracion a unos clientes
+// y no a otros. HosRoom y Kunas quedan fuera de esa regla a proposito, para que ninguna cuenta
+// que ya los tenga conectados los pierda.
+const SIEMPRE = new Set(['hosroom', 'kunas'])
+
+/**
+ * Los proveedores que una cuenta puede elegir.
+ *
+ * @param {string[]} instalados  claves de handler que la cuenta tiene instaladas del catalogo.
+ *                               Si no se pasa, se devuelven solo los de siempre.
+ */
+function listProviders(instalados = []) {
+  const puede = new Set(instalados || [])
+  return Object.values(PROVIDERS)
+    .filter(p => SIEMPRE.has(p.id) || puede.has(p.id))
+    .map(p => ({ id: p.id, label: p.label, comingSoon: !!p.comingSoon }))
+}
 
 module.exports = { getProvider, listProviders }

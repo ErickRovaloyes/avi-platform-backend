@@ -1,11 +1,26 @@
 'use strict'
 const pms = require('../services/pms')
 const providers = require('../services/pmsProviders')
+const pool = require('../db')
+
+/**
+ * Las integraciones de PMS que la cuenta desbloqueo instalando su herramienta del catalogo.
+ * Sin fila en `ai_tools`, el proveedor ni siquiera aparece en el selector.
+ */
+async function integracionesDe(accId) {
+  try {
+    const [filas] = await pool.query(
+      'SELECT handler_key FROM ai_tools WHERE account_id=? AND handler_key IS NOT NULL', [accId]
+    )
+    return filas.map(f => f.handler_key).filter(Boolean)
+  } catch { return [] }
+}
 
 // GET config (autenticado). El token se enmascara; hasToken indica si existe.
 const getConfig = async (req, res) => {
   try {
     const cfg = await pms.loadConfig(req.params.accId) || {}
+    const instaladas = await integracionesDe(req.params.accId)
     res.json({
       ...pms.publicConfig(cfg),
       baseUrl: cfg.baseUrl || '',
@@ -21,7 +36,7 @@ const getConfig = async (req, res) => {
       blockedProperties: Array.isArray(cfg.blockedProperties) ? cfg.blockedProperties : [],
       blockedRooms: Array.isArray(cfg.blockedRooms) ? cfg.blockedRooms : [],
       roomFeatures: (cfg.roomFeatures && typeof cfg.roomFeatures === 'object') ? cfg.roomFeatures : {},
-      providers: providers.listProviders(),
+      providers: providers.listProviders(instaladas),
     })
   } catch { res.status(500).json({ error: 'Error interno' }) }
 }

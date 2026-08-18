@@ -1655,6 +1655,12 @@ app.use('/api',                flowTemplatesRoutes)
     "ALTER TABLE tool_catalog ADD COLUMN parameters JSON",
     "ALTER TABLE ai_tools ADD COLUMN handler_key VARCHAR(80)",
     "ALTER TABLE ai_tools ADD COLUMN parameters JSON",
+    // La ficha de Octorate del catalogo. Se siembra publicada y lista para instalar.
+    `INSERT INTO tool_catalog (id,name,summary,description,icon,category,collect_fields,action_type,handler_key,parameters,version,published,created_at,updated_at)
+      VALUES ('cat_octorate','Octorate','PMS, channel manager y motor de reservas para hoteles.',
+              'Conecta el hotel con Octorate (PMS, channel manager y motor de reservas). Al instalarla, Octorate queda disponible en Zona IA - PMS para autorizar la conexion. Despues el asistente puede mostrar habitaciones con fotos, consultar disponibilidad y precios reales, crear reservas y gestionarlas, y los mensajes de huespedes de Airbnb y Booking entran al inbox.',
+              'hotel','Hoteles','[]','pms_provider','octorate','[]',1,1,UNIX_TIMESTAMP()*1000,UNIX_TIMESTAMP()*1000)
+      ON DUPLICATE KEY UPDATE id=id`,
   ]
   for (const sql of migrations) {
     try { await pool.query(sql) } catch (e) { /* column exists or unsupported */ }

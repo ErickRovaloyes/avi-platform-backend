@@ -72,6 +72,8 @@ function listar() {
     descripcion: h.descripcion || '',
     parametros: h.parametros || [],
     necesitaConexion: h.necesitaConexion || null,
+    tipo: h.tipo || 'funcion',
+    provider: h.provider || null,
   }))
 }
 

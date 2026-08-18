@@ -75,6 +75,9 @@ function buildOneToolDef(tool) {
 function buildToolDefs(toolList, account) {
   const defs = []
   for (const tool of (toolList || [])) {
+    // Las herramientas de tipo PERMISO (habilitan una integracion) no se le ofrecen al
+    // modelo: no son funciones que pueda llamar, solo desbloquean un proveedor.
+    if (tool.actionType === 'pms_provider') continue
     if (tool.actionType === 'cms_resource') { const d = buildResourceToolDef(account); if (d) defs.push(d) }
     else if (tool.actionType === 'woocommerce') { if (account?.woocommerce?.connected) defs.push(...buildWooToolDefs(account)) }
     else if (tool.actionType === 'scheduling') { if (account?.scheduling?.connected) defs.push(...buildAgendaToolDefs(account)) }
