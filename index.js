@@ -980,6 +980,12 @@ app.use('/api',                flowTemplatesRoutes)
     // El super admin las pone aquí; cada cuenta solo hace "Conectar con Google".
     "ALTER TABLE platform_settings ADD COLUMN google_client_id VARCHAR(200)",
     "ALTER TABLE platform_settings ADD COLUMN google_client_secret VARCHAR(255)",
+    // Credenciales de la aplicacion de partner de Octorate. Van aqui y no en variables de
+    // entorno porque el docker-compose del VPS solo pasa al contenedor las que lista
+    // explicitamente: unas variables nuevas no llegarian nunca. Ademas asi se editan desde
+    // el superpanel, como las de Meta, Instagram y Google.
+    "ALTER TABLE platform_settings ADD COLUMN octorate_client_id VARCHAR(200)",
+    "ALTER TABLE platform_settings ADD COLUMN octorate_client_secret VARCHAR(255)",
     "ALTER TABLE platform_settings ADD COLUMN google_redirect_uri VARCHAR(300)",
     "ALTER TABLE platform_settings ADD COLUMN google_api_key VARCHAR(255)",   // developerKey del Google Picker
     // Conexiones de Google MULTI-cuenta: una fila por cada cuenta de Google que la

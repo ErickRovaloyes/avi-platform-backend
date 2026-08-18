@@ -122,11 +122,18 @@ async function tokenValido(accId, cfg) {
   if (!t.refreshToken) {
     throw Object.assign(new Error('La conexión con Octorate expiró. Hay que volver a autorizarla desde Zona IA → PMS.'), { status: 401 })
   }
-  const nuevos = await refrescar({
-    refreshToken: t.refreshToken,
-    clientId: cfg.clientId || process.env.OCTORATE_CLIENT_ID,
-    clientSecret: cfg.clientSecret || process.env.OCTORATE_CLIENT_SECRET,
-  })
+  // Las credenciales salen del superpanel (platform_settings), no del entorno: ver el
+  // comentario en octorate.controller. Renovar con credenciales vacias devuelve un 401 que
+  // parece un token caducado y manda a depurar al sitio equivocado.
+  const [[cred]] = await pool.query(
+    'SELECT octorate_client_id, octorate_client_secret FROM platform_settings WHERE id=1'
+  ).catch(() => [[{}]])
+  const clientId = cfg.clientId || cred?.octorate_client_id || process.env.OCTORATE_CLIENT_ID
+  const clientSecret = cfg.clientSecret || cred?.octorate_client_secret || process.env.OCTORATE_CLIENT_SECRET
+  if (!clientId || !clientSecret) {
+    throw Object.assign(new Error('Faltan las credenciales de Octorate en el superpanel → Integraciones.'), { status: 500 })
+  }
+  const nuevos = await refrescar({ refreshToken: t.refreshToken, clientId, clientSecret })
   await guardarTokens(accId, { ...nuevos, refreshToken: nuevos.refreshToken || t.refreshToken })
   return nuevos.accessToken
 }

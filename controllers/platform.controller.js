@@ -74,6 +74,10 @@ const getSettings = async (req, res) => {
           hasGoogleClientSecret: !!r.google_client_secret,
           googleRedirectUri: r.google_redirect_uri || '',
           googleApiKey: r.google_api_key || '',   // developerKey del Google Picker
+          // Octorate: credenciales de la aplicacion de partner, comunes a toda la plataforma.
+          octorateClientId: r.octorate_client_id || '',
+          octorateClientSecret: isSA ? (r.octorate_client_secret || '') : '',
+          hasOctorateClientSecret: !!r.octorate_client_secret,
           promptGeneratorModel: r.prompt_generator_model || 'gpt-4o',
           promptGeneratorStructure: r.prompt_generator_structure || DEFAULT_STRUCTURE,
           promptGeneratorConditions: r.prompt_generator_conditions || DEFAULT_CONDITIONS,
@@ -143,6 +147,8 @@ const getSettings = async (req, res) => {
           metaAppSecret: '',
           hasMetaAppSecret: false,
           googleClientId: '',
+          octorateClientId: '',
+          octorateClientSecret: '',
           googleClientSecret: '',
           hasGoogleClientSecret: false,
           googleRedirectUri: '',
@@ -186,6 +192,7 @@ const updateSettings = async (req, res) => {
     channelLimits, metaAppId, metaConfigId, metaPagesConfigId, metaAppSecret,
     instagramAppId, instagramAppSecret, instagramRedirectUri,
     googleClientId, googleClientSecret, googleRedirectUri, googleApiKey,
+    octorateClientId, octorateClientSecret,
     promptGeneratorModel, promptGeneratorStructure, promptGeneratorConditions,
     promptGeneratorMaxTokens, promptGeneratorTemperature, promptGeneratorMaxDocChars,
     promptGeneratorAllowFlows,
@@ -224,6 +231,10 @@ const updateSettings = async (req, res) => {
     // Solo se actualiza el secret si llega un valor no vacío (evita borrarlo al guardar enmascarado)
     if (metaAppSecret             !== undefined && metaAppSecret !== '') { sets.push('meta_app_secret=?'); vals.push(metaAppSecret) }
     // Credenciales OAuth de Google (una sola app para Calendar + Sheets).
+    if (octorateClientId          !== undefined) { sets.push('octorate_client_id=?');          vals.push(String(octorateClientId || '').trim()) }
+    // El secreto vacio NO se guarda: asi 'dejar el campo en blanco' conserva el actual en vez
+    // de borrarlo sin querer al tocar cualquier otro ajuste.
+    if (octorateClientSecret      !== undefined && octorateClientSecret !== '') { sets.push('octorate_client_secret=?'); vals.push(String(octorateClientSecret).trim()) }
     if (googleClientId            !== undefined) { sets.push('google_client_id=?');            vals.push(String(googleClientId || '').trim()) }
     if (googleRedirectUri         !== undefined) { sets.push('google_redirect_uri=?');         vals.push(String(googleRedirectUri || '').trim()) }
     if (googleClientSecret        !== undefined && googleClientSecret !== '') { sets.push('google_client_secret=?'); vals.push(String(googleClientSecret).trim()) }

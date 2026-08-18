@@ -59,9 +59,13 @@ function respuesta(ruta, opciones) {
   return {}
 }
 
+let filaAjustes = {}   // lo que hay guardado en platform_settings
+
 const raiz = path.resolve(__dirname, '..')
 const dobles = {
-  [path.join(raiz, 'db.js')]: { query: async () => [[]] },
+  [path.join(raiz, 'db.js')]: {
+    query: async (sql) => (/platform_settings/i.test(String(sql)) ? [[filaAjustes]] : [[]]),
+  },
   [path.join(raiz, 'services', 'octorate.js')]: null,   // se rellena abajo
 }
 const cargarOriginal = Module._load
@@ -194,6 +198,53 @@ const ok = (c, m) => { console.log('  ' + (c ? 'OK ' : 'XX ') + m); if (!c) fall
   ok(con.includes('octorate'), 'instalada, si aparece')
   ok(sin.includes('hosroom') && sin.includes('kunas'), 'y HosRoom y Kunas siguen siempre disponibles')
   ok(con.length === sin.length + 1, 'instalar solo anade Octorate, no cambia el resto')
+
+  console.log('\n· Las credenciales de la aplicacion salen del superpanel, no del entorno')
+  // El docker-compose del VPS solo pasa al contenedor las variables que enumera, asi que unas
+  // OCTORATE_* nuevas nunca llegarian. Por eso viven en platform_settings, como Meta y Google.
+  delete process.env.OCTORATE_CLIENT_ID
+  delete process.env.OCTORATE_CLIENT_SECRET
+  const ctrl = require('../controllers/octorate.controller')
+  const respuestaFalsa = () => {
+    const r = { code: 200, cuerpo: null }
+    r.status = c => { r.code = c; return r }
+    r.json = d => { r.cuerpo = d; return r }
+    return r
+  }
+  const peticion = { params: { accId: 'acc1' }, user: { type: 'superadmin' } }
+
+  filaAjustes = {}
+  const sinCred = respuestaFalsa()
+  await ctrl.iniciarOauth(peticion, sinCred)
+  ok(sinCred.code === 400 && /superpanel/i.test(sinCred.cuerpo?.error || ''),
+    'sin credenciales el error dice DONDE ponerlas: ' + (sinCred.cuerpo?.error || sinCred.code))
+
+  filaAjustes = { octorate_client_id: 'cid-9', octorate_client_secret: 'sec-9' }
+  const conCred = respuestaFalsa()
+  await ctrl.iniciarOauth(peticion, conCred)
+  ok(conCred.code === 200 && String(conCred.cuerpo?.url || '').includes('client_id=cid-9'),
+    'guardadas en el superpanel, la autorizacion ya sale con ese client_id (contraste)')
+
+  console.log('\n· Y el refresco del token tira de las mismas')
+  const enviados = []
+  const fetchReal = global.fetch
+  global.fetch = async (url, opciones) => {
+    enviados.push({ url: String(url), body: String(opciones?.body || '') })
+    return { ok: true, status: 200, text: async () => JSON.stringify({ access_token: 'nuevo', refresh_token: 'r2', expires_in: 3600 }) }
+  }
+  try {
+    filaAjustes = { octorate_client_id: 'cid-9', octorate_client_secret: 'sec-9' }
+    const token = await octReal.tokenValido('acc1', { oauth: { refreshToken: 'r1', expiraEn: 0 } })
+    ok(token === 'nuevo', 'un token caducado se renueva solo')
+    ok(enviados[0].body.includes('client_id=cid-9') && enviados[0].body.includes('client_secret=sec-9'),
+      'y se renueva con las credenciales del superpanel')
+
+    filaAjustes = {}
+    let fallo = null
+    try { await octReal.tokenValido('acc1', { oauth: { refreshToken: 'r1', expiraEn: 0 } }) } catch (e) { fallo = e }
+    ok(fallo && /superpanel/i.test(fallo.message),
+      'sin ellas avisa de que faltan, en vez de un 401 que parece un token vencido (contraste)')
+  } finally { global.fetch = fetchReal }
 
   console.log('\n' + (fallos === 0 ? 'OK' : 'FALLA') + '  ' + fallos + ' comprobacion(es) fallida(s)\n')
   process.exit(fallos ? 1 : 0)

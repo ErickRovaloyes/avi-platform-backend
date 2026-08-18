@@ -19,6 +19,25 @@ const EVENTOS = ['RESERVATION_CREATED', 'RESERVATION_CHANGE', 'RESERVATION_CANCE
 
 const publicUrl = () => (process.env.PUBLIC_URL || 'https://platform.aviasistente.com').replace(/\/+$/, '')
 
+/**
+ * Las credenciales de la aplicacion de partner de Octorate.
+ *
+ * Viven en `platform_settings` y se editan en el superpanel, igual que las de Meta, Instagram
+ * y Google. NO en variables de entorno: el docker-compose del VPS solo pasa al contenedor las
+ * que lista explicitamente, asi que unas variables nuevas no llegarian nunca. Se aceptan de
+ * todos modos como respaldo, por si alguien prefiere ponerlas ahi.
+ */
+async function credencialesDePlataforma() {
+  try {
+    const [[r]] = await pool.query('SELECT octorate_client_id, octorate_client_secret FROM platform_settings WHERE id=1')
+    return {
+      clientId: r?.octorate_client_id || process.env.OCTORATE_CLIENT_ID || '',
+      clientSecret: r?.octorate_client_secret || process.env.OCTORATE_CLIENT_SECRET || '',
+    }
+  } catch {
+    return { clientId: process.env.OCTORATE_CLIENT_ID || '', clientSecret: process.env.OCTORATE_CLIENT_SECRET || '' }
+  }
+}
 function esDueno(user, accId) {
   if (!user) return 'No hay sesión.'
   if (user.type === 'superadmin' || user.isImpersonating) return null
@@ -41,8 +60,8 @@ const iniciarOauth = async (req, res) => {
   const error = esDueno(req.user, accId)
   if (error) return res.status(403).json({ error })
   try {
-    const clientId = process.env.OCTORATE_CLIENT_ID
-    if (!clientId) return res.status(400).json({ error: 'Falta OCTORATE_CLIENT_ID en el servidor. Configúralo antes de conectar.' })
+    const { clientId } = await credencialesDePlataforma()
+    if (!clientId) return res.status(400).json({ error: 'Falta el Client ID de Octorate. Configúralo en el superpanel → Integraciones antes de conectar.' })
 
     const cfg = (await pms.loadConfig(accId)) || {}
     const state = crypto.randomBytes(16).toString('hex')
@@ -73,8 +92,7 @@ const callbackOauth = async (req, res) => {
 
     const tokens = await oct.canjearCodigo({
       code,
-      clientId: process.env.OCTORATE_CLIENT_ID,
-      clientSecret: process.env.OCTORATE_CLIENT_SECRET,
+      ...(await credencialesDePlataforma()),
       redirectUri: `${publicUrl()}/api/octorate/callback`,
     })
 
