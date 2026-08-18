@@ -1027,7 +1027,8 @@ const kunas = {
   },
 }
 
-const PROVIDERS = { hosroom, kunas }
+const octorate = require('./pmsOctorate')
+const PROVIDERS = { hosroom, kunas, octorate }
 function getProvider(id) { return PROVIDERS[id] || null }
 function listProviders() { return Object.values(PROVIDERS).map(p => ({ id: p.id, label: p.label, comingSoon: !!p.comingSoon })) }
 

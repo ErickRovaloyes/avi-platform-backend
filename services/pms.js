@@ -17,10 +17,20 @@ const socket = require('./socket')
 
 // ── Config por cuenta ──────────────────────────────────────────────────────────
 async function loadConfig(accId) {
-  try { const [[a]] = await pool.query('SELECT pms FROM accounts WHERE id=?', [accId]); return parseJ(a?.pms, null) }
+  // El id de cuenta viaja DENTRO de la config: los proveedores solo reciben `cfg`, y Octorate
+  // lo necesita para renovar su token OAuth. Añadirlo aquí evita cambiar cada llamada.
+  try {
+    const [[a]] = await pool.query('SELECT pms FROM accounts WHERE id=?', [accId])
+    const cfg = parseJ(a?.pms, null)
+    return cfg ? { ...cfg, _accId: accId } : cfg
+  }
   catch { return null }
 }
-async function saveConfig(accId, cfg) { await pool.query('UPDATE accounts SET pms=? WHERE id=?', [JSON.stringify(cfg || {}), accId]) }
+async function saveConfig(accId, cfg) {
+  // `_accId` lo añade loadConfig para uso interno; guardarlo ensuciaria la fila sin motivo.
+  const { _accId, ...limpio } = cfg || {}
+  await pool.query('UPDATE accounts SET pms=? WHERE id=?', [JSON.stringify(limpio), accId])
+}
 
 // Config pública (sin credenciales) — va dentro de account.pms para el runtime/UI.
 function publicConfig(cfg) {
