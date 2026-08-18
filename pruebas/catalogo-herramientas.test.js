@@ -37,14 +37,22 @@ const pool = {
     if (/SELECT id FROM ai_tools WHERE account_id=\? AND catalog_id=\?/i.test(sql)) {
       return [aiTools.filter(t => t.account_id === params[0] && t.catalog_id === params[1])]
     }
-    if (/^\s*INSERT INTO ai_tools/i.test(sql)) {
-      aiTools.push({ id: params[0], account_id: params[1], name: params[2], description: params[3],
-                     catalog_id: params[7], catalog_version: params[8] })
+    if (sql.trim().toUpperCase().startsWith('INSERT INTO AI_TOOLS')) {
+      // Las columnas se leen del propio SQL: mapearlas por POSICION se rompe cada vez que se
+      // anade una (handler_key, parameters) y la prueba falla por el doble, no por el codigo.
+      const abre = sql.indexOf('(')
+      const cierra = sql.indexOf(')', abre)
+      const cols = sql.slice(abre + 1, cierra).split(',').map(x => x.trim())
+      const fila = {}
+      cols.forEach((c, i) => { fila[c] = params[i] })
+      aiTools.push(fila)
       return [{ affectedRows: 1 }]
     }
-    if (/^\s*UPDATE ai_tools SET name=/i.test(sql)) {
-      const t = aiTools.find(x => x.id === params[5])
-      if (t) { t.name = params[0]; t.catalog_version = params[4] }
+    if (sql.trim().toUpperCase().startsWith('UPDATE AI_TOOLS SET NAME=')) {
+      const cols = sql.slice(sql.toUpperCase().indexOf('SET') + 3, sql.toUpperCase().indexOf('WHERE'))
+        .split(',').map(x => x.split('=')[0].trim())
+      const t = aiTools.find(x => x.id === params[params.length - 1])
+      if (t) cols.forEach((c, i) => { t[c] = params[i] })
       return [{ affectedRows: 1 }]
     }
     if (/^\s*DELETE FROM ai_tools WHERE account_id=\? AND catalog_id=\?/i.test(sql)) {

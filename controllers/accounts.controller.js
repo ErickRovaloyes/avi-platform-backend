@@ -288,7 +288,7 @@ async function loadPublicAccount(accId) {
         .map(s => ({ id: s.id, name: s.name, description: s.description || '' })),
     })),
     members: members.map(mapNamed),
-    aiTools:   [SPECIAL_CMS_TOOL, ...specialTools(), ...aiTools.map(t => ({ id: t.id, name: t.name, description: t.description, collectFields: parseJ(t.collect_fields, []), flowId: t.flow_id, actionType: t.action_type || 'variable' }))],
+    aiTools:   [SPECIAL_CMS_TOOL, ...specialTools(), ...aiTools.map(t => ({ id: t.id, name: t.name, description: t.description, collectFields: parseJ(t.collect_fields, []), flowId: t.flow_id, actionType: t.action_type || 'variable', handlerKey: t.handler_key || null, parameters: parseJ(t.parameters, []) }))],
     woocommerce: storeSvc.publicConfig(parseJ(acc.woocommerce, null)),
     // Secuencias de recontacto: solo id, nombre y para qué sirve cada una. El asistente las
     // necesita para elegir cuál corresponde a cada conversación; los pasos y los tiempos no
@@ -428,7 +428,7 @@ const getAccount = async (req, res) => {
       teams:     teams.map(t => ({ id: t.id, name: t.name, color: t.color || '#7c6fff', memberIds: parseJ(t.member_ids, []) })),
       pipelines: pipelines.map(p => ({ id: p.id, name: p.name, stages: parseJ(p.stages, []), cards: parseJ(p.cards, []), aiEnabled: p.ai_enabled == null ? true : !!p.ai_enabled })),
       variables: variables.map(v => ({ id: v.id, name: v.name, type: v.type, defaultValue: v.default_value, description: v.description, isSystem: !!v.is_system, aiEnabled: v.ai_enabled == null ? true : !!v.ai_enabled })),
-      aiTools:   [SPECIAL_CMS_TOOL, ...specialTools(), ...aiTools.map(t => ({ id: t.id, name: t.name, description: t.description, collectFields: parseJ(t.collect_fields, []), flowId: t.flow_id, actionType: t.action_type || 'variable', createdAt: t.created_at }))],
+      aiTools:   [SPECIAL_CMS_TOOL, ...specialTools(), ...aiTools.map(t => ({ id: t.id, name: t.name, description: t.description, collectFields: parseJ(t.collect_fields, []), flowId: t.flow_id, actionType: t.action_type || 'variable', handlerKey: t.handler_key || null, parameters: parseJ(t.parameters, []), createdAt: t.created_at }))],
       woocommerce: storeSvc.publicConfig(parseJ(acc.woocommerce, null)),
       // Los mismos dos campos que `loadPublicAccount`. Son DOS constructores distintos del
       // objeto de cuenta y tienen que decir lo mismo: el panel carga por aquí, así que sin esto

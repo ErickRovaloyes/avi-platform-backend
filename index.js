@@ -1646,6 +1646,13 @@ app.use('/api',                flowTemplatesRoutes)
     "ALTER TABLE ai_tools ADD COLUMN catalog_version INT",
     // Entorno de pruebas: cuenta espejo enlazada a la real. NULL = cuenta normal.
     "ALTER TABLE accounts ADD COLUMN sandbox_of VARCHAR(50)",
+    // Herramientas del catalogo con CODIGO propio: la ficha guarda la clave del handler, cuya
+    // implementacion vive en el repositorio (services/toolHandlers). Y sus parametros con tipo,
+    // que es lo que ve el modelo al decidir si la llama.
+    "ALTER TABLE tool_catalog ADD COLUMN handler_key VARCHAR(80)",
+    "ALTER TABLE tool_catalog ADD COLUMN parameters JSON",
+    "ALTER TABLE ai_tools ADD COLUMN handler_key VARCHAR(80)",
+    "ALTER TABLE ai_tools ADD COLUMN parameters JSON",
   ]
   for (const sql of migrations) {
     try { await pool.query(sql) } catch (e) { /* column exists or unsupported */ }

@@ -12,6 +12,8 @@ router.delete('/accounts/:accId/tool-catalog/:toolId',        authMiddleware, ct
 
 // Gestión del catálogo (super admin). Va DESPUÉS de las rutas de cuenta para que
 // `/tool-catalog` sin cuenta no capture las anteriores.
+// Los handlers de codigo que hay en el repositorio, para elegirlos al crear una ficha.
+router.get('/tool-handlers',                                  authMiddleware, ctrl.listHandlers)
 router.get('/tool-catalog',                                   authMiddleware, ctrl.listCatalog)
 router.post('/tool-catalog',                                  authMiddleware, ctrl.upsertCatalogTool)
 router.put('/tool-catalog/:toolId',                           authMiddleware, ctrl.upsertCatalogTool)

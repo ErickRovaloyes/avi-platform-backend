@@ -17,6 +17,10 @@ const { uid, parseJ } = require('../utils')
 
 const esSuperadmin = u => u?.type === 'superadmin'
 
+// mysql2 devuelve las columnas JSON ya parseadas; pasarlas de vuelta como parametro de un `?`
+// las expande en una lista y descuadra la consulta. Siempre como texto.
+const comoTexto = (v, pordefecto = '[]') => (v == null ? pordefecto : typeof v === 'string' ? v : JSON.stringify(v))
+
 const mapTool = r => ({
   id: r.id,
   name: r.name,
@@ -26,6 +30,8 @@ const mapTool = r => ({
   category: r.category || 'General',
   collectFields: parseJ(r.collect_fields, []),
   actionType: r.action_type || 'variable',
+  handlerKey: r.handler_key || null,
+  parameters: parseJ(r.parameters, []),
   flowTemplate: parseJ(r.flow_template, null),
   version: Number(r.version) || 1,
   published: !!r.published,
@@ -85,22 +91,25 @@ const upsertCatalogTool = async (req, res) => {
       const version = b.bumpVersion ? Number(actual.version) + 1 : Number(actual.version)
       await pool.query(
         `UPDATE tool_catalog SET name=?, summary=?, description=?, icon=?, category=?,
-                collect_fields=?, action_type=?, flow_template=?, version=?, published=?, updated_at=?
+                collect_fields=?, action_type=?, flow_template=?, handler_key=?, parameters=?,
+                version=?, published=?, updated_at=?
            WHERE id=?`,
         [b.name, b.summary || '', b.description || '', b.icon || 'enchufe', b.category || 'General',
          JSON.stringify(b.collectFields || []), b.actionType || 'variable',
          b.flowTemplate ? JSON.stringify(b.flowTemplate) : null,
+         b.handlerKey || null, JSON.stringify(b.parameters || []),
          version, b.published ? 1 : 0, ahora, toolId]
       )
       return res.json({ id: toolId, version })
     }
     const id = 'cat_' + uid()
     await pool.query(
-      `INSERT INTO tool_catalog (id,name,summary,description,icon,category,collect_fields,action_type,flow_template,version,published,created_at,updated_at)
-       VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)`,
+      `INSERT INTO tool_catalog (id,name,summary,description,icon,category,collect_fields,action_type,flow_template,handler_key,parameters,version,published,created_at,updated_at)
+       VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`,
       [id, b.name, b.summary || '', b.description || '', b.icon || 'enchufe', b.category || 'General',
        JSON.stringify(b.collectFields || []), b.actionType || 'variable',
        b.flowTemplate ? JSON.stringify(b.flowTemplate) : null,
+       b.handlerKey || null, JSON.stringify(b.parameters || []),
        1, b.published ? 1 : 0, ahora, ahora]
     )
     res.json({ id, version: 1 })
@@ -146,8 +155,9 @@ const installTool = async (req, res) => {
     const [[ya]] = await pool.query('SELECT id FROM ai_tools WHERE account_id=? AND catalog_id=?', [accId, toolId])
     if (ya) {
       await pool.query(
-        'UPDATE ai_tools SET name=?, description=?, collect_fields=?, action_type=?, catalog_version=? WHERE id=?',
-        [c.name, c.description || '', c.collect_fields || '[]', c.action_type || 'variable', c.version, ya.id]
+        'UPDATE ai_tools SET name=?, description=?, collect_fields=?, action_type=?, handler_key=?, parameters=?, catalog_version=? WHERE id=?',
+        [c.name, c.description || '', comoTexto(c.collect_fields), c.action_type || 'variable',
+         c.handler_key || null, comoTexto(c.parameters), c.version, ya.id]
       )
       socket.emit(accId, 'account:updated', { accId })
       return res.json({ id: ya.id, updated: true, version: Number(c.version) })
@@ -155,8 +165,9 @@ const installTool = async (req, res) => {
 
     const id = 'tool_' + uid()
     await pool.query(
-      'INSERT INTO ai_tools (id,account_id,name,description,collect_fields,flow_id,action_type,catalog_id,catalog_version) VALUES (?,?,?,?,?,?,?,?,?)',
-      [id, accId, c.name, c.description || '', c.collect_fields || '[]', null, c.action_type || 'variable', c.id, c.version]
+      'INSERT INTO ai_tools (id,account_id,name,description,collect_fields,flow_id,action_type,handler_key,parameters,catalog_id,catalog_version) VALUES (?,?,?,?,?,?,?,?,?,?,?)',
+      [id, accId, c.name, c.description || '', comoTexto(c.collect_fields), null, c.action_type || 'variable',
+       c.handler_key || null, comoTexto(c.parameters), c.id, c.version]
     )
     socket.emit(accId, 'account:updated', { accId })
     res.json({ id, installed: true, version: Number(c.version) })
@@ -174,4 +185,11 @@ const uninstallTool = async (req, res) => {
   } catch (err) { console.error('[uninstallTool]', err); res.status(500).json({ error: 'Error interno' }) }
 }
 
-module.exports = { listCatalog, upsertCatalogTool, deleteCatalogTool, installTool, uninstallTool }
+/** Los handlers de codigo disponibles en el repositorio (solo super admin). */
+const listHandlers = async (req, res) => {
+  if (!esSuperadmin(req.user)) return res.status(403).json({ error: 'Solo el super admin.' })
+  try { res.json(require('../services/toolHandlers').listar()) }
+  catch (err) { console.error('[listHandlers]', err); res.status(500).json({ error: 'Error interno' }) }
+}
+
+module.exports = { listCatalog, listHandlers, upsertCatalogTool, deleteCatalogTool, installTool, uninstallTool }

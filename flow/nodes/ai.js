@@ -23,22 +23,50 @@ function scheduleMemory(ctx) {
 }
 
 
+/**
+ * Los parametros que el modelo ve de una herramienta.
+ *
+ * Hay dos formas de declararlos y conviven a proposito:
+ *   - parameters: con TIPO (string/number/boolean/enum), descripcion y obligatoriedad. Lo usan
+ *     las herramientas del catalogo, sobre todo las que llevan codigo, donde recibir un numero
+ *     como texto obliga a validar a mano en cada una.
+ *   - collectFields: lo de siempre, todo cadenas. Las herramientas que ya existen siguen
+ *     funcionando exactamente igual, sin tocarlas.
+ */
+function esquemaDeParametros(tool) {
+  const declarados = Array.isArray(tool.parameters) ? tool.parameters : null
+  if (declarados && declarados.length) {
+    const properties = {}
+    for (const p of declarados) {
+      if (!p || !p.name) continue
+      const tipo = ['string', 'number', 'boolean', 'enum'].includes(p.type) ? p.type : 'string'
+      // En JSON Schema un enum es un string con valores cerrados; darselos evita que el modelo
+      // invente una opcion que la herramienta no sabe manejar.
+      properties[p.name] = tipo === 'enum'
+        ? { type: 'string', enum: (p.values || []).map(String), description: p.description || p.name }
+        : { type: tipo, description: p.description || p.name }
+    }
+    return {
+      type: 'object',
+      properties,
+      required: declarados.filter(p => p && p.name && p.required).map(p => p.name),
+    }
+  }
+  const nombreDe = f => f.paramName || f.label.replace(/\s+/g, '_').toLowerCase()
+  return {
+    type: 'object',
+    properties: Object.fromEntries((tool.collectFields || []).map(f => [nombreDe(f), { type: 'string', description: f.label }])),
+    required: (tool.collectFields || []).filter(f => f.required !== false).map(nombreDe),
+  }
+}
+
 function buildOneToolDef(tool) {
   return {
     type: 'function',
     function: {
       name: tool.name.replace(/\s+/g, '_').toLowerCase(),
       description: tool.description,
-      parameters: {
-        type: 'object',
-        properties: Object.fromEntries(
-          (tool.collectFields || []).map(f => [
-            f.paramName || f.label.replace(/\s+/g, '_').toLowerCase(),
-            { type: 'string', description: f.label },
-          ])
-        ),
-        required: (tool.collectFields || []).filter(f => f.required !== false).map(f => f.paramName || f.label.replace(/\s+/g, '_').toLowerCase()),
-      },
+      parameters: esquemaDeParametros(tool),
     },
   }
 }
@@ -120,6 +148,28 @@ async function execToolCall(ctx, toolList, toolName, toolArgs) {
     if (value !== undefined && field.variableId) {
       await setVarBoth(ctx, field.variableId, value)
       results.push(`${field.label}: "${value}" guardado`)
+    }
+  }
+
+  // Herramienta del catalogo con CODIGO propio. El codigo vive en el repositorio
+  // (services/toolHandlers) y la ficha solo guarda su clave: asi se escribe con git y con
+  // pruebas, en vez de guardar JavaScript en la base para ejecutarlo en un aislador.
+  if (tool.actionType === 'code') {
+    const clave = tool.handlerKey || tool.handler_key
+    const handler = require('../../services/toolHandlers').obtener(clave)
+    // Una ficha puede apuntar a un handler que ya no esta (se renombro, se quito). Eso no
+    // puede tumbar la conversacion del cliente: se avisa y el asistente sigue.
+    if (!handler) {
+      console.warn('[tool code] handler no encontrado:', clave, 'de la herramienta', tool.name)
+      return 'La herramienta "' + tool.name + '" no esta disponible ahora mismo. Continua sin ella.'
+    }
+    try {
+      const salida = await handler.ejecutar(ctx, toolArgs || {})
+      logDebug(ctx, 'tool_result', '[code] ' + tool.name, { clave })
+      return typeof salida === 'string' ? salida : JSON.stringify(salida)
+    } catch (e) {
+      console.error('[tool code]', clave, e)
+      return 'La herramienta "' + tool.name + '" fallo: ' + e.message
     }
   }
 
