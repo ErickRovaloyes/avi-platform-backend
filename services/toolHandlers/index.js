@@ -41,18 +41,22 @@ function cargar() {
   for (const nombre of archivos) {
     if (nombre === 'index.js' || !nombre.endsWith('.js')) continue
     try {
-      const h = require(path.join(__dirname, nombre))
-      // Un handler sin clave o sin `ejecutar` no sirve para nada; mejor decirlo al arrancar que
-      // descubrirlo en mitad de una conversación con un cliente.
-      if (!h || !h.clave || typeof h.ejecutar !== 'function') {
-        console.warn(`[toolHandlers] ${nombre}: falta \`clave\` o \`ejecutar\`, se ignora`)
-        continue
+      // Un archivo puede exportar UN handler o una LISTA: cuatro capacidades del mismo
+      // servicio viven mejor juntas que en cuatro archivos casi identicos.
+      const exportado = require(path.join(__dirname, nombre))
+      for (const h of (Array.isArray(exportado) ? exportado : [exportado])) {
+        // Sin clave o sin ejecutar no sirve de nada; mejor decirlo al arrancar que
+        // descubrirlo en mitad de una conversacion con un cliente.
+        if (!h || !h.clave || typeof h.ejecutar !== 'function') {
+          console.warn(`[toolHandlers] ${nombre}: un handler sin clave o sin ejecutar, se ignora`)
+          continue
+        }
+        if (_registro.has(h.clave)) {
+          console.warn(`[toolHandlers] clave duplicada "${h.clave}" en ${nombre}, se ignora`)
+          continue
+        }
+        _registro.set(h.clave, h)
       }
-      if (_registro.has(h.clave)) {
-        console.warn(`[toolHandlers] clave duplicada "${h.clave}" en ${nombre}, se ignora`)
-        continue
-      }
-      _registro.set(h.clave, h)
     } catch (e) {
       console.error(`[toolHandlers] ${nombre} no se pudo cargar:`, e.message)
     }
@@ -67,6 +71,7 @@ function listar() {
     nombre: h.nombre || h.clave,
     descripcion: h.descripcion || '',
     parametros: h.parametros || [],
+    necesitaConexion: h.necesitaConexion || null,
   }))
 }
 
