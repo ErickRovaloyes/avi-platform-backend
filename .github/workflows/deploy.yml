@@ -36,17 +36,29 @@ jobs:
             # Compose RENOMBRA el contenedor viejo antes de borrarlo y esa operación a veces se
             # pierde ("No such container: <hash>_avi-backend"). Cuando pasa, up aborta y el servicio
             # se queda SIN contenedor: el sitio devuelve 404 y el despliegue salía en VERDE.
+            # Momento en que empieza el despliegue: sirve para distinguir el contenedor NUEVO
+            # del que ya estaba.
+            INICIO=$(date -u +%s)
+
+            # Que esté arriba NO basta. El 2026-08-19 el `up` abortó por un conflicto de nombres
+            # con otro servicio, el contenedor de hacía 7 horas siguió corriendo, esta función lo
+            # dio por bueno y el despliegue salió en verde sirviendo la versión anterior. Así que
+            # además se exige que se haya arrancado durante ESTE despliegue.
             arriba() {
               cid=$(docker compose ps -q avi-backend 2>/dev/null)
-              [ -n "$cid" ] && [ "$(docker inspect -f '{{.State.Running}}' "$cid" 2>/dev/null)" = "true" ]
+              [ -n "$cid" ] || return 1
+              [ "$(docker inspect -f '{{.State.Running}}' "$cid" 2>/dev/null)" = "true" ] || return 1
+              arrancado=$(docker inspect -f '{{.State.StartedAt}}' "$cid" 2>/dev/null)
+              epoca=$(date -u -d "$arrancado" +%s 2>/dev/null) || return 0   # sin `date -d`, no se bloquea
+              [ "$epoca" -ge "$INICIO" ]
             }
             
-            docker compose up -d avi-backend || true
+            docker compose up -d --no-deps --force-recreate avi-backend || true
             for i in 1 2 3; do
               arriba && break
               echo "[deploy] avi-backend no quedó arriba; limpiando restos y reintentando ($i/3)…"
               docker ps -a --filter "name=_avi-backend" -q | xargs -r docker rm -f || true
-              docker compose up -d avi-backend || true
+              docker compose up -d --no-deps --force-recreate avi-backend || true
               sleep 4
             done
             
