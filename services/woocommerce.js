@@ -7,6 +7,8 @@
  * fotos, crea pedidos con link de pago y, vía webhook, confirma el pago.
  */
 const crypto = require('crypto')
+const dns = require('dns').promises
+const net = require('net')
 const pool = require('../db')
 const { uid, parseJ } = require('../utils')
 
@@ -50,6 +52,78 @@ function authHeader(cfg) {
 // mensaje. Woo suele estar en hostings compartidos, así que pasa más de lo que parece.
 const ESPERA_MS = 20000
 
+// La IP de salida del servidor, una vez descubierta. Es lo que hay que meter en la lista blanca
+// del hosting de la tienda, así que en cuanto se sabe se guarda para poder nombrarla en los
+// mensajes de error sin volver a preguntarla.
+let _ipSalida = ''
+
+/** El código de un fallo de red, venga donde venga: undici lo esconde en `cause`. */
+function codigoDe(e) {
+  if (e?.name === 'TimeoutError' || e?.name === 'AbortError') return 'ABORT_TIMEOUT'
+  return e?.cause?.code || e?.code || ''
+}
+
+/**
+ * Qué decirle al usuario según POR QUÉ falló la red.
+ *
+ * Antes todos los fallos compartían un mensaje: «Revisa que la URL sea correcta y que la tienda
+ * esté en línea». Con `UND_ERR_CONNECT_TIMEOUT` eso es engañoso y cuesta tiempo real: pasó con
+ * niido.co, donde la URL era correcta y la tienda respondía 200 desde fuera — lo que fallaba era
+ * que su hosting descartaba los paquetes de ESTE servidor.
+ *
+ * La distinción que importa es dónde murió la petición:
+ *
+ *   · no resuelve el dominio      → la URL está mal, y ahí sí hay que revisarla
+ *   · resuelve y nadie contesta   → nos están bloqueando; hay que pedir lista blanca
+ *   · contesta «no»               → no hay nada escuchando en ese dominio
+ *   · el certificado              → problema del HTTPS de la tienda
+ *
+ * Cada una se arregla en un sitio distinto, y mandar al sitio equivocado es lo caro.
+ */
+function explicarFalloDeRed(e, base) {
+  const codigo = codigoDe(e)
+  // La IP la descubre el diagnóstico y se guarda aquí. No sale de una variable de entorno: el
+  // docker-compose del VPS solo pasa al contenedor las que enumera, así que una nueva no
+  // llegaría nunca y el mensaje se quedaría sin el único dato accionable.
+  const quienBloquea = _ipSalida
+    ? `bloquea a este servidor (IP ${_ipSalida})`
+    : 'bloquea a este servidor'
+
+  switch (codigo) {
+    case 'ENOTFOUND':
+    case 'EAI_AGAIN':
+      return `el dominio de la tienda no existe o no se pudo resolver. Revisa que la URL esté bien escrita: ${base}`
+
+    case 'UND_ERR_CONNECT_TIMEOUT':
+    case 'ETIMEDOUT':
+      return `la tienda no acepta la conexión desde aquí. El dominio resuelve bien, pero no responde al intento de conectar, `
+        + `así que lo más probable es que su hosting o un plugin de seguridad ${quienBloquea}. `
+        + `NO es la URL ni las llaves: usa «Probar conexión» para ver el diagnóstico completo y qué IP hay que desbloquear. (${base})`
+
+    case 'ECONNREFUSED':
+      return `la tienda rechazó la conexión: hay servidor, pero nada escuchando para esa dirección. Comprueba el dominio: ${base}`
+
+    case 'ECONNRESET':
+      return `la tienda cortó la conexión a mitad. Suele ser un cortafuegos o un proxy por medio. Prueba el diagnóstico: ${base}`
+
+    case 'CERT_HAS_EXPIRED':
+      return `el certificado HTTPS de la tienda está caducado. Hay que renovarlo en su hosting: ${base}`
+
+    case 'UNABLE_TO_VERIFY_LEAF_SIGNATURE':
+    case 'SELF_SIGNED_CERT_IN_CHAIN':
+    case 'DEPTH_ZERO_SELF_SIGNED_CERT':
+      return `el certificado HTTPS de la tienda no se puede verificar (cadena incompleta o autofirmado): ${base}`
+
+    case 'ABORT_TIMEOUT':
+      return `la tienda no respondió en ${ESPERA_MS / 1000} s. Conectó, pero tardó demasiado en contestar: `
+        + `suele ser un hosting saturado. Vuelve a intentarlo en un momento (${base})`
+
+    default:
+      return `no se pudo conectar con la tienda (${codigo || e?.message || 'error de red'}). `
+        + `Revisa que la URL sea correcta y que la tienda esté en línea: ${base}`
+  }
+}
+
 async function wooFetch(cfg, path, { method = 'GET', body = null, query = null } = {}) {
   let url = `${apiBase(cfg)}${path}`
   if (query) { const qs = new URLSearchParams(query).toString(); url += (url.includes('?') ? '&' : '?') + qs }
@@ -62,13 +136,9 @@ async function wooFetch(cfg, path, { method = 'GET', body = null, query = null }
       signal: AbortSignal.timeout(ESPERA_MS),
     })
   } catch (e) {
-    // Se distingue «no contesta» de «contesta que no»: son dos problemas distintos y el
-    // usuario no puede arreglar el segundo si le decimos el primero.
-    const causa = e?.name === 'TimeoutError' || e?.name === 'AbortError'
-      ? `la tienda no respondió en ${ESPERA_MS / 1000} s`
-      : `no se pudo conectar con la tienda (${e?.cause?.code || e?.message || 'error de red'})`
-    const err = new Error(`[WooCommerce] ${causa}. Revisa que la URL sea correcta y que la tienda esté en línea: ${apiBase(cfg)}`)
+    const err = new Error(`[WooCommerce] ${explicarFalloDeRed(e, apiBase(cfg))}`)
     err.status = 504
+    err.codigoRed = codigoDe(e)
     throw err
   }
   const text = await res.text()
@@ -103,6 +173,95 @@ async function wooFetch(cfg, path, { method = 'GET', body = null, query = null }
   return data
 }
 
+// ── Diagnóstico: lo que solo se puede saber DESDE el servidor ─────────────────
+//
+// Cuando una tienda no conecta, desde el navegador del cliente no hay forma de distinguir «la
+// URL está mal» de «el hosting de la tienda nos bloquea»: desde su casa la tienda abre
+// perfectamente. Lo que decide es lo que ve ESTE servidor, y eso hay que ejecutarlo aquí.
+//
+// Pasó con niido.co: respondía 200 desde fuera y daba tiempo de espera desde el VPS.
+
+/** ¿A qué IPs resuelve el dominio desde este servidor? */
+async function resolverDominio(host) {
+  const salida = { host, v4: [], v6: [], error: '' }
+  try { salida.v4 = await dns.resolve4(host) } catch (e) { if (e.code !== 'ENODATA') salida.error = e.code }
+  try { salida.v6 = await dns.resolve6(host) } catch { /* no tener IPv6 es lo normal */ }
+  return salida
+}
+
+/**
+ * ¿Se puede abrir una conexión TCP al 443?
+ *
+ * Es la comprobación que separa los dos casos que hoy se confunden: si el saludo TCP nunca
+ * termina, nos están descartando los paquetes (bloqueo); si termina pero tarda, el hosting va
+ * lento. Se hace con `net` y no con `fetch` porque así se mide SOLO la conexión, sin TLS ni HTTP
+ * de por medio.
+ */
+function probarTcp(host, puerto = 443, espera = 8000) {
+  return new Promise(resolve => {
+    const t0 = Date.now()
+    const s = net.connect({ host, port: puerto })
+    const terminar = (abierta, detalle) => {
+      s.removeAllListeners(); s.destroy()
+      resolve({ abierta, ms: Date.now() - t0, detalle })
+    }
+    s.setTimeout(espera)
+    s.once('connect', () => terminar(true, ''))
+    s.once('timeout', () => terminar(false, 'no contestó al intento de conectar'))
+    s.once('error', e => terminar(false, e.code || e.message))
+  })
+}
+
+/**
+ * La IP de salida de este servidor, que es la que hay que poner en la lista blanca.
+ *
+ * Se pregunta a un eco público porque es la única forma de saberla con certeza: la IP por la que
+ * ENTRAN las peticiones puede no ser por la que salen si hay NAT por medio, y darle al usuario
+ * una IP equivocada para desbloquear es peor que no darle ninguna. Si el eco no responde, se cae
+ * a la del propio dominio de la plataforma y se marca como suposición.
+ *
+ * Solo se llama cuando alguien pulsa «Probar conexión» y esa conexión ha fallado.
+ */
+async function ipDeSalida() {
+  try {
+    const r = await fetch('https://api.ipify.org?format=json', { signal: AbortSignal.timeout(5000) })
+    const d = await r.json()
+    if (d?.ip) { _ipSalida = d.ip; return { ip: d.ip, seguro: true } }
+  } catch { /* sin eco, se supone abajo */ }
+  try {
+    const host = new URL(process.env.PUBLIC_URL || 'https://platform.aviasistente.com').hostname
+    const [ip] = await dns.resolve4(host)
+    if (ip) { _ipSalida = _ipSalida || ip; return { ip, seguro: false } }
+  } catch { /* nada que hacer */ }
+  return { ip: '', seguro: false }
+}
+
+/**
+ * Por qué no conecta una tienda. Devuelve datos, no conclusiones: el panel los presenta y el
+ * usuario los puede reenviar a su hosting tal cual.
+ */
+async function diagnosticar(cfg) {
+  let host = ''
+  try { host = new URL(String(cfg?.storeUrl || '')).hostname } catch { /* URL inválida */ }
+  if (!host) return { host: '', urlInvalida: true }
+
+  const [dnsInfo, tcp, salida] = await Promise.all([
+    resolverDominio(host),
+    probarTcp(host),
+    ipDeSalida(),
+  ])
+
+  // La raíz de la API REST, aparte de la ruta de WooCommerce: distingue «la tienda entera me
+  // bloquea» de «solo /wc/v3 responde mal» (llaves, plugin desactivado, permalinks).
+  let raiz = { estado: 0, error: '' }
+  try {
+    const r = await fetch(`${String(cfg.storeUrl).replace(/\/$/, '')}/wp-json/`, { signal: AbortSignal.timeout(10000) })
+    raiz.estado = r.status
+  } catch (e) { raiz.error = codigoDe(e) }
+
+  return { host, dns: dnsInfo, tcp, raiz, salida }
+}
+
 async function testConnection(cfg) {
   if (!cfg?.storeUrl || !cfg?.consumerKey || !cfg?.consumerSecret) {
     return { ok: false, error: 'Faltan datos de conexión (URL, consumer key y secret).' }
@@ -116,7 +275,15 @@ async function testConnection(cfg) {
       return { ok: false, error: `la tienda respondio, pero no devolvio una lista de productos. Comprueba que ${apiBase(cfg)}/products sea la API de WooCommerce.` }
     }
     return { ok: true, sample: data.length }
-  } catch (e) { return { ok: false, error: e.message } }
+  } catch (e) {
+    // El diagnóstico solo se ejecuta si falló la RED. Si la tienda contestó (401 por las llaves,
+    // 404 por la ruta, HTML por un plugin), el problema ya está dicho y sondear el DNS o abrir
+    // sockets no aportaría nada — solo tardaría más.
+    if (!e.codigoRed) return { ok: false, error: e.message }
+    let diagnostico = null
+    try { diagnostico = await diagnosticar(cfg) } catch { /* el diagnóstico nunca puede tapar el error real */ }
+    return { ok: false, error: e.message, diagnostico }
+  }
 }
 
 // Moneda de la tienda (p. ej. COP) para mostrar los precios.
