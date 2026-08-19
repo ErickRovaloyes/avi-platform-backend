@@ -75,6 +75,11 @@ const getSettings = async (req, res) => {
           googleRedirectUri: r.google_redirect_uri || '',
           googleApiKey: r.google_api_key || '',   // developerKey del Google Picker
           // Octorate: credenciales de la aplicacion de partner, comunes a toda la plataforma.
+          // App móvil: qué versión hay publicada y de dónde se baja.
+          appVersion: r.app_version || '',
+          appApkUrl: r.app_apk_url || '',
+          appNotas: r.app_notas || '',
+          appObligatoria: r.app_obligatoria === null || r.app_obligatoria === undefined ? true : !!r.app_obligatoria,
           octorateClientId: r.octorate_client_id || '',
           octorateClientSecret: isSA ? (r.octorate_client_secret || '') : '',
           hasOctorateClientSecret: !!r.octorate_client_secret,
@@ -193,6 +198,7 @@ const updateSettings = async (req, res) => {
     instagramAppId, instagramAppSecret, instagramRedirectUri,
     googleClientId, googleClientSecret, googleRedirectUri, googleApiKey,
     octorateClientId, octorateClientSecret,
+    appVersion, appApkUrl, appNotas, appObligatoria,
     promptGeneratorModel, promptGeneratorStructure, promptGeneratorConditions,
     promptGeneratorMaxTokens, promptGeneratorTemperature, promptGeneratorMaxDocChars,
     promptGeneratorAllowFlows,
@@ -231,6 +237,10 @@ const updateSettings = async (req, res) => {
     // Solo se actualiza el secret si llega un valor no vacío (evita borrarlo al guardar enmascarado)
     if (metaAppSecret             !== undefined && metaAppSecret !== '') { sets.push('meta_app_secret=?'); vals.push(metaAppSecret) }
     // Credenciales OAuth de Google (una sola app para Calendar + Sheets).
+    if (appVersion     !== undefined) { sets.push('app_version=?');     vals.push(String(appVersion || '').trim()) }
+    if (appApkUrl      !== undefined) { sets.push('app_apk_url=?');     vals.push(String(appApkUrl || '').trim()) }
+    if (appNotas       !== undefined) { sets.push('app_notas=?');       vals.push(String(appNotas || '')) }
+    if (appObligatoria !== undefined) { sets.push('app_obligatoria=?'); vals.push(appObligatoria ? 1 : 0) }
     if (octorateClientId          !== undefined) { sets.push('octorate_client_id=?');          vals.push(String(octorateClientId || '').trim()) }
     // El secreto vacio NO se guarda: asi 'dejar el campo en blanco' conserva el actual en vez
     // de borrarlo sin querer al tocar cualquier otro ajuste.
@@ -301,6 +311,32 @@ const updateSettings = async (req, res) => {
 }
 
 // Public endpoint — returns only safe/public platform fields (no auth required)
+/**
+ * Qué versión de la app móvil hay publicada. PÚBLICO, sin sesión.
+ *
+ * Tiene que serlo: la app comprueba esto ANTES de iniciar sesión, que es justo el momento en el
+ * que alguien con una versión vieja se queda atascado sin poder ni entrar. Y no expone nada: un
+ * número de versión y una URL de descarga que ya es pública (EAS la sirve abierta).
+ *
+ * Devuelve SOLO estos cuatro campos. Es a propósito: `platform_settings` guarda también los
+ * secretos de Meta, Google y Octorate en la misma fila, y este endpoint no lleva autenticación.
+ */
+const getAppVersion = async (req, res) => {
+  try {
+    const [[r]] = await pool.query('SELECT app_version, app_apk_url, app_notas, app_obligatoria FROM platform_settings WHERE id=1')
+    res.json({
+      version: r?.app_version || '',
+      apkUrl: r?.app_apk_url || '',
+      notas: r?.app_notas || '',
+      obligatoria: r?.app_obligatoria === null || r?.app_obligatoria === undefined ? true : !!r.app_obligatoria,
+    })
+  } catch (err) {
+    // Un fallo aquí NO puede dejar a nadie fuera de la app: se responde "no hay nada publicado"
+    // y el móvil entra normal. Ver lib/actualizaciones.js.
+    res.json({ version: '', apkUrl: '', notas: '', obligatoria: false })
+  }
+}
+
 const getPublicIntegrations = async (req, res) => {
   try {
     const [[r]] = await pool.query('SELECT meta_app_id, meta_config_id, media_max_size_mb, brand_logo, brand_logo_light, brand_favicon, brand_name FROM platform_settings WHERE id=1')
@@ -673,4 +709,5 @@ const remove2faExempt = async (req, res) => {
   } catch (err) { console.error('[2fa exentos]', err); res.status(500).json({ error: 'Error interno' }) }
 }
 
-module.exports = { list2faExempt, add2faExempt, remove2faExempt, getSettings, updateSettings, getPublicIntegrations, listSuperAdmins, createSuperAdmin, updateSuperAdmin, deleteSuperAdmin, listAllUsers, listAccounts, createAccount, updateSAAccount, deleteAccount, getAccountNameHistory, testEmail, emailPreview, getModuleUsage }
+module.exports = {
+  getAppVersion, list2faExempt, add2faExempt, remove2faExempt, getSettings, updateSettings, getPublicIntegrations, listSuperAdmins, createSuperAdmin, updateSuperAdmin, deleteSuperAdmin, listAllUsers, listAccounts, createAccount, updateSAAccount, deleteAccount, getAccountNameHistory, testEmail, emailPreview, getModuleUsage }

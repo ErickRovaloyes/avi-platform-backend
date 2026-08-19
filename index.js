@@ -998,6 +998,12 @@ app.use('/api',                flowTemplatesRoutes)
     // entorno porque el docker-compose del VPS solo pasa al contenedor las que lista
     // explicitamente: unas variables nuevas no llegarian nunca. Ademas asi se editan desde
     // el superpanel, como las de Meta, Instagram y Google.
+    // Version publicada de la app movil. Vive aqui y no en un archivo para que el super admin
+    // la cambie tras cada build sin desplegar nada, igual que las credenciales de integraciones.
+    "ALTER TABLE platform_settings ADD COLUMN app_version VARCHAR(20)",
+    "ALTER TABLE platform_settings ADD COLUMN app_apk_url VARCHAR(500)",
+    "ALTER TABLE platform_settings ADD COLUMN app_notas TEXT",
+    "ALTER TABLE platform_settings ADD COLUMN app_obligatoria TINYINT(1) DEFAULT 1",
     "ALTER TABLE platform_settings ADD COLUMN octorate_client_id VARCHAR(200)",
     "ALTER TABLE platform_settings ADD COLUMN octorate_client_secret VARCHAR(255)",
     "ALTER TABLE platform_settings ADD COLUMN google_redirect_uri VARCHAR(300)",

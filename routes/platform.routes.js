@@ -14,6 +14,8 @@ const withUpload = (mw) => (req, res, next) => mw(req, res, (err) => {
 
 // Public — no auth required
 router.get('/platform/integrations',    ctrl.getPublicIntegrations)
+// La app movil pregunta esto ANTES de iniciar sesion, asi que no puede pedir sesion.
+router.get('/app/version',              ctrl.getAppVersion)
 
 // WhatsApp Coexistence (Embedded Signup con la app global)
 router.get('/whatsapp/coexistence/config',    coex.getConfig)
