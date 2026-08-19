@@ -60,6 +60,37 @@ function esquemaDeParametros(tool) {
   }
 }
 
+// ── Contexto añadido al prompt ────────────────────────────────────────────────
+/**
+ * El nodo «Contexto para el prompt» deja aquí lo que el asistente tiene que saber en las
+ * ejecuciones SIGUIENTES.
+ *
+ * Nace de un caso concreto: al enviar una plantilla de WhatsApp, el asistente no tiene forma de
+ * saber qué decía ni cómo seguir a partir de ahí. Esto permite contárselo desde el flujo.
+ *
+ * Es el mismo mecanismo que ya usaba `_recontactInstruction`: una variable de conversación que
+ * `ai_agent` inyecta en el system prompt. El prefijo `_` es lo que la mantiene fuera de la
+ * pantalla de variables, como `_summary` o `_lastUserMessage`.
+ */
+const CLAVE_CONTEXTO = '_promptContext'
+
+function leerContextoPrompt(ctx) {
+  let c = ctx?.variables?.[CLAVE_CONTEXTO]
+  if (!c) return null
+  // Puede volver como texto: local_vars es JSON y algún camino lo serializa.
+  if (typeof c === 'string') { try { c = JSON.parse(c) } catch { return null } }
+  if (!c || typeof c !== 'object') return null
+  if (c.hasta && Date.now() > Number(c.hasta)) return null    // caducado
+  const texto = [c.contexto, c.instrucciones].map(x => String(x || '').trim()).filter(Boolean).join('\n\n')
+  return texto ? { ...c, texto } : null
+}
+
+function bloqueDeContexto(texto) {
+  return '\n\n---\n[CONTEXTO AÑADIDO — te lo dio el flujo, el cliente NO lo ha escrito. '
+    + 'Es lo que ha pasado y cómo atender a partir de aquí; no lo cites literalmente ni lo leas en voz alta]\n'
+    + String(texto).trim() + '\n---'
+}
+
 function buildOneToolDef(tool) {
   return {
     type: 'function',
@@ -312,7 +343,34 @@ async function sendOneAsset(ctx, a, caption) {
     media: { kind, url, filename: a.filename, mediaId: a.mediaId }, mediaUrl: url,
   })
 }
+/**
+ * Tras enviar los archivos, el asistente PUEDE cerrar con un mensaje aparte.
+ *
+ * El nodo corta el turno cuando una herramienta ya habló por su cuenta (la transferencia a
+ * asesor, por ejemplo), para no mandar dos respuestas. Pero `enviar_recurso` no habla: solo
+ * manda archivos. El modelo SÍ redacta un texto en la ronda siguiente —ya con el resultado de
+ * la herramienta delante, así que sabe qué salió— y ese texto se estaba tirando.
+ *
+ * Esta marca es lo que distingue un caso del otro. Y es una OPCIÓN, no una obligación: si el
+ * modelo decide no escribir nada, no se envía nada. Por eso no se toca la síntesis forzada de
+ * `finishText`, que es la que inventaría un texto cuando el modelo calló.
+ */
+const INVITA_CIERRE =
+  '\n\nLos archivos ya salieron como mensajes propios; el cliente los está viendo. ' +
+  'Si aporta algo, cierra ahora con UN mensaje corto siguiendo tus instrucciones: destaca lo que ' +
+  'más le encaje por lo que te ha contado, o propón el siguiente paso. Si no hay nada útil que ' +
+  'añadir, no escribas nada. No enumeres ni describas lo que acabas de enviar: ya lo ve.'
+
 async function sendCmsResource(ctx, args) {
+  const antes = ctx._sentCount || 0
+  const resultado = await enviarRecursoCms(ctx, args)
+  // Sin archivos enviados no hay nada que cerrar (p. ej. la biblioteca está vacía).
+  if ((ctx._sentCount || 0) === antes) return resultado
+  ctx._cierreTrasRecursos = true
+  return `${resultado}${INVITA_CIERRE}`
+}
+
+async function enviarRecursoCms(ctx, args) {
   const assets = ctx.account?.cmsAssets || []
   const folders = ctx.account?.cmsFolders || []
   if (!assets.length) return 'No hay recursos en la biblioteca del CMS.'
@@ -1771,12 +1829,24 @@ const aiNodes = [
         sysWithRag = `${sysWithRag}\n\n---\n[RECONTACTO] ${String(_recon).trim()}\n---`
       }
 
+
+      // Contexto puesto por el nodo «Contexto para el prompt». Va al final, después de la
+      // memoria y del recontacto, para que sea lo más reciente que lee el modelo.
+      const _extra = leerContextoPrompt(ctx)
+      if (_extra) {
+        sysWithRag = `${sysWithRag}${bloqueDeContexto(_extra.texto)}`
+        logDebug(ctx, 'flow_run', '🧠 Contexto añadido inyectado en el prompt', { unaVez: !!_extra.unaVez })
+        // De un solo uso: se borra DESPUÉS de inyectarlo, no antes — si el turno falla a medias,
+        // al menos se usó una vez, que es lo que se pidió.
+        if (_extra.unaVez) await setVarBoth(ctx, CLAVE_CONTEXTO, null)
+      }
       const history = await loadHistory(ctx)
       const toolDefs = buildToolDefs(assignedTools, ctx.account)
 
       let resolved = null
       let toolsInvoked = false
       const sentBefore = ctx._sentCount || 0   // para detectar si una herramienta ya envió su mensaje
+      ctx._cierreTrasRecursos = false          // se reinicia por turno: si no, se arrastra al siguiente
       const reply = await callAI(ctx, {
         systemPrompt: sysWithRag,
         userPrompt: userMsg || '(sin contexto del usuario, responde con un saludo)',
@@ -1799,9 +1869,12 @@ const aiNodes = [
         // sería una respuesta duplicada. Solo se entrega cuando la herramienta no comunicó
         // nada (p. ej. la agenda, que devuelve datos para que el modelo redacte).
         const toolSentMsg = (ctx._sentCount || 0) > sentBefore
-        logDebug(ctx, 'flow_run', '🔧 Herramienta IA activada' + (toolSentMsg ? ' (mensaje enviado por la herramienta)' : reply ? ' (+ respuesta final)' : ''), {})
+        // Ver INVITA_CIERRE: enviar_recurso solo manda archivos, así que el texto que el modelo
+        // escribe después SÍ se entrega. Si el modelo calló, `reply` viene vacío y no se manda nada.
+        const cierra = !!ctx._cierreTrasRecursos && !!reply
+        logDebug(ctx, 'flow_run', '🔧 Herramienta IA activada' + (cierra ? ' (+ mensaje de cierre)' : toolSentMsg ? ' (mensaje enviado por la herramienta)' : reply ? ' (+ respuesta final)' : ''), {})
         if (node.data?.variable_destino) await setVarBoth(ctx, node.data.variable_destino, reply || '')
-        if (toolSentMsg) {
+        if (toolSentMsg && !cierra) {
           ctx._suppressDefaultNext = true            // ya se comunicó: cortar aquí
         } else if (node.data?.sendToUser === false) {
           // El nodo no responde por sí mismo: deja seguir el flujo para que un nodo
@@ -1915,6 +1988,34 @@ Responde SOLO JSON: {"intent":"<una de la lista>","confidence":0.0-1.0}`
       if (node.data?.variable_destino) await setVarBoth(ctx, node.data.variable_destino, winner)
       ctx.variables._last_route = winner
       logDebug(ctx, 'flow_run', `🛤 Router IA → ${winner}`, { rutas })
+    },
+  },
+  {
+    type: 'prompt_context', category: 'ai', label: 'Contexto para el prompt',
+    async exec(node, ctx) {
+      const modo = node.data?.modo || 'fijar'
+      if (modo === 'limpiar') {
+        await setVarBoth(ctx, CLAVE_CONTEXTO, null)
+        logDebug(ctx, 'flow_run', '🧹 Contexto del prompt limpiado', {})
+        return
+      }
+      const contexto = interpolate(node.data?.contexto || '', ctx.variables)
+      const instrucciones = interpolate(node.data?.instrucciones || '', ctx.variables)
+      if (!contexto.trim() && !instrucciones.trim()) {
+        logDebug(ctx, 'flow_run', '⚠ Contexto para el prompt vacío: no se guarda nada', {})
+        return
+      }
+      const horas = Number(node.data?.caduca_horas) || 0
+      const valor = {
+        contexto: contexto.trim(),
+        instrucciones: instrucciones.trim(),
+        unaVez: (node.data?.duracion || 'permanente') === 'siguiente',
+        hasta: horas > 0 ? Date.now() + horas * 3600 * 1000 : null,
+      }
+      await setVarBoth(ctx, CLAVE_CONTEXTO, valor)
+      logDebug(ctx, 'flow_run',
+        `🧠 Contexto para el prompt guardado (${valor.unaVez ? 'solo la próxima ejecución' : 'hasta limpiarlo'})`,
+        { caduca: valor.hasta ? new Date(valor.hasta).toISOString() : 'nunca' })
     },
   },
 ]

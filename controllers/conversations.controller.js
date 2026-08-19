@@ -1,6 +1,7 @@
 'use strict'
 const pool   = require('../db')
 const socket = require('../services/socket')
+const visibilidad = require('../services/visibilidadConvos')
 const { uid, parseJ } = require('../utils')
 const {
   sendWhatsAppText, sendMessengerText, sendInstagramText,
@@ -96,7 +97,10 @@ const listConvos = async (req, res) => {
     // Sin ORDER BY en SQL: ordenar con SELECT * sobre columnas JSON (debug_log,
     // local_vars, metadata) provoca un filesort de filas anchas que revienta el
     // sort_buffer ("Out of sort memory") en MySQL 8. Se ordena en JS (barato).
-    const [rows] = await pool.query('SELECT * FROM conversations WHERE account_id=? AND agent_id=?', [accId, agId])
+    const todas = await pool.query('SELECT * FROM conversations WHERE account_id=? AND agent_id=?', [accId, agId]).then(r => r[0])
+    // Rol con `soloAsignadas`: solo los chats suyos o de su equipo. Se filtra AQUÍ y no en el
+    // inbox porque un filtro de navegador no restringe nada: basta con llamar al endpoint.
+    const rows = await visibilidad.filtrar(todas, req.user, accId)
     if (rows.length === 0) return res.json([])
     rows.sort((a, b) => (b.updated_at || 0) - (a.updated_at || 0))
     const convIds = rows.map(c => c.id)
@@ -119,6 +123,11 @@ const getConvo = async (req, res) => {
   try {
     const [[c]] = await pool.query('SELECT * FROM conversations WHERE id=? AND account_id=? AND agent_id=?', [convId, accId, agId])
     if (!c) return res.status(404).json({ error: 'Conversación no encontrada' })
+    // 404 y no 403: un 403 confirmaría que la conversación existe.
+    if (visibilidad.estaRestringido(req.user)) {
+      const equipos = await visibilidad.equiposDe(accId, req.user.id)
+      if (!visibilidad.puedeVer(c, req.user, equipos)) return res.status(404).json({ error: 'Conversación no encontrada' })
+    }
     const [msgs] = await pool.query('SELECT * FROM messages WHERE conversation_id=?', [convId])
     msgs.sort((a, b) => (a.ts || 0) - (b.ts || 0))
     res.json(mapConvo(c, msgs.map(m => ({ id: m.id, sender: m.sender, content: m.content, ts: m.ts, starred: !!m.starred, ...parseJ(m.metadata, {}) }))))

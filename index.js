@@ -56,8 +56,13 @@ function removePresence(sock, convId) {
 io.on('connection', sock => {
   const u = sock.user
   if (u) {
+    // Un miembro con `soloAsignadas` NO entra en la sala de la cuenta: ahí llegan los mensajes
+    // de TODOS los chats. Se queda con su sala personal, y services/socket le reparte solo lo
+    // de las conversaciones que le tocan. Filtrarlo en el navegador no serviría: el mensaje
+    // ajeno habría viajado igual.
+    const restringido = !!u.permissions?.soloAsignadas && u.type === 'member'
     const ids = u.allAccountIds || (u.accountId ? [u.accountId] : [])
-    ids.forEach(aId => sock.join(`acc:${aId}`))
+    if (!restringido) ids.forEach(aId => sock.join(`acc:${aId}`))
     // Personal room for direct messages between team members
     if (u.id) sock.join(`mem:${u.id}`)
   }

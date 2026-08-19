@@ -87,6 +87,7 @@ const updateMember = async (req, res) => {
     if (!sets.length) return res.json({ ok: true })
     vals.push(memId, accId)
     await pool.query(`UPDATE members SET ${sets.join(',')} WHERE id=? AND account_id=?`, vals)
+    require('../services/visibilidadConvos').olvidarCache(accId)   // pudo cambiar de rol
     socket.emit(accId, 'account:updated', { accId })
     res.json({ ok: true })
   } catch (err) {
@@ -235,6 +236,9 @@ const updateRole = async (req, res) => {
     if (!sets.length) return res.json({ ok: true })
     vals.push(roleId, accId)
     await pool.query(`UPDATE roles SET ${sets.join(',')} WHERE id=? AND account_id=?`, vals)
+    // El reparto por socket cachea quien esta restringido: sin esto, cambiar el permiso tarda
+    // hasta medio minuto en notarse y parece que no funciono.
+    require('../services/visibilidadConvos').olvidarCache(accId)
     socket.emit(accId, 'account:updated', { accId })
     res.json({ ok: true })
   } catch (err) { res.status(500).json({ error: 'Error interno' }) }
@@ -244,6 +248,7 @@ const deleteRole = async (req, res) => {
   const { accId, roleId } = req.params
   try {
     await pool.query('DELETE FROM roles WHERE id=? AND account_id=? AND is_system=0', [roleId, accId])
+    require('../services/visibilidadConvos').olvidarCache(accId)
     socket.emit(accId, 'account:updated', { accId })
     res.json({ ok: true })
   } catch (err) { res.status(500).json({ error: 'Error interno' }) }
