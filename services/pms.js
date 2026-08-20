@@ -135,9 +135,17 @@ function photoState(key, reset) {
 }
 // Envía el siguiente lote de fotos NO enviadas. Al agotarse, avisa y reinicia el
 // cursor para poder reenviar desde el principio si el cliente lo pide.
+// Si la tanda anterior salió hace menos de esto, se avisa al modelo de que no repita.
+// Dos minutos es más o menos «en la misma conversación, ahora mismo».
+const REPETICION_MS = 2 * 60 * 1000
+
 function sendPhotoBatch(pool, key, { maxPhotos, reset, label, extra }) {
   pool = [...new Set((pool || []).filter(Boolean))]
   if (!pool.length) return { text: `No hay fotos publicadas${label ? ` de ${label}` : ''} en el PMS.${extra ? `\n${extra}` : ''}` }
+  // ANTES de tocar el cursor: `photoState` refresca la marca de tiempo, así que después ya no
+  // se puede saber si la tanda anterior fue hace un momento o hace media hora.
+  const previo = _photoSent.get(key)
+  const recien = !!previo && previo.urls.size > 0 && Date.now() - previo.at < REPETICION_MS
   const st = photoState(key, reset)
   const fresh = pool.filter(u => !st.urls.has(u))
   if (!fresh.length) {
@@ -151,7 +159,13 @@ function sendPhotoBatch(pool, key, { maxPhotos, reset, label, extra }) {
   const remaining = pool.length - st.urls.size
   const head = firstBatch ? `Envié ${media.length} foto(s)${label ? ` de ${label}` : ''} al cliente.` : `Envié ${media.length} foto(s) MÁS${label ? ` de ${label}` : ''} (distintas a las anteriores).`
   const tail = remaining > 0 ? ` Quedan ${remaining} foto(s) más si el cliente quiere ver otras.` : ` Con estas ya se enviaron todas las fotos disponibles.`
-  return { text: `${head}${tail}${extra ? `\n${extra}` : ''}`, media }
+  // Aviso, no cerrojo: si el cliente pide más, se le mandan igual. Está aquí porque el fallo que
+  // esto evita es que el asistente reenvíe tanda tras tanda sin que nadie se lo haya pedido.
+  const aviso = recien
+    ? `\nAVISO: acabas de enviar fotos hace un momento. NO mandes más salvo que el cliente las pida expresamente; `
+      + `si solo está comentando o preguntando otra cosa, respóndele con palabras y sin fotos.`
+    : ''
+  return { text: `${head}${tail}${aviso}${extra ? `\n${extra}` : ''}`, media }
 }
 
 // Bloqueo: propiedad completa o alojamiento (habitación) dentro de una propiedad.
@@ -986,4 +1000,7 @@ async function searchRoomsSmart(accId, consulta, { propertyId = '', limit = 8 } 
   return { items, viaIndice: false }
 }
 
-module.exports = { loadConfig, saveConfig, publicConfig, testConnection, toolCall, listProperties, listRooms, rangeAvailability, monthAvailability, debug, buildOptions, listRoomsForIndex, searchRoomsSmart }
+// `sendPhotoBatch` se exporta para poder probarlo directamente: lleva un cursor con reglas que
+// no se ven desde fuera (no repetir fotos, tandas, reinicio al agotarse, y el aviso de que se
+// acaba de enviar una). Comprobarlo a traves de `toolCall` exigiria montar media integracion.
+module.exports = { loadConfig, saveConfig, publicConfig, testConnection, toolCall, listProperties, listRooms, rangeAvailability, monthAvailability, debug, buildOptions, listRoomsForIndex, searchRoomsSmart, sendPhotoBatch }

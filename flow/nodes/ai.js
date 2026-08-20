@@ -1283,6 +1283,14 @@ async function pmsExec(ctx, fnName, args) {
     for (const m of (r.media || [])) {
       await sendBotMsg(ctx, m.caption || '', { kind: 'image', media: { kind: 'image', url: m.url }, mediaUrl: m.url })
     }
+    // Igual que `enviar_recurso`: mandar fotos NO es hablar. Sin esta marca el nodo daba por
+    // contestado el turno y tiraba el texto del modelo, así que tras las fotos el asistente se
+    // quedaba mudo — y en el historial no quedaba ni una palabra suya sobre lo que acababa de
+    // enviar. Ver INVITA_CIERRE y el comentario del prompt de herramientas.
+    //
+    // Solo cuando de verdad salieron fotos: una lista de habitaciones o una reserva sí son la
+    // respuesta completa, y ahí el corte sigue estando bien.
+    if ((r.media || []).length) ctx._cierreTrasRecursos = true
     logDebug(ctx, 'tool_result', `🏨 PMS ${fnName}${r.bookingCode ? ` → ${r.bookingCode}` : ''}`, { media: (r.media || []).length })
     // Flujo post-reserva (opcional, configurado en Zona IA → PMS).
     if (r.booked) {
@@ -1546,9 +1554,17 @@ async function callAI(ctx, { systemPrompt, userPrompt, model, provider, maxToken
       `DEBES ejecutarla llamando a la función mediante el mecanismo de tool-calling, NO escribiendo la acción en texto.\n` +
       `NUNCA escribas el nombre de la función dentro de tu respuesta (por ejemplo "transferir_a_asesor()" o "enviar_recurso(...)"): ` +
       `eso NO ejecuta nada y se ve como un error. Para ejecutar una herramienta, invócala por el canal de funciones, no como texto.\n` +
-      `PROHIBIDO afirmar que ya hiciste algo ("ya lo envié", "lo guardé", "creé el ticket", "ejecuté el proceso", "listo, agendado") ` +
+      `PROHIBIDO afirmar que ACABAS de hacer algo ("ya lo envié", "lo guardé", "creé el ticket", "ejecuté el proceso", "listo, agendado") ` +
       `si en ESTE turno no invocaste realmente la función correspondiente. ` +
-      `Si te falta algún dato para invocarla, pídeselo al usuario; nunca simules que la ejecutaste.`
+      `Si te falta algún dato para invocarla, pídeselo al usuario; nunca simules que la ejecutaste.\n` +
+      // Sin esta frase, la regla de arriba se lee al pie de la letra —que es como la lee un
+      // modelo— y le prohíbe mencionar lo que hizo en turnos anteriores. Resultado: para poder
+      // referirse a unas fotos que YA mandó, volvía a llamar a la herramienta, y la herramienta
+      // mandaba otra tanda. Con Kunas, que trae muchas fotos por tipo de habitación, la rueda
+      // giraba turno tras turno: dijeras lo que dijeras, te llegaban más fotos.
+      `Eso NO te impide hablar de lo que ya ocurrió ANTES: lo que enviaste en turnos anteriores aparece en el historial ` +
+      `como "[enviado: …]", y puedes darlo por hecho y referirte a ello con normalidad ("las fotos que te mandé", "el catálogo que te envié") ` +
+      `SIN volver a invocar nada. Repetir una acción que el usuario no ha vuelto a pedir es un error, no una precaución.`
   }
 
   const messages = []
