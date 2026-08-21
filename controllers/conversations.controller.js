@@ -304,15 +304,23 @@ const updateConvo = async (req, res) => {
   }
 }
 
-// Elimina una conversación y sus mensajes/media asociados.
+/**
+ * Elimina una conversación… y al contacto que había detrás.
+ *
+ * Antes se borraban solo `messages`, `media` y la fila de la conversación, y la ficha del
+ * contacto sobrevivía con su nombre, su email y su memoria: la misma persona volvía a escribir,
+ * `findOrCreateContact` la reconocía por el teléfono y el chat "nuevo" nacía sabiéndolo todo.
+ * Ahora el borrado llega hasta el final (ver `services/contactPurge`), incluidas las DEMÁS
+ * conversaciones de ese contacto. Lo que no se toca es el dinero: pedidos, cobros y citas.
+ */
 const deleteConvo = async (req, res) => {
   const { accId, agId, convId } = req.params
   try {
-    await pool.query('DELETE FROM messages WHERE conversation_id=?', [convId]).catch(() => {})
-    await pool.query('DELETE FROM media WHERE conversation_id=? AND account_id=?', [convId, accId]).catch(() => {})
-    await pool.query('DELETE FROM conversations WHERE id=? AND account_id=?', [convId, accId])
-    socket.emit(accId, 'convos:updated', { accId, agId })
-    res.json({ ok: true })
+    const r = await require('../services/contactPurge').purgeConversation(accId, convId)
+    // Puede haber caído más de un agente: se refresca la bandeja de todos los afectados.
+    const agentes = r.agentes.length ? r.agentes : [agId]
+    for (const a of agentes) socket.emit(accId, 'convos:updated', { accId, agId: a })
+    res.json({ ok: true, conversaciones: r.conversaciones.length, contactoBorrado: r.contactoBorrado, agentes })
   } catch (err) { console.error('[DELETE CONVO]', err); res.status(500).json({ error: 'Error interno' }) }
 }
 

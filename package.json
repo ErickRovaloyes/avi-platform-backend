@@ -6,7 +6,7 @@
   "scripts": {
     "start": "node index.js",
     "dev": "node --watch index.js",
-    "probar": "node pruebas/envio-manual.test.js && node pruebas/busqueda-productos.test.js && node pruebas/recontacto-secuencias.test.js && node pruebas/metricas-negocio.test.js && node pruebas/catalogo-herramientas.test.js && node pruebas/entorno-pruebas.test.js && node pruebas/entorno-plan.test.js && node pruebas/herramientas-codigo.test.js && node pruebas/octorate.test.js && node pruebas/handshake-socket.test.js && node pruebas/cierre-recursos.test.js && node pruebas/visibilidad-convos.test.js && node pruebas/contexto-prompt.test.js && node pruebas/version-app.test.js && node pruebas/woo-diagnostico.test.js && node pruebas/pms-fotos.test.js"
+    "probar": "node pruebas/envio-manual.test.js && node pruebas/busqueda-productos.test.js && node pruebas/recontacto-secuencias.test.js && node pruebas/metricas-negocio.test.js && node pruebas/catalogo-herramientas.test.js && node pruebas/entorno-pruebas.test.js && node pruebas/entorno-plan.test.js && node pruebas/herramientas-codigo.test.js && node pruebas/octorate.test.js && node pruebas/handshake-socket.test.js && node pruebas/cierre-recursos.test.js && node pruebas/visibilidad-convos.test.js && node pruebas/contexto-prompt.test.js && node pruebas/version-app.test.js && node pruebas/woo-diagnostico.test.js && node pruebas/pms-fotos.test.js && node pruebas/borrado-contacto.test.js"
   },
   "dependencies": {
     "bcryptjs": "^2.4.3",

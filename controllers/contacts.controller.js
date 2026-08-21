@@ -65,27 +65,15 @@ const update = async (req, res) => {
   } catch (err) { res.status(500).json({ error: 'Error interno' }) }
 }
 
+// Borrar el contacto se lo lleva TODO: sus chats, su memoria y su rastro en el CRM. El mismo
+// servicio que usa «eliminar conversación», para que las dos puertas acaben en el mismo sitio;
+// aquí antes se borraban los chats pero quedaban vivas sus notas, tareas y tarjetas.
 const remove = async (req, res) => {
   const { accId, id } = req.params
   try {
-    // Borrar también los chats vinculados a este contacto (y sus mensajes/media).
-    const [convos] = await pool.query(
-      `SELECT id, agent_id FROM conversations
-       WHERE account_id=? AND JSON_UNQUOTE(JSON_EXTRACT(local_vars,'$.contact_id'))=?`,
-      [accId, id]
-    )
-    const convIds = convos.map(c => c.id)
-    if (convIds.length) {
-      await pool.query('DELETE FROM messages WHERE conversation_id IN (?)', [convIds])
-      try { await pool.query('DELETE FROM media WHERE conversation_id IN (?)', [convIds]) } catch {}
-      await pool.query('DELETE FROM conversations WHERE id IN (?) AND account_id=?', [convIds, accId])
-    }
-    await pool.query('DELETE FROM contacts WHERE id=? AND account_id=?', [id, accId])
-
-    // Refrescar el inbox de cada agente afectado
-    const agentIds = [...new Set(convos.map(c => c.agent_id))]
-    agentIds.forEach(agId => socket.emit(accId, 'convos:updated', { accId, agId }))
-    res.json({ ok: true, deletedConversations: convIds.length })
+    const r = await require('../services/contactPurge').purgeContact(accId, id)
+    r.agentes.forEach(agId => socket.emit(accId, 'convos:updated', { accId, agId }))
+    res.json({ ok: true, deletedConversations: r.conversaciones.length })
   } catch (err) { console.error('[DELETE CONTACT]', err); res.status(500).json({ error: 'Error interno' }) }
 }
 

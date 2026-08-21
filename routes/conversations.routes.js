@@ -54,6 +54,10 @@ router.post('/:accId/:agId/whatsapp',                   optionalAuth, ctrl.creat
 router.post('/:accId/:agId/messenger',                  optionalAuth, ctrl.createMessenger)
 router.post('/:accId/:agId/instagram',                  optionalAuth, ctrl.createInstagram)
 router.post('/:accId/:agId/social',                     optionalAuth, ctrl.createSocial)
-router.delete('/:accId/:agId/:convId',                  optionalAuth, ctrl.deleteConvo)
+// Exige sesión, como `run-flow` y por el mismo motivo: borrar ya no es solo este chat — se lleva
+// al contacto, su memoria y sus demás conversaciones. El invitado del webchat nunca borra nada
+// (el único que llama a esta ruta es el panel), así que `optionalAuth` aquí solo dejaba la puerta
+// abierta a quien acertara los tres ids.
+router.delete('/:accId/:agId/:convId',                  authMiddleware, ctrl.deleteConvo)
 
 module.exports = router
