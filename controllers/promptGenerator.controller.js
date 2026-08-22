@@ -392,10 +392,26 @@ Genera ahora el system prompt completo, exhaustivo y fiel al documento, siguiend
 
 // ── Endpoint: classify a change request (cheap pre-flight) ───────────────────
 
-// Output token heuristic for each category. The Change Agent system prompt
-// always returns the full modified prompt back, so output ≈ current prompt size + small delta.
-function estimateOutputTokens(category, currentPromptTokens) {
-  const base = currentPromptTokens || 0
+/**
+ * Cuántos tokens va a ocupar la respuesta del Agente de Cambios.
+ *
+ * El agente devuelve el prompt ENTERO reescrito, así que la salida es «el prompt de ahora, más
+ * lo que se le añada». Esta función solo miraba el prompt de ahora y la categoría, con la
+ * suposición de que un cambio añade poco. Esa suposición se rompe en cuanto alguien adjunta un
+ * documento y pide incorporarlo: el prompt crece por el tamaño del documento, no por el factor
+ * de la categoría. El síntoma era pedir ~6 800 tokens para una respuesta que necesitaba el doble,
+ * y perder la llamada entera con un aviso de «se cortó por tamaño».
+ *
+ * `añadidoTokens` es el material nuevo que viaja en la instrucción (texto del documento incluido).
+ * No todo acaba dentro del prompt —parte es el encargo en sí, y el modelo resume— pero contarlo
+ * de menos es lo que costaba la llamada, así que se cuenta entero.
+ *
+ * @param {'basic'|'medium'|'complex'} category
+ * @param {number} currentPromptTokens  Tamaño del prompt actual.
+ * @param {number} añadidoTokens        Material nuevo que se pide incorporar.
+ */
+function estimateOutputTokens(category, currentPromptTokens, añadidoTokens = 0) {
+  const base = (currentPromptTokens || 0) + Math.max(0, añadidoTokens || 0)
   if (category === 'basic')   return Math.max(200,  Math.round(base * 1.1))   // small tweaks
   if (category === 'complex') return Math.max(2000, Math.round(base * 1.6))   // full rewrite + growth
   return Math.max(800, Math.round(base * 1.3))                                // medium refactor
@@ -508,8 +524,12 @@ Responde SOLO con JSON:
     }
 
     // ── Output tokens estimated from category + current prompt size ───────
+    // La instrucción cuenta: cuando trae un documento adjunto («incorpora esto al prompt»), lo
+    // que sale es el prompt de ahora MÁS ese documento. Mirar solo el prompt actual dejaba el
+    // estimado a la mitad y la respuesta llegaba cortada.
     const currentPromptTokens = countOpenAITokens(currentPrompt)
-    const estimatedOutputTokens = estimateOutputTokens(category, currentPromptTokens)
+    const añadidoTokens = countOpenAITokens(instruction)
+    const estimatedOutputTokens = estimateOutputTokens(category, currentPromptTokens, añadidoTokens)
     const estimatedTokens = inputTokens + estimatedOutputTokens
 
     // ── Real USD cost based on the model pricing table ────────────────────
@@ -675,6 +695,8 @@ const extractForChange = async (req, res) => {
 
 module.exports = {
   generateFromDoc, classifyChange, extractFileText, generateAccountPrompt, extractForChange,
+  // Expuesto para `pruebas/estimado-agente-cambios.test.js`: es la cuenta que se quedó corta.
+  estimateOutputTokens,
   // Helpers reutilizables para otros generadores con IA (p. ej. diseño de flujos).
   callAI, detectProvider, resolveProviderKey, extractJson, extractGeneratedPrompt, extractPromptField,
 }
