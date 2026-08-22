@@ -420,6 +420,9 @@ const classifyChange = async (req, res) => {
     instruction = '',
     currentPromptText = '',
     currentPromptLength = 0,
+    // El historial del chat viaja TAMBIÉN en la llamada real (ver ChangeAgentPanel), y no se
+    // contaba: en un refinamiento eso es mucho, y el estimado salía corto sin motivo aparente.
+    historyText = '',
   } = req.body
   if (!instruction.trim()) return res.status(400).json({ error: 'Instrucción requerida' })
 
@@ -443,7 +446,10 @@ const classifyChange = async (req, res) => {
 
     // Solo quedan OpenAI y DeepSeek, y ambos usan la misma BPE: el tokenizador local vale
     // para los dos. (Antes había además una llamada de red al contador oficial de Anthropic.)
-    const inputTokens = countOpenAITokens(sysForChangeAgent) + countOpenAITokens(instruction) + 8 // ~8 tokens of overhead per call
+    const inputTokens = countOpenAITokens(sysForChangeAgent)
+      + countOpenAITokens(instruction)
+      + countOpenAITokens(historyText)
+      + 8 // ~8 tokens of overhead per call
     const tokenizer = getGptTokenizer()?.encode ? 'tiktoken' : 'estimate'
 
     // ── Cheap LLM classification (OpenAI gpt-4o-mini) ─────────────────────

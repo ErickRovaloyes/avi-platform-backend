@@ -41,10 +41,12 @@ const PROVIDERS = {
       // (deprecó 'deepseek-chat'/'deepseek-reasoner'). Las etiquetas v4 ya son los
       // nombres reales del API; los ids antiguos se redirigen vía apiModel para no
       // romper prompts/cuentas que aún los tengan guardados.
-      { id: 'deepseek-v4-pro',   name: 'DeepSeek V4 Pro',       supportsTools: true, supportsStream: true,  contextWindow: 128000 },
-      { id: 'deepseek-v4-flash', name: 'DeepSeek V4 Flash',     supportsTools: true, supportsStream: true,  contextWindow: 128000 },
-      { id: 'deepseek-chat',     name: 'DeepSeek Chat (legado)',     apiModel: 'deepseek-v4-flash', supportsTools: true, supportsStream: true, contextWindow: 128000 },
-      { id: 'deepseek-reasoner', name: 'DeepSeek Reasoner (legado)', apiModel: 'deepseek-v4-pro',   supportsTools: true, supportsStream: true, contextWindow: 128000 },
+      // Contexto 1M y salida máxima 384K: https://api-docs.deepseek.com/quick_start/pricing
+      // (comprobado el 2026-08-22). Antes figuraba 128K, de la generación anterior.
+      { id: 'deepseek-v4-pro',   name: 'DeepSeek V4 Pro',       supportsTools: true, supportsStream: true,  contextWindow: 1000000, maxOutput: 384000 },
+      { id: 'deepseek-v4-flash', name: 'DeepSeek V4 Flash',     supportsTools: true, supportsStream: true,  contextWindow: 1000000, maxOutput: 384000 },
+      { id: 'deepseek-chat',     name: 'DeepSeek Chat (legado)',     apiModel: 'deepseek-v4-flash', supportsTools: true, supportsStream: true, contextWindow: 1000000, maxOutput: 384000 },
+      { id: 'deepseek-reasoner', name: 'DeepSeek Reasoner (legado)', apiModel: 'deepseek-v4-pro',   supportsTools: true, supportsStream: true, contextWindow: 1000000, maxOutput: 384000 },
     ],
     keyField: 'deepseekKey',
   },
